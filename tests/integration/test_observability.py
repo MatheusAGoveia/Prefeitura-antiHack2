@@ -6,6 +6,7 @@ GovSec Shield — Integration Tests
 import json
 import logging
 from unittest.mock import AsyncMock, MagicMock
+from uuid import UUID
 
 import pytest
 from fastapi.testclient import TestClient
@@ -113,7 +114,7 @@ async def test_query_handler_tracing_spans() -> None:
     repo_mock.get_by_id = AsyncMock(return_value=None)
 
     handler = TenantQueryHandler(tenant_repo=repo_mock)
-    query = GetTenantByIdQuery(tenant_id="00000000-0000-0000-0000-000000000001")
+    query = GetTenantByIdQuery(tenant_id=UUID("00000000-0000-0000-0000-000000000001"))
 
     res = await handler.get_by_id(query)
     assert res is None

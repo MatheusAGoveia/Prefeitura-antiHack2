@@ -44,6 +44,22 @@ CQRS_COMMAND_DURATION_SECONDS = Histogram(
     registry=REGISTRY,
 )
 
+# Métricas de Eventos de Domínio (Event-Driven Architecture)
+DOMAIN_EVENTS_TOTAL = Counter(
+    "domain_events_total",
+    "Total de eventos de domínio processados pelos Event Handlers",
+    ["event_type", "tenant", "status"],
+    registry=REGISTRY,
+)
+
+DOMAIN_EVENT_HANDLER_DURATION_SECONDS = Histogram(
+    "domain_event_handler_duration_seconds",
+    "Duração do processamento de eventos de domínio pelos handlers em segundos",
+    ["event_type", "tenant"],
+    buckets=(0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.5, 1.0),
+    registry=REGISTRY,
+)
+
 
 class PrometheusMetricsMiddleware(BaseHTTPMiddleware):
     """

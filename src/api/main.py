@@ -3,6 +3,9 @@ Aplicação Principal FastAPI do Core Platform
 GovSec Shield — API App
 """
 
+import asyncio
+from contextlib import asynccontextmanager
+from collections.abc import AsyncGenerator
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -11,6 +14,7 @@ from fastapi.responses import HTMLResponse
 
 from src.api.dashboard_api import router as dashboard_router
 from src.api.middleware.auth import AuthenticationMiddleware
+from src.api.middleware.recovery import RecoveryMiddleware
 from src.core.interfaces.rest.auth_routers import router as auth_router
 from src.core.interfaces.rest.routers import router as core_router
 from src.shared.observability import (
@@ -21,6 +25,7 @@ from src.shared.observability import (
     readiness_check_handler,
     setup_structured_logging,
     setup_tracing,
+    start_system_metrics_collector,
 )
 
 # 1. Inicializar Logs Estruturados JSON (Loki Compliant)
@@ -29,13 +34,43 @@ setup_structured_logging()
 # 2. Inicializar OpenTelemetry Tracing & Propagação W3C
 setup_tracing()
 
+
+@asynccontextmanager
+async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
+    """
+    Gerencia o ciclo de vida da aplicação FastAPI.
+    Inicia e encerra graciosamente o coletor de métricas de sistema.
+    """
+    # Startup: iniciar coleta periódica de métricas de sistema (CPU, RAM, Disco)
+    metrics_task = asyncio.create_task(
+        start_system_metrics_collector(interval_seconds=15),
+        name="system_metrics_collector",
+    )
+    try:
+        yield
+    finally:
+        # Shutdown: cancelar o task de coleta de forma limpa
+        metrics_task.cancel()
+        try:
+            await metrics_task
+        except asyncio.CancelledError:
+            pass
+
+
 app = FastAPI(
     title="GovSec Shield — Core Platform API",
     version="1.0.0",
     description="API do Sistema Operacional de Segurança GovSec Shield",
+    lifespan=lifespan,
 )
 
-# 3. Middlewares: CORS, Métricas Prometheus e Autenticação
+# 3. Middlewares em ordem (outermost → innermost):
+#    RecoveryMiddleware → CORSMiddleware → PrometheusMetrics → Auth
+#
+# NOTA: BaseHTTPMiddleware é adicionado na ordem inversa de execução de requisições,
+#       ou seja, o último `add_middleware` é o primeiro a executar na request.
+app.add_middleware(AuthenticationMiddleware)
+app.add_middleware(PrometheusMetricsMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000", "http://127.0.0.1:3000", "*"],
@@ -43,8 +78,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-app.add_middleware(PrometheusMetricsMiddleware)
-app.add_middleware(AuthenticationMiddleware)
+# RecoveryMiddleware deve ser o mais externo (último a ser adicionado)
+app.add_middleware(RecoveryMiddleware)
 
 # 4. Instrumentação Automática de Tracing FastAPI (Spans para toda requisição HTTP)
 instrument_fastapi(app)

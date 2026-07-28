@@ -43,13 +43,13 @@ def setup_tracing(service_name: str = "govsec-shield-api") -> TracerProvider:
     otlp_endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
     if otlp_endpoint:
         try:
-            from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (
-                OTLPSpanExporter,  # type: ignore[import-not-found]
+            from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (  # type: ignore
+                OTLPSpanExporter,
             )
 
             exporter = OTLPSpanExporter(endpoint=otlp_endpoint, insecure=True)
             provider.add_span_processor(BatchSpanProcessor(exporter))
-        except ImportError:
+        except (ImportError, Exception):
             # Fallback para console caso pacote otlp grpc não esteja instalado
             provider.add_span_processor(SimpleSpanProcessor(ConsoleSpanExporter()))
     else:

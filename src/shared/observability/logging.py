@@ -12,6 +12,8 @@ from typing import Any
 
 from opentelemetry import trace
 
+from src.shared.observability.sanitizer import data_masker
+
 # ContextVars para propagação assíncrona de correlation_id e tenant
 correlation_id_ctx: ContextVar[str | None] = ContextVar("correlation_id", default=None)
 tenant_ctx: ContextVar[str | None] = ContextVar("tenant", default=None)
@@ -41,11 +43,14 @@ class GovSecJSONFormatter(logging.Formatter):
         corr_id = getattr(record, "correlation_id", None) or correlation_id_ctx.get() or trace_id or "N/A"
         tenant_id = getattr(record, "tenant", None) or tenant_ctx.get() or "global"
 
+        # Mascarar mensagem antes de incluir no payload (Zero PII Exposure)
+        safe_message = data_masker.mask_text(record.getMessage())
+
         log_payload: dict[str, Any] = {
             "timestamp": now_utc,
             "level": record.levelname,
             "logger": record.name,
-            "message": record.getMessage(),
+            "message": safe_message,
             "correlation_id": corr_id,
             "tenant": tenant_id,
         }
@@ -87,7 +92,13 @@ class GovSecJSONFormatter(logging.Formatter):
                 "correlation_id",
                 "tenant",
             ):
-                log_payload[key] = val
+                # Mascarar campos extras dinâmicos (ex: payload de request, user data)
+                if isinstance(val, dict):
+                    log_payload[key] = data_masker.mask_dict(val)
+                elif isinstance(val, str):
+                    log_payload[key] = data_masker.mask_text(val)
+                else:
+                    log_payload[key] = val
 
         return json.dumps(log_payload, ensure_ascii=False)
 
