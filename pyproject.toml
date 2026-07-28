@@ -25,7 +25,6 @@ prometheus-client = "^0.17.0"
 pytest = "^7.4.0"
 pytest-asyncio = "^0.21.0"
 pytest-cov = "^4.1.0"
-pytest-testcontainers = "^1.0.0"
 testcontainers = {extras = ["postgres", "kafka"], version = "^3.0.0"}
 pact-python = "^2.0.0"
 black = "^23.0.0"
@@ -54,7 +53,7 @@ target-version = ['py312']
 [tool.ruff]
 line-length = 100
 select = ["E", "F", "I", "N", "UP", "B", "A", "C4", "SIM", "TCH"]
-ignore = ["E501"]
+ignore = ["E501", "B008", "A003"]
 
 [tool.mypy]
 python_version = "3.12"
@@ -62,6 +61,8 @@ warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true
 strict = true
+explicit_package_bases = true
+mypy_path = "."
 
 [tool.pytest.ini_options]
 minversion = "7.0"
@@ -72,3 +73,5 @@ testpaths = [
     "tests/contract",
 ]
 asyncio_mode = "auto"
+pythonpath = ["."]
+

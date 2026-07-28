@@ -14,6 +14,16 @@ poetry.lock
 .ruff_cache/
 *.log
 
+# Node / Frontend
+node_modules/
+**/node_modules/
+.next/
+**/.next/
+out/
+build/
+dist/
+.DS_Store
+
 # IDE
 .vscode/
 .idea/

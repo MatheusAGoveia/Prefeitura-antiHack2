@@ -5,12 +5,15 @@ GovSec Shield — Integration Tests
 
 import pytest
 import pytest_asyncio
-from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
+from src.core.domain.entities import Tenant, TenantStatus
+from src.core.infrastructure.config import settings
 from src.core.infrastructure.db.models import Base
 from src.core.infrastructure.db.repositories import PostgresTenantRepository
-from src.core.domain.entities import Tenant, TenantStatus
 
-TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
+TEST_DATABASE_URL = settings.GOVSEC_DB_URL
+
 
 @pytest_asyncio.fixture
 async def async_session():
@@ -25,6 +28,7 @@ async def async_session():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
     await engine.dispose()
+
 
 @pytest.mark.asyncio
 async def test_postgres_tenant_repository_flow(async_session: AsyncSession):

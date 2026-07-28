@@ -4,9 +4,10 @@ GovSec Shield — Domain Repositories
 """
 
 from abc import ABC, abstractmethod
-from typing import List, Optional
 from uuid import UUID
-from src.core.domain.entities import Tenant
+
+from src.core.domain.entities import AuditLog, Tenant
+
 
 class TenantRepository(ABC):
     """
@@ -19,16 +20,50 @@ class TenantRepository(ABC):
         pass
 
     @abstractmethod
-    async def get_by_id(self, tenant_id: UUID) -> Optional[Tenant]:
+    async def get_by_id(self, tenant_id: UUID) -> Tenant | None:
         """Obtém um tenant pelo seu UUID."""
         pass
 
     @abstractmethod
-    async def get_by_slug(self, slug: str) -> Optional[Tenant]:
+    async def get_by_slug(self, slug: str) -> Tenant | None:
         """Obtém um tenant pelo seu slug único."""
         pass
 
     @abstractmethod
-    async def list(self, skip: int = 0, limit: int = 100) -> List[Tenant]:
-        """Lista tenants com paginação."""
+    async def list(
+        self,
+        skip: int = 0,
+        limit: int = 100,
+        search: str | None = None,
+        status: str | None = None,
+    ) -> list[Tenant]:
+        """Lista tenants com paginação e filtros."""
         pass
+
+    @abstractmethod
+    async def delete(self, tenant_id: UUID) -> bool:
+        """Realiza o Soft Delete do tenant alterando seu status para INACTIVE."""
+        pass
+
+
+class LogRepository(ABC):
+    """
+    Interface do Repositório de Logs de Auditoria.
+    """
+
+    @abstractmethod
+    async def save(self, log: AuditLog) -> AuditLog:
+        """Persiste um log de auditoria."""
+        pass
+
+    @abstractmethod
+    async def list(
+        self,
+        skip: int = 0,
+        limit: int = 100,
+        tenant_id: UUID | None = None,
+        source: str | None = None,
+    ) -> list[AuditLog]:
+        """Lista logs com paginação e filtros por tenant ou fonte."""
+        pass
+

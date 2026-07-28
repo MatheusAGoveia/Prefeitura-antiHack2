@@ -5,43 +5,51 @@ GovSec Shield — Infrastructure Messaging
 
 import json
 import logging
-from typing import List, Callable, Dict, Any, Optional
-from aiokafka import AIOKafkaProducer
-from src.core.domain.events import DomainEvent
+from collections.abc import Callable
+from typing import Any
+
+from aiokafka import AIOKafkaProducer  # type: ignore[import-untyped]
+
 from src.core.application.interfaces import IEventPublisher
+from src.core.domain.events import DomainEvent
 from src.core.infrastructure.config import settings
 
 logger = logging.getLogger(__name__)
+
 
 class EventBus(IEventPublisher):
     """
     EventBus assíncrono compatível com Redpanda/Kafka e fallback In-Memory.
     """
 
-    def __init__(self, bootstrap_servers: str = settings.GOVSEC_KAFKA_BOOTSTRAP, use_kafka: bool = False):
+    def __init__(
+        self, bootstrap_servers: str = settings.GOVSEC_KAFKA_BOOTSTRAP, use_kafka: bool = False
+    ):
         self.bootstrap_servers = bootstrap_servers
         self.use_kafka = use_kafka
-        self._listeners: Dict[str, List[Callable]] = {}
-        self._producer: Optional[AIOKafkaProducer] = None
+        self._listeners: dict[str, list[Callable[..., Any]]] = {}
+        self._producer: AIOKafkaProducer | None = None
 
     async def start(self) -> None:
         if self.use_kafka:
             try:
                 self._producer = AIOKafkaProducer(
                     bootstrap_servers=self.bootstrap_servers,
-                    value_serializer=lambda v: json.dumps(v, default=str).encode("utf-8")
+                    value_serializer=lambda v: json.dumps(v, default=str).encode("utf-8"),
                 )
                 await self._producer.start()
                 logger.info("Kafka AIOProducer iniciado com sucesso.")
             except Exception as e:
-                logger.warning(f"Falha ao conectar ao Redpanda/Kafka ({e}). Alternando para EventBus In-Memory.")
+                logger.warning(
+                    f"Falha ao conectar ao Redpanda/Kafka ({e}). Alternando para EventBus In-Memory."
+                )
                 self.use_kafka = False
 
     async def stop(self) -> None:
         if self._producer:
             await self._producer.stop()
 
-    def subscribe(self, event_type: str, handler: Callable) -> None:
+    def subscribe(self, event_type: str, handler: Callable[..., Any]) -> None:
         if event_type not in self._listeners:
             self._listeners[event_type] = []
         self._listeners[event_type].append(handler)
@@ -61,4 +69,6 @@ class EventBus(IEventPublisher):
                 try:
                     await listener(event)
                 except Exception as exc:
-                    logger.error(f"Erro ao processar listener para evento {event.event_type}: {exc}")
+                    logger.error(
+                        f"Erro ao processar listener para evento {event.event_type}: {exc}"
+                    )

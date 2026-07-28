@@ -3,14 +3,21 @@ DTOs do Módulo Core
 GovSec Shield — Application Layer DTOs
 """
 
-from uuid import UUID
 from datetime import datetime
-from typing import Optional
-from pydantic import BaseModel, Field, ConfigDict
+from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict, Field
+
 
 class CreateTenantDTO(BaseModel):
     name: str = Field(..., min_length=2, max_length=128)
-    slug: Optional[str] = Field(None, min_length=2, max_length=64)
+    slug: str | None = Field(None, min_length=2, max_length=64)
+
+
+class UpdateTenantDTO(BaseModel):
+    name: str | None = Field(None, min_length=2, max_length=128)
+    status: str | None = Field(None, pattern="^(ACTIVE|INACTIVE|SUSPENDED)$")
+
 
 class TenantResponseDTO(BaseModel):
     id: UUID
@@ -22,8 +29,20 @@ class TenantResponseDTO(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
+
 class IngestLogDTO(BaseModel):
     source: str = Field(..., min_length=1, max_length=64)
     raw_data: str = Field(..., min_length=1)
     tenant_id: UUID
-    timestamp: Optional[datetime] = None
+    timestamp: datetime | None = None
+
+
+class LogResponseDTO(BaseModel):
+    id: UUID
+    source: str
+    raw_data: str
+    tenant_id: UUID
+    timestamp: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+

@@ -4,29 +4,31 @@ GovSec Shield — Asset Discovery Module
 """
 
 from abc import ABC, abstractmethod
-from typing import Dict, Any, List, Optional
+from datetime import datetime, timezone
 from uuid import UUID, uuid4
-from datetime import datetime
+
 from pydantic import BaseModel, Field
 
 
 class ScanTarget(BaseModel):
     """Modelo de dados do alvo do escaneamento."""
+
     target_ip: str
-    ports: List[int] = Field(default_factory=lambda: [80, 443, 22, 21, 3306, 5432, 8080])
+    ports: list[int] = Field(default_factory=lambda: [80, 443, 22, 21, 3306, 5432, 8080])
     timeout: float = Field(default=2.0, ge=0.1, le=30.0)
 
 
 class ScanResult(BaseModel):
     """Resultado canônico padronizado de uma varredura."""
+
     scan_id: UUID = Field(default_factory=uuid4)
     target_ip: str
     port: int
     protocol: str = "TCP"
     is_open: bool
-    service_name: Optional[str] = None
-    banner: Optional[str] = None
-    scanned_at: datetime = Field(default_factory=datetime.utcnow)
+    service_name: str | None = None
+    banner: str | None = None
+    scanned_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class BaseScanner(ABC):
@@ -39,17 +41,17 @@ class BaseScanner(ABC):
         self.target = target
 
     @abstractmethod
-    async def execute_scan(self) -> List[ScanResult]:
+    async def execute_scan(self) -> list[ScanResult]:
         """
         Executa a varredura assíncrona contra o alvo especificado.
-        
+
         Returns:
             List[ScanResult]: Lista de resultados padronizados das portas escaneadas.
         """
         pass
 
     @abstractmethod
-    async def grab_banner(self, ip: str, port: int) -> Optional[str]:
+    async def grab_banner(self, ip: str, port: int) -> str | None:
         """
         Realiza a coleta de banner (Banner Grabbing) na porta conectada.
 
