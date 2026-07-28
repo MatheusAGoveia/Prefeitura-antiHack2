@@ -1,4 +1,4 @@
-.PHONY: install lint test test-integration docker-up docker-down clean
+.PHONY: install lint test test-integration docker-up docker-down clean core-run core-test core-migrate
 
 install:
 	poetry install
@@ -13,6 +13,15 @@ test:
 
 test-integration:
 	poetry run pytest tests/integration
+
+core-run:
+	poetry run uvicorn src.api.main:app --reload --port 8000
+
+core-test:
+	poetry run pytest tests/unit/test_core.py tests/integration/test_db_integration.py
+
+core-migrate:
+	poetry run alembic upgrade head
 
 docker-up:
 	docker-compose -f docker/compose/docker-compose.yml up -d

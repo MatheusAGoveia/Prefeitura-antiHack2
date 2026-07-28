@@ -1,6 +1,5 @@
 # GovSec Shield (Security OS) — Prefeitura-antiHack2
-
-Plataforma de Segurança Governamental baseada em modelo de **Security Operating System (Security OS)** para monitoramento, auditoria, correlação de eventos, reconhecimento de ativos (Asset Discovery), Threat Intelligence e resposta a incidentes.
+GovSec Shield é uma plataforma de segurança cibernética para ambientes governamentais baseada no paradigma de Security Operating System (Security OS), responsável por centralizar observabilidade, descoberta de ativos, correlação de eventos, inteligência de ameaças, auditoria, governança de segurança e orquestração de respostas a incidentes por meio de uma arquitetura modular orientada a eventos.
 
 ---
 
