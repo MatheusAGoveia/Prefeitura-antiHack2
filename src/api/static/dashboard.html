@@ -1,0 +1,442 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GovSec Shield — Dashboard de Desenvolvimento</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <style>
+    :root {
+      --bg-primary: #0a0e17;
+      --bg-card: #121824;
+      --bg-card-hover: #1a2234;
+      --border-color: #232e42;
+      --accent-blue: #00d2ff;
+      --accent-blue-glow: rgba(0, 210, 255, 0.15);
+      --accent-green: #00e676;
+      --accent-yellow: #ffb300;
+      --accent-red: #ff5252;
+      --text-main: #e2e8f0;
+      --text-muted: #94a3b8;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: 'Inter', sans-serif;
+      background-color: var(--bg-primary);
+      color: var(--text-main);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    header {
+      background-color: var(--bg-card);
+      border-bottom: 1px solid var(--border-color);
+      padding: 1.25rem 2rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+
+    .brand-logo {
+      font-size: 1.8rem;
+    }
+
+    .brand-title h1 {
+      font-size: 1.25rem;
+      font-weight: 700;
+      color: #fff;
+      letter-spacing: -0.5px;
+    }
+
+    .brand-title p {
+      font-size: 0.8rem;
+      color: var(--accent-blue);
+      font-weight: 500;
+    }
+
+    .header-controls {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+    }
+
+    .btn-refresh {
+      background: linear-gradient(135deg, #00d2ff, #0072ff);
+      color: #fff;
+      border: none;
+      padding: 0.6rem 1.2rem;
+      border-radius: 8px;
+      font-weight: 600;
+      font-size: 0.85rem;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      transition: all 0.2s ease;
+      box-shadow: 0 2px 10px rgba(0, 210, 255, 0.3);
+    }
+
+    .btn-refresh:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 4px 15px rgba(0, 210, 255, 0.5);
+    }
+
+    main {
+      flex: 1;
+      padding: 2rem;
+      max-width: 1400px;
+      margin: 0 auto;
+      width: 100%;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 2rem;
+    }
+
+    @media (max-width: 1024px) {
+      main {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .card {
+      background-color: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: 12px;
+      padding: 1.5rem;
+      box-shadow: 0 8px 30px rgba(0,0,0,0.2);
+    }
+
+    .card-title {
+      font-size: 1.1rem;
+      font-weight: 600;
+      color: #fff;
+      margin-bottom: 1.25rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px solid var(--border-color);
+      padding-bottom: 0.75rem;
+    }
+
+    /* Stat Cards Banner */
+    .metrics-grid {
+      grid-column: 1 / -1;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 1.25rem;
+    }
+
+    .stat-card {
+      background-color: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: 10px;
+      padding: 1.25rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .stat-card::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 4px;
+      height: 100%;
+      background-color: var(--accent-blue);
+    }
+
+    .stat-card.green::before { background-color: var(--accent-green); }
+    .stat-card.yellow::before { background-color: var(--accent-yellow); }
+
+    .stat-label {
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .stat-value {
+      font-size: 1.8rem;
+      font-weight: 700;
+      color: #fff;
+    }
+
+    .progress-bar-bg {
+      width: 100%;
+      height: 10px;
+      background-color: var(--border-color);
+      border-radius: 6px;
+      overflow: hidden;
+      margin-top: 0.5rem;
+    }
+
+    .progress-bar-fill {
+      height: 100%;
+      background: linear-gradient(90deg, #00e676, #00d2ff);
+      width: 0%;
+      transition: width 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    /* Steps List */
+    .steps-list {
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+      max-height: 600px;
+      overflow-y: auto;
+      padding-right: 0.5rem;
+    }
+
+    .step-item {
+      background-color: rgba(255,255,255,0.02);
+      border: 1px solid var(--border-color);
+      padding: 0.85rem 1rem;
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      transition: background 0.2s;
+    }
+
+    .step-item:hover {
+      background-color: var(--bg-card-hover);
+    }
+
+    .step-info {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+
+    .status-badge {
+      padding: 0.25rem 0.6rem;
+      border-radius: 20px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      text-transform: uppercase;
+    }
+
+    .status-badge.done {
+      background-color: rgba(0, 230, 118, 0.15);
+      color: var(--accent-green);
+      border: 1px solid rgba(0, 230, 118, 0.3);
+    }
+
+    .status-badge.pending {
+      background-color: rgba(255, 179, 0, 0.15);
+      color: var(--accent-yellow);
+      border: 1px solid rgba(255, 179, 0, 0.3);
+    }
+
+    /* Markdown Render Viewer */
+    .markdown-body {
+      color: var(--text-main);
+      font-size: 0.9rem;
+      line-height: 1.6;
+      max-height: 600px;
+      overflow-y: auto;
+      padding-right: 0.5rem;
+    }
+
+    .markdown-body h1, .markdown-body h2, .markdown-body h3 {
+      color: #fff;
+      margin-top: 1.2rem;
+      margin-bottom: 0.6rem;
+    }
+
+    .markdown-body pre {
+      background-color: #0d1117;
+      padding: 1rem;
+      border-radius: 8px;
+      border: 1px solid var(--border-color);
+      overflow-x: auto;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.85rem;
+    }
+
+    .markdown-body code {
+      font-family: 'JetBrains Mono', monospace;
+      background-color: rgba(255,255,255,0.08);
+      padding: 0.15rem 0.4rem;
+      border-radius: 4px;
+      font-size: 0.85rem;
+    }
+
+    .git-box {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.85rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+
+    .git-row {
+      display: flex;
+      justify-content: space-between;
+      color: var(--text-muted);
+    }
+
+    .git-val {
+      color: var(--accent-blue);
+      font-weight: 500;
+    }
+  </style>
+</head>
+<body>
+
+  <header>
+    <div class="brand">
+      <span class="brand-logo">🛡️</span>
+      <div class="brand-title">
+        <h1>GovSec Shield</h1>
+        <p>Painel de Controle do Desenvolvimento</p>
+      </div>
+    </div>
+    <div class="header-controls">
+      <button class="btn-refresh" onclick="loadDashboard()">
+        🔄 Atualizar Dados
+      </button>
+    </div>
+  </header>
+
+  <main>
+    <!-- Banner de Métricas -->
+    <div class="metrics-grid">
+      <div class="stat-card green">
+        <span class="stat-label">Progresso Geral</span>
+        <span class="stat-value" id="prog-pct">0%</span>
+        <div class="progress-bar-bg">
+          <div class="progress-bar-fill" id="prog-fill"></div>
+        </div>
+      </div>
+
+      <div class="stat-card">
+        <span class="stat-label">Etapas Concluídas</span>
+        <span class="stat-value" id="stat-completed">0 / 0</span>
+      </div>
+
+      <div class="stat-card yellow">
+        <span class="stat-label">Branch Ativa</span>
+        <span class="stat-value" id="git-branch" style="font-size: 1.2rem; font-family: 'JetBrains Mono';">main</span>
+      </div>
+
+      <div class="stat-card">
+        <span class="stat-label">Última Atualização</span>
+        <span class="stat-value" id="last-update" style="font-size: 1rem;">-</span>
+      </div>
+    </div>
+
+    <!-- Lista de Etapas / Checklist -->
+    <div class="card">
+      <div class="card-title">
+        <span>📌 Etapas de Desenvolvimento</span>
+        <span style="font-size: 0.8rem; color: var(--text-muted);" id="steps-count">0 itens</span>
+      </div>
+      <div class="steps-list" id="steps-container">
+        <!-- Renderizado dinamicamente -->
+      </div>
+    </div>
+
+    <!-- Visualizador MEMORIA.md & Git info -->
+    <div class="card">
+      <div class="card-title">
+        <span>🧠 Memória Persistente (MEMORIA.md)</span>
+        <a id="repo-link" href="#" target="_blank" style="color: var(--accent-blue); text-decoration: none; font-size: 0.85rem;">Ver no GitHub ↗</a>
+      </div>
+
+      <div style="margin-bottom: 1rem; padding: 0.8rem; background-color: rgba(255,255,255,0.02); border-radius: 8px; border: 1px solid var(--border-color);">
+        <div class="git-box">
+          <div class="git-row">
+            <span>Último Commit:</span>
+            <span class="git-val" id="git-hash">-</span>
+          </div>
+          <div class="git-row">
+            <span>Mensagem:</span>
+            <span class="git-val" id="git-msg">-</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="markdown-body" id="markdown-container">
+        <!-- Markdown renderizado aqui -->
+      </div>
+    </div>
+  </main>
+
+  <script>
+    async function loadDashboard() {
+      try {
+        const response = await fetch('/api/memoria');
+        if (!response.ok) throw new Error('Falha ao carregar API');
+
+        const data = await response.json();
+
+        // Stats
+        document.getElementById('prog-pct').innerText = data.progress_percentage + '%';
+        document.getElementById('prog-fill').style.width = data.progress_percentage + '%';
+        document.getElementById('stat-completed').innerText = `${data.completed_steps} / ${data.total_steps}`;
+        document.getElementById('git-branch').innerText = data.git.branch;
+        
+        const dateObj = new Date(data.last_update);
+        document.getElementById('last-update').innerText = dateObj.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
+        // Git Box
+        document.getElementById('git-hash').innerText = data.git.last_commit.hash;
+        document.getElementById('git-msg').innerText = data.git.last_commit.message;
+        document.getElementById('repo-link').href = data.git.repo_url;
+
+        // Steps List
+        document.getElementById('steps-count').innerText = `${data.steps.length} etapas registradas`;
+        const stepsContainer = document.getElementById('steps-container');
+        stepsContainer.innerHTML = data.steps.map(step => `
+          <div class="step-item">
+            <div class="step-info">
+              <span>${step.status === 'done' ? '✅' : '⏳'}</span>
+              <div>
+                <div style="font-weight: 500; font-size: 0.9rem;">${step.name}</div>
+                <div style="font-size: 0.75rem; color: var(--text-muted);">${step.category}</div>
+              </div>
+            </div>
+            <span class="status-badge ${step.status}">
+              ${step.status === 'done' ? 'Concluído' : 'Pendente'}
+            </span>
+          </div>
+        `).join('');
+
+        // Markdown MEMORIA.md
+        document.getElementById('markdown-container').innerHTML = marked.parse(data.memoria);
+
+      } catch (err) {
+        console.error("Erro ao carregar dashboard:", err);
+      }
+    }
+
+    // Carregar na inicialização
+    loadDashboard();
+    // Auto refresh a cada 30s
+    setInterval(loadDashboard, 30000);
+  </script>
+</body>
+</html>

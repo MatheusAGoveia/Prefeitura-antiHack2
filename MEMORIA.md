@@ -7,7 +7,7 @@
 ## 📌 Estado Atual do Projeto
 - **Repositório:** `MatheusAGoveia/Prefeitura-antiHack2`
 - **Branch Ativa:** `feature/core-platform`
-- **Data da Última Atualização:** 2026-07-28T16:23:00Z
+- **Data da Última Atualização:** 2026-07-28T16:34:00Z
 - **Responsável:** IA Assistente (Arquiteto Principal GovSec Shield)
 
 ---
@@ -45,7 +45,12 @@
   - Rotas REST FastAPI: `POST /api/v1/tenants`, `GET /api/v1/tenants`, `POST /api/v1/logs`, `/healthz`, `/ready`.
   - CLI Admin: `src/cli/main.py` com o comando `govsec tenant create`.
 
-### 3. Validação e Testes (2026-07-28)
+### 3. Painel de Controle do Desenvolvimento (Dev Dashboard) (2026-07-28)
+- [x] **Endpoint API (`/api/memoria`):** Parser dinâmico do `MEMORIA.md`, cálculo de progresso, leitura de git commit/branch e JSON formatado ([`dashboard_api.py`](file:///c:/Users/matheus.damiao/Desktop/AntiHackin/Prefeitura-antiHack2/src/api/dashboard_api.py)).
+- [x] **Interface Web Estática (`/dashboard`):** HTML + CSS escuro moderno + JS com auto-refresh (30s) e renderizador Markdown via `marked.js` ([`dashboard.html`](file:///c:/Users/matheus.damiao/Desktop/AntiHackin/Prefeitura-antiHack2/src/api/static/dashboard.html)).
+- [x] **Testes de Unidade:** Testes de integração direta do parser e rota do Dashboard ([`tests/unit/test_dashboard_api.py`](file:///c:/Users/matheus.damiao/Desktop/AntiHackin/Prefeitura-antiHack2/tests/unit/test_dashboard_api.py)).
+
+### 4. Validação e Testes (2026-07-28)
 - [x] Testes unitários (`tests/unit/test_core.py`): 100% de sucesso.
 - [x] Testes de integração (`tests/integration/test_db_integration.py`): 100% de sucesso.
 - [x] Push realizado na branch `feature/core-platform`.
@@ -119,9 +124,12 @@
 - `src/core/interfaces/rest/dependencies.py`
 - `src/core/interfaces/rest/routers.py`
 - `src/api/main.py`
+- `src/api/dashboard_api.py`
+- `src/api/static/dashboard.html`
 - `src/cli/main.py`
 - `src/core/README.md`
 - `src/core/security.py`
 - `src/asset/scanners/base_scanner.py`
 - `tests/unit/test_core.py`
+- `tests/unit/test_dashboard_api.py`
 - `tests/integration/test_db_integration.py`
