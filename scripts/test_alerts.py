@@ -2,11 +2,12 @@
 GovSec Shield — Fire Drill Local de Alertas e Observabilidade SRE (Capability M2)
 """
 
-import sys
-import yaml
-import urllib.request
 import json
-from datetime import datetime, timezone, timedelta
+import sys
+import urllib.request
+from datetime import datetime, timedelta, timezone
+
+import yaml
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")

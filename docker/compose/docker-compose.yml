@@ -156,8 +156,9 @@ services:
     ports:
       - "9093:9093"
     volumes:
-      - ../../deploy/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - ${GOVSEC_ALERTMANAGER_CONFIG:-../../deploy/alertmanager/alertmanager.yml}:/etc/alertmanager/alertmanager.yml:ro
       - alertmanager_data:/alertmanager
+
     command:
       - "--config.file=/etc/alertmanager/alertmanager.yml"
       - "--storage.path=/alertmanager"

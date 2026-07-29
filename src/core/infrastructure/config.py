@@ -20,7 +20,8 @@ class Settings(BaseSettings):
     GOVSEC_OPA_URL: str = "http://localhost:8181/v1/data/govsec/allow"
     GOVSEC_ALERTMANAGER_URL: str = "http://localhost:9093"
     GOVSEC_SLACK_WEBHOOK_URL: str = ""
-    GOVSEC_PAGERDUTY_ROUTING_KEY: str = ""
+    GOVSEC_PAGERDUTY_SERVICE_KEY: str = ""
+
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 

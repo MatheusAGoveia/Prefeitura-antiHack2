@@ -51,11 +51,11 @@ def render_config() -> str:
     rendered = rendered.replace("{{PAGERDUTY_CONFIG}}", pagerduty_snippet)
 
     # Validação de Segurança: Bloquear test-receiver e endpoints locais em Staging/Production
-    if env in ("staging", "production"):
-        if "test-receiver" in rendered or "host.docker.internal" in rendered:
-            raise ValueError(
-                f"🚨 [SECURITY ERROR] Ambiente '{env}' proíbe o uso de 'test-receiver' ou endpoints locais no Alertmanager!"
-            )
+    if env in ("staging", "production") and ("test-receiver" in rendered or "host.docker.internal" in rendered):
+        raise ValueError(
+            f"🚨 [SECURITY ERROR] Ambiente '{env}' proíbe o uso de 'test-receiver' ou endpoints locais no Alertmanager!"
+        )
+
 
     with open(OUTPUT_PATH, "w", encoding="utf-8") as f:
         f.write(rendered)

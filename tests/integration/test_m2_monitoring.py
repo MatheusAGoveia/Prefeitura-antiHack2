@@ -282,3 +282,75 @@ def test_acknowledge_alert_endpoint_rbac_authorization(client: TestClient):
     finally:
         app.dependency_overrides.pop(get_command_bus, None)
 
+
+# -----------------------------------------------------------------------------
+# 8. Testes das Regras Finais de M2 (Point 4)
+# -----------------------------------------------------------------------------
+
+def test_alertmanager_rendered_yml_not_tracked_by_git():
+    """Garante que deploy/alertmanager/alertmanager.rendered.yml NÃO está rastreado no Git."""
+    import subprocess
+
+    result = subprocess.run(
+        ["git", "ls-files", "deploy/alertmanager/alertmanager.rendered.yml"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.stdout.strip() == "", "O arquivo alertmanager.rendered.yml não pode ser rastreado pelo Git!"
+
+
+def test_render_alertmanager_production_config_without_test_receivers(monkeypatch: pytest.MonkeyPatch):
+    """Garante que a renderização de produção não contém test-receiver nem host.docker.internal."""
+    from scripts.render_alertmanager_config import render_config
+
+    monkeypatch.setenv("GOVSEC_ENV", "production")
+    monkeypatch.setenv("GOVSEC_SLACK_WEBHOOK_URL", "https://hooks.slack.com/services/T00/B00/X00")
+    monkeypatch.setenv("GOVSEC_PAGERDUTY_SERVICE_KEY", "pd-service-key-12345")
+
+    output_path = render_config()
+    with open(output_path, encoding="utf-8") as f:
+        content = f.read()
+
+    assert "test-receiver" not in content
+    assert "host.docker.internal" not in content
+    assert "https://hooks.slack.com/services/T00/B00/X00" in content
+    assert "pd-service-key-12345" in content
+
+
+def test_render_config_fails_in_production_if_test_receiver_present(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pytest.TempPathFactory
+):
+    """Garante que render_config lança ValueError em staging/production se o template contiver test-receiver."""
+    import scripts.render_alertmanager_config as render_mod
+
+    monkeypatch.setenv("GOVSEC_ENV", "production")
+
+    bad_template = tmp_path / "bad.template"
+    bad_template.write_text(
+        "receivers:\n  - name: test-receiver\n    webhook_configs:\n      - url: http://host.docker.internal:8000/mock\n"
+    )
+    monkeypatch.setattr(render_mod, "TEMPLATE_PATH", str(bad_template))
+
+    with pytest.raises(ValueError, match="proíbe o uso de 'test-receiver' ou endpoints locais"):
+        render_mod.render_config()
+
+
+def test_pagerduty_variable_name_consistency():
+    """Garante a consistência da variável GOVSEC_PAGERDUTY_SERVICE_KEY no Settings e nos exemplos."""
+    from src.core.infrastructure.config import Settings
+
+    s = Settings()
+    assert hasattr(s, "GOVSEC_PAGERDUTY_SERVICE_KEY")
+    assert not hasattr(s, "GOVSEC_PAGERDUTY_ROUTING_KEY")
+
+    with open(".env.example", encoding="utf-8") as f:
+        env_example = f.read()
+    assert "GOVSEC_PAGERDUTY_SERVICE_KEY=" in env_example
+    assert "GOVSEC_PAGERDUTY_ROUTING_KEY" not in env_example
+
+    with open("configs/dev/.env.example", encoding="utf-8") as f:
+        dev_env_example = f.read()
+    assert "GOVSEC_PAGERDUTY_SERVICE_KEY=" in dev_env_example
+    assert "GOVSEC_PAGERDUTY_ROUTING_KEY" not in dev_env_example
+
+
