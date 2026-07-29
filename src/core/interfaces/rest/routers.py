@@ -133,14 +133,21 @@ async def list_tenants(
 ) -> list[TenantResponseDTO]:
     try:
         SecurityKernel.authorize(current_user, UserRole.VIEWER)
-        tenants = await query_handler.list(ListTenantsQuery(skip=skip, limit=limit, search=search, status=status_filter))
         is_sys_admin = "system_admin" in current_user.roles
-        if not is_sys_admin:
-            user_tenant = current_user.tenant
-            return [
-                t for t in tenants
-                if str(t.id) == user_tenant or t.slug == user_tenant or t.name == user_tenant
-            ]
+
+        # Filtro de tenant aplicado na camada de repositório (antes do LIMIT/OFFSET)
+        # para evitar vazamento de contagem e páginas falsamente vazias
+        tenant_filter = None if is_sys_admin else current_user.tenant
+
+        tenants = await query_handler.list(
+            ListTenantsQuery(
+                skip=skip,
+                limit=limit,
+                search=search,
+                status=status_filter,
+                tenant_filter=tenant_filter,
+            )
+        )
         return tenants
     except PermissionError as e:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e)) from e

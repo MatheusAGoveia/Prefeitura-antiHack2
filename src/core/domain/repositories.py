@@ -36,8 +36,9 @@ class TenantRepository(ABC):
         limit: int = 100,
         search: str | None = None,
         status: str | None = None,
+        tenant_filter: str | None = None,
     ) -> list[Tenant]:
-        """Lista tenants com paginação e filtros."""
+        """Lista tenants com paginação e filtros. tenant_filter restringe por slug, nome ou UUID."""
         pass
 
     @abstractmethod

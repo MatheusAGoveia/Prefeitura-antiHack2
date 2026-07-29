@@ -1,11 +1,25 @@
 """
 GovSec Shield — Script de Preflight e Validação Operacional de Deploy do Alertmanager
-Garante que o Alertmanager não possa ser implantado em Staging ou Produção com configurações de desenvolvimento ou inseguras.
+
+Garante que o Alertmanager não possa ser implantado em Staging ou Produção
+com configurações de desenvolvimento ou inseguras.
+
+Este script executa APENAS a validação semântica de segurança:
+  - Verifica nome do arquivo renderizado
+  - Valida ausência de termos proibidos
+  - Confirma presença de segredos (Slack, PagerDuty)
+  - Valida estrutura YAML (route, receivers, inhibit_rules)
+  - Verifica rotas obrigatórias (critical, warning)
+
+A validação sintática via `amtool check-config` é executada em container
+Alertmanager nativo separado (ver docker-compose.production.yml).
 """
 
 import os
-import subprocess
 import sys
+from typing import Any
+
+import yaml
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
@@ -20,12 +34,47 @@ def _mask_secret(val: str) -> str:
     return f"{val[:4]}...{val[-4:]}"
 
 
+def _validate_yaml_semantic(config_path: str, content: str) -> int:
+    """Valida a estrutura YAML semântica do Alertmanager (route, receivers, inhibit_rules)."""
+    try:
+        data: Any = yaml.safe_load(content)
+    except yaml.YAMLError as e:
+        print(f"❌ [ERRO YAML] Falha ao parsear o arquivo '{config_path}': {e}")
+        return 1
+
+    if not isinstance(data, dict):
+        print(f"❌ [ERRO YAML] O arquivo '{config_path}' não é um mapeamento YAML válido.")
+        return 1
+
+    if "route" not in data:
+        print(f"❌ [ERRO DE ESTRUTURA] Campo obrigatório 'route' ausente em '{config_path}'.")
+        return 1
+
+    if "receivers" not in data:
+        print(f"❌ [ERRO DE ESTRUTURA] Campo obrigatório 'receivers' ausente em '{config_path}'.")
+        return 1
+
+    route = data["route"]
+    if not isinstance(route, dict):
+        print(f"❌ [ERRO DE ESTRUTURA] O campo 'route' deve ser um mapeamento YAML em '{config_path}'.")
+        return 1
+
+    receivers = data.get("receivers", [])
+    if not isinstance(receivers, list) or len(receivers) == 0:
+        print(f"❌ [ERRO DE ESTRUTURA] O campo 'receivers' deve conter ao menos um receiver em '{config_path}'.")
+        return 1
+
+    print("✅ Validação YAML semântica aprovada (route, receivers presentes).")
+    return 0
+
+
 def validate_deploy() -> int:
+    """Executa a validação de preflight de segurança do Alertmanager."""
     env = os.getenv("GOVSEC_ENV", "dev").lower().strip()
     config_path = os.getenv("GOVSEC_ALERTMANAGER_CONFIG", "").strip()
 
     print("======================================================================")
-    print(f"🚨 GOVSEC SHIELD — PREFLIGHT OPERACIONAL DO ALERTMANAGER [{env.upper()}]")
+    print(f"🚨 GOVSEC SHIELD — PREFLIGHT DE SEGURANÇA DO ALERTMANAGER [{env.upper()}]")
     print("======================================================================")
 
     if env not in ("staging", "production"):
@@ -34,7 +83,16 @@ def validate_deploy() -> int:
         if not os.path.exists(default_cfg):
             print(f"❌ [ERRO] Arquivo de configuração '{default_cfg}' não encontrado.")
             return 1
-        print(f"✅ Arquivo local '{default_cfg}' existente.")
+
+        # Validação YAML sintática e semântica mesmo em dev/test
+        with open(default_cfg, encoding="utf-8") as f:
+            content = f.read()
+
+        yaml_result = _validate_yaml_semantic(default_cfg, content)
+        if yaml_result != 0:
+            return yaml_result
+
+        print(f"✅ Arquivo local '{default_cfg}' existente e válido.")
         return 0
 
     # 1. Validação estrita de nome de arquivo em Staging / Production
@@ -44,7 +102,8 @@ def validate_deploy() -> int:
 
     if not config_path.endswith("alertmanager.rendered.yml"):
         print(
-            f"❌ [ERRO DE SEGURANÇA] GOVSEC_ALERTMANAGER_CONFIG deve ser exatamente 'alertmanager.rendered.yml' em {env.upper()}. (Recebido: '{config_path}')"
+            f"❌ [ERRO DE SEGURANÇA] GOVSEC_ALERTMANAGER_CONFIG deve ser exatamente "
+            f"'alertmanager.rendered.yml' em {env.upper()}. (Recebido: '{config_path}')"
         )
         return 1
 
@@ -98,7 +157,12 @@ def validate_deploy() -> int:
         print("❌ [ERRO DE ESTRUTURA] Rota obrigatória de severidade 'warning' ausente!")
         return 1
 
-    # 3. Verificação de presença dos segredos em variáveis ou arquivos de secret
+    # 3. Validação YAML semântica
+    yaml_result = _validate_yaml_semantic(config_path, content)
+    if yaml_result != 0:
+        return yaml_result
+
+    # 4. Verificação de presença dos segredos em variáveis ou arquivos de secret
     slack_url = os.getenv("GOVSEC_SLACK_WEBHOOK_URL", "").strip()
     slack_file = os.getenv("GOVSEC_SLACK_WEBHOOK_FILE", "").strip()
     if not slack_url and slack_file and os.path.exists(slack_file):
@@ -119,38 +183,13 @@ def validate_deploy() -> int:
         print("❌ [ERRO DE SEGURANÇA] Chave do PagerDuty (GOVSEC_PAGERDUTY_SERVICE_KEY/FILE) não configurada.")
         return 1
 
-    print(f"✅ Validação de regras e segredos aprovada (Slack: {_mask_secret(slack_url)}, PagerDuty: {_mask_secret(pagerduty_key)}).")
-
-    # 4. Sintaxe amtool via Docker (Obrigatório em Staging/Produção — Fail-Closed)
-    abs_config = os.path.abspath(config_path)
-    config_dir = os.path.dirname(abs_config)
-    config_file = os.path.basename(abs_config)
-
-    try:
-        cmd = [
-            "docker",
-            "run",
-            "--rm",
-            "--entrypoint",
-            "/bin/amtool",
-            "-v",
-            f"{config_dir}:/etc/alertmanager",
-            "prom/alertmanager:v0.27.0",
-            "check-config",
-            f"/etc/alertmanager/{config_file}",
-        ]
-        res = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
-        if res.returncode == 0:
-            print("✅ amtool check-config: Sintaxe YAML do Alertmanager VÁLIDA.")
-        else:
-            print(f"❌ [ERRO SINTÁTICO] amtool check-config falhou: {res.stderr.strip()}")
-            return 1
-    except Exception as e:
-        print(f"❌ [FAIL-CLOSED] Falha ao executar validação sintática amtool via Docker em {env.upper()}: {e}")
-        return 1
+    print(
+        f"✅ Validação de regras e segredos aprovada "
+        f"(Slack: {_mask_secret(slack_url)}, PagerDuty: {_mask_secret(pagerduty_key)})."
+    )
 
     print("======================================================================")
-    print(f"🎉 PREFLIGHT DO ALERTMANAGER [{env.upper()}] CONCLUÍDO COM SUCESSO!")
+    print(f"🎉 PREFLIGHT DE SEGURANÇA DO ALERTMANAGER [{env.upper()}] CONCLUÍDO COM SUCESSO!")
     print("======================================================================")
     return 0
 

@@ -1,14 +1,26 @@
 # ==============================================================================
 # GovSec Shield — Docker Compose de Produção/Staging (Hardened Profile)
 # ==============================================================================
-# Este arquivo estende o docker-compose.yml base adicionando o serviço init
-# de preflight obrigatório do Alertmanager (init-alertmanager-preflight).
+# Este arquivo estende o docker-compose.yml base adicionando dois serviços init
+# de preflight obrigatórios do Alertmanager:
+#   1. init-alertmanager-security-preflight — Validação semântica de segurança (Python)
+#   2. init-alertmanager-amtool-preflight   — Validação sintática amtool (Alertmanager nativo)
+#
+# Alertmanager só inicia quando AMBOS os preflights completam com sucesso.
 # ==============================================================================
 
 services:
-  init-alertmanager-preflight:
+  # ─── Preflight 1: Validação Semântica de Segurança ───────────────────────────
+  # Container Python que executa o script de validação semântica:
+  # - Verifica nome do arquivo (deve ser .rendered.yml)
+  # - Valida ausência de termos proibidos (test-receiver, localhost, etc.)
+  # - Confirma presença de segredos (Slack, PagerDuty)
+  # - Valida estrutura YAML (route, receivers, inhibit_rules)
+  # - Verifica rotas obrigatórias (critical, warning)
+  # NÃO tenta executar Docker CLI nem amtool.
+  init-alertmanager-security-preflight:
     image: python:3.12-slim
-    container_name: govsec-alertmanager-preflight
+    container_name: govsec-alertmanager-security-preflight
     environment:
       GOVSEC_ENV: ${GOVSEC_ENV:-production}
       GOVSEC_ALERTMANAGER_CONFIG: ${GOVSEC_ALERTMANAGER_CONFIG:-deploy/alertmanager/alertmanager.rendered.yml}
@@ -21,9 +33,23 @@ services:
     working_dir: /app
     command: ["python", "scripts/validate_alertmanager_deploy.py"]
 
+  # ─── Preflight 2: Validação Sintática amtool (Nativo) ────────────────────────
+  # Container Alertmanager nativo executando amtool check-config diretamente.
+  # Sem Docker-in-Docker: o binário amtool já existe no container.
+  init-alertmanager-amtool-preflight:
+    image: prom/alertmanager:v0.27.0
+    container_name: govsec-alertmanager-amtool-preflight
+    entrypoint: ["/bin/amtool"]
+    command: ["check-config", "/etc/alertmanager/alertmanager.yml"]
+    volumes:
+      - ${GOVSEC_ALERTMANAGER_CONFIG:-../../deploy/alertmanager/alertmanager.rendered.yml}:/etc/alertmanager/alertmanager.yml:ro
+
+  # ─── Override do Alertmanager: depende de AMBOS os preflights ────────────────
   alertmanager:
     depends_on:
-      init-alertmanager-preflight:
+      init-alertmanager-security-preflight:
+        condition: service_completed_successfully
+      init-alertmanager-amtool-preflight:
         condition: service_completed_successfully
     volumes:
       - ${GOVSEC_ALERTMANAGER_CONFIG:-../../deploy/alertmanager/alertmanager.rendered.yml}:/etc/alertmanager/alertmanager.yml:ro

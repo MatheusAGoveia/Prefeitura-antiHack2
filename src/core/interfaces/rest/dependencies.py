@@ -3,7 +3,7 @@ Contêiner de Injeção de Dependências da API FastAPI
 GovSec Shield — API Dependencies
 """
 
-from fastapi import Depends, Header, HTTPException, status
+from fastapi import Depends, Header, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.application.handlers import (
@@ -68,8 +68,18 @@ async def get_log_query_handler(session: AsyncSession = Depends(get_db_session))
 
 
 async def get_current_user(
-    authorization: str = Header(..., alias="Authorization")
+    request: Request,
+    authorization: str = Header(..., alias="Authorization"),
 ) -> AuthenticatedUser:
+    """
+    Obtém o usuário autenticado, reutilizando a autenticação já realizada pelo middleware.
+    O JWT é validado apenas uma vez por requisição.
+    """
+    # Reutilizar usuário já autenticado pelo AuthenticationMiddleware
+    if hasattr(request.state, "user") and isinstance(request.state.user, AuthenticatedUser):
+        return request.state.user
+
+    # Fallback: autenticar via token (para rotas que não passam pelo middleware)
     if not authorization.startswith("Bearer "):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -78,8 +88,7 @@ async def get_current_user(
     token = authorization.split(" ")[1]
     try:
         return await SecurityKernel.authenticate_async(token)
-    except Exception as e:
-
+    except PermissionError as e:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(e)) from e
 
 

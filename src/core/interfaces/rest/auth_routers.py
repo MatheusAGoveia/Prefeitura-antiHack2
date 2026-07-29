@@ -71,12 +71,17 @@ def _resolve_roles_for_user(email: str) -> list[str]:
 async def login(dto: LoginDTO) -> LoginResponseDTO:
     """
     Autentica usuário e retorna Access Token e Refresh Token JWT.
-    Bloqueado em staging e production (Fail-Closed).
+    Em staging/production, delega autenticação ao provider OIDC e utiliza claims retornados.
     """
+    if not dto.email or not dto.password:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Email e senha são obrigatórios."
+        )
+
     if settings.GOVSEC_ENV not in ("dev", "test"):
         provider: AuthenticationProviderPort = DefaultOIDCAuthenticationProvider()
         try:
-            await provider.authenticate_credentials(dto.email, dto.password, dto.tenant_id)
+            claims = await provider.authenticate_credentials(dto.email, dto.password, dto.tenant_id)
         except AuthenticationProviderUnavailableError as e:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN, detail=str(e)
@@ -86,22 +91,22 @@ async def login(dto: LoginDTO) -> LoginResponseDTO:
                 status_code=status.HTTP_401_UNAUTHORIZED, detail=str(e)
             ) from e
 
-    if not dto.email or not dto.password:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="Email e senha são obrigatórios."
-        )
-
-
-    user_id = dto.email.split("@")[0]
-    roles = _resolve_roles_for_user(dto.email)
-    tenant_id = dto.tenant_id or "betim"
+        # Utilizar claims do provider OIDC ao invés de derivação local
+        user_id = claims.get("sub", dto.email.split("@")[0])
+        roles = claims.get("roles", ["viewer"])
+        tenant_id = claims.get("tenant_id", dto.tenant_id or "betim")
+    else:
+        # Ambiente dev/test: derivação local de roles a partir do email
+        user_id = dto.email.split("@")[0]
+        roles = _resolve_roles_for_user(dto.email)
+        tenant_id = dto.tenant_id or "betim"
 
     access_token = JWTHandler.generate_token(user_id=user_id, tenant_id=tenant_id, roles=roles)
     refresh_token = JWTHandler.generate_refresh_token(user_id=user_id, tenant_id=tenant_id, roles=roles)
 
     SecurityKernel.audit(
         user={"user_id": user_id, "tenant_id": tenant_id},
-        action="LOGIN_SIMULATED",
+        action="LOGIN",
         resource="auth",
         success=True,
     )
@@ -150,10 +155,16 @@ async def dev_token(dto: DevTokenDTO) -> LoginResponseDTO:
 async def refresh(dto: RefreshTokenDTO) -> RefreshResponseDTO:
     """
     Emite novo Access Token a partir de um Refresh Token válido.
+    Totalmente assíncrono — utiliza Redis async para verificação de revogação.
     """
     try:
-        new_access_token = JWTHandler.refresh_token(dto.refresh_token)
+        new_access_token = await JWTHandler.refresh_token_async(dto.refresh_token)
         return RefreshResponseDTO(access_token=new_access_token, token_type="Bearer", expires_in=28800)
+    except RuntimeError as e:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Serviço de revogação temporariamente indisponível: {e}",
+        ) from e
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(e)) from e
 
@@ -162,6 +173,7 @@ async def refresh(dto: RefreshTokenDTO) -> RefreshResponseDTO:
 async def logout(authorization: str = Header(..., alias="Authorization")) -> LogoutResponseDTO:
     """
     Revoga o token atual inserindo-o na blacklist do Security Kernel.
+    Totalmente assíncrono — utiliza Redis async para persistência da revogação.
     """
     if not authorization.startswith("Bearer "):
         raise HTTPException(
@@ -170,7 +182,13 @@ async def logout(authorization: str = Header(..., alias="Authorization")) -> Log
         )
 
     token = authorization.split(" ")[1]
-    JWTHandler.blacklist_token(token)
+    try:
+        await JWTHandler.blacklist_token_async(token)
+    except RuntimeError as e:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Serviço de revogação temporariamente indisponível: {e}",
+        ) from e
 
     return LogoutResponseDTO()
 

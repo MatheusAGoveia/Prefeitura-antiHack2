@@ -21,6 +21,7 @@ class ListTenantsQuery(BaseModel):
     limit: int = 100
     search: str | None = None
     status: str | None = None
+    tenant_filter: str | None = None
 
 
 class ListLogsQuery(BaseModel):
@@ -56,12 +57,16 @@ class TenantQueryHandler:
     async def list(self, query: ListTenantsQuery) -> list[TenantResponseDTO]:
         attributes = {
             "query.name": "ListTenantsQuery",
-            "tenant": "global",
+            "tenant": query.tenant_filter or "global",
             "user_id": "system",
         }
         with trace_span("Query.ListTenantsQuery", attributes=attributes):
             tenants = await self.tenant_repo.list(
-                skip=query.skip, limit=query.limit, search=query.search, status=query.status
+                skip=query.skip,
+                limit=query.limit,
+                search=query.search,
+                status=query.status,
+                tenant_filter=query.tenant_filter,
             )
             return [
                 TenantResponseDTO(

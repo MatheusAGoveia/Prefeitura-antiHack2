@@ -71,8 +71,18 @@ class PostgresTenantRepository(TenantRepository):
         limit: int = 100,
         search: str | None = None,
         status: str | None = None,
+        tenant_filter: str | None = None,
     ) -> list[Tenant]:
         stmt = select(TenantModel)
+        if tenant_filter:
+            # Filtro de tenant por UUID, slug ou nome (isolamento multi-tenant na query)
+            stmt = stmt.where(
+                or_(
+                    TenantModel.slug == tenant_filter,
+                    TenantModel.name == tenant_filter,
+                    TenantModel.id == tenant_filter if len(tenant_filter) == 36 else False,
+                )
+            )
         if search:
             search_pattern = f"%{search}%"
             stmt = stmt.where(
@@ -287,8 +297,14 @@ class InMemoryTenantRepository(TenantRepository):
         limit: int = 100,
         search: str | None = None,
         status: str | None = None,
+        tenant_filter: str | None = None,
     ) -> list[Tenant]:
         results = list(self._tenants.values())
+        if tenant_filter:
+            results = [
+                t for t in results
+                if str(t.id) == tenant_filter or t.slug == tenant_filter or t.name == tenant_filter
+            ]
         if search:
             s = search.lower()
             results = [t for t in results if s in t.name.lower() or s in t.slug.lower()]

@@ -39,8 +39,14 @@ class MockTenantRepository:
         limit: int = 100,
         search: str | None = None,
         status: str | None = None,
+        tenant_filter: str | None = None,
     ):
         res = list(self.tenants.values())
+        if tenant_filter:
+            res = [
+                t for t in res
+                if str(t.id) == tenant_filter or t.slug == tenant_filter or t.name == tenant_filter
+            ]
         if search:
             res = [
                 t
