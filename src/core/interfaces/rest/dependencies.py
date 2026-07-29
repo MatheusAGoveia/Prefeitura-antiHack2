@@ -77,8 +77,9 @@ async def get_current_user(
         )
     token = authorization.split(" ")[1]
     try:
-        return SecurityKernel.authenticate(token)
+        return await SecurityKernel.authenticate_async(token)
     except Exception as e:
+
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(e)) from e
 
 

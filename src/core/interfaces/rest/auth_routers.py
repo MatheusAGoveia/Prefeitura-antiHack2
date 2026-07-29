@@ -1,36 +1,23 @@
-from abc import ABC, abstractmethod
-from typing import Any
+from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, Header, HTTPException, status
 from pydantic import BaseModel, Field
 
+from src.core.domain.exceptions import (
+    AuthenticationProviderUnavailableError,
+    InvalidCredentialsError,
+)
 from src.core.infrastructure.config import settings
 from src.core.infrastructure.security.jwt import JWTHandler
 from src.core.infrastructure.security.kernel import SecurityKernel
+from src.core.infrastructure.security.oidc_provider import (
+    DefaultOIDCAuthenticationProvider,
+)
+
+if TYPE_CHECKING:
+    from src.core.application.interfaces.auth_provider import AuthenticationProviderPort
 
 router = APIRouter(prefix="/api/v1/auth", tags=["Authentication"])
-
-
-class AuthenticationProviderPort(ABC):
-    """Porta para integração com Provedores de Identidade Externos (OIDC/OAuth2/Keycloak)."""
-
-    @abstractmethod
-    async def authenticate_credentials(
-        self, email: str, password: str, tenant_id: str | None = None
-    ) -> dict[str, Any]:
-        pass
-
-
-class DefaultOIDCAuthenticationProvider(AuthenticationProviderPort):
-    """Implementação Padrão Fail-Closed quando nenhum provedor OIDC está configurado."""
-
-    async def authenticate_credentials(
-        self, email: str, password: str, tenant_id: str | None = None
-    ) -> dict[str, Any]:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Provedor de Identidade (OIDC/OAuth2) não configurado para staging/produção (Fail-Closed).",
-        )
 
 
 class LoginDTO(BaseModel):
@@ -87,13 +74,23 @@ async def login(dto: LoginDTO) -> LoginResponseDTO:
     Bloqueado em staging e production (Fail-Closed).
     """
     if settings.GOVSEC_ENV not in ("dev", "test"):
-        provider = DefaultOIDCAuthenticationProvider()
-        await provider.authenticate_credentials(dto.email, dto.password, dto.tenant_id)
+        provider: AuthenticationProviderPort = DefaultOIDCAuthenticationProvider()
+        try:
+            await provider.authenticate_credentials(dto.email, dto.password, dto.tenant_id)
+        except AuthenticationProviderUnavailableError as e:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN, detail=str(e)
+            ) from e
+        except InvalidCredentialsError as e:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED, detail=str(e)
+            ) from e
 
     if not dto.email or not dto.password:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Email e senha são obrigatórios."
         )
+
 
     user_id = dto.email.split("@")[0]
     roles = _resolve_roles_for_user(dto.email)

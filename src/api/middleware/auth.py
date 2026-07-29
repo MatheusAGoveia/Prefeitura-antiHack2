@@ -24,8 +24,8 @@ PUBLIC_PATH_PREFIXES = (
     "/api/v1/auth/dev-token",
     "/api/v1/auth/token",
     "/api/v1/auth/refresh",
-    "/api/v1/security/check-scope",
 )
+
 
 
 
@@ -48,9 +48,10 @@ class AuthenticationMiddleware(BaseHTTPMiddleware):
 
         token = auth_header.split(" ")[1]
         try:
-            user = SecurityKernel.authenticate(token)
+            user = await SecurityKernel.authenticate_async(token)
             request.state.user = user
         except PermissionError as e:
+
             return JSONResponse(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 content={"detail": str(e)},

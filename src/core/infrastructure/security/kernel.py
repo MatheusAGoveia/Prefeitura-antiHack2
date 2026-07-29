@@ -26,6 +26,18 @@ class SecurityKernel:
     """
 
     @staticmethod
+    async def authenticate_async(token: str) -> AuthenticatedUser:
+        payload = await JWTHandler.verify_token_async(token)
+        if not payload:
+            raise PermissionError("Token de autenticação inválido, expirado ou revogado.")
+
+        user_id = payload.get("sub", "")
+        tenant = payload.get("tenant_id") or payload.get("tenant", "")
+        roles = payload.get("roles", [])
+
+        return AuthenticatedUser(user_id=user_id, tenant=tenant, roles=roles)
+
+    @staticmethod
     def authenticate(token: str) -> AuthenticatedUser:
         payload = JWTHandler.verify_token(token)
         if not payload:
@@ -36,6 +48,7 @@ class SecurityKernel:
         roles = payload.get("roles", [])
 
         return AuthenticatedUser(user_id=user_id, tenant=tenant, roles=roles)
+
 
     @staticmethod
     def authorize(

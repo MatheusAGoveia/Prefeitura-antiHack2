@@ -32,6 +32,8 @@ from src.core.application.queries import (
     LogQueryHandler,
     TenantQueryHandler,
 )
+from src.core.domain.exceptions import CrossTenantAccessDeniedError
+from src.core.domain.tenant_auth import TenantAuthorizationService
 from src.core.infrastructure.config import settings
 from src.core.infrastructure.messaging.command_bus import CommandBus
 from src.core.infrastructure.security.jwt import JWTUtils
@@ -72,17 +74,29 @@ async def generate_token(dto: TokenRequestDTO) -> dict[str, str]:
     return {"access_token": token, "token_type": "Bearer"}
 
 
-
 @router.post("/security/check-scope")
-async def check_scope(dto: ScopeCheckDTO) -> dict[str, str | bool]:
-    """Valida se o IP informado está dentro das sub-redes autorizadas da prefeitura."""
-    config = ScopeSafetyConfig()
-    allowed = config.is_target_allowed(dto.target_ip)
-    return {
-        "target_ip": dto.target_ip,
-        "is_allowed": allowed,
-        "status": "AUTHORIZED" if allowed else "SCOPE_VIOLATION",
-    }
+async def check_scope(
+    dto: ScopeCheckDTO,
+    current_user: AuthenticatedUser = Depends(get_current_user),
+) -> dict[str, str | bool]:
+    """Valida se o IP informado está dentro das sub-redes autorizadas da prefeitura (exige role analista)."""
+    try:
+        SecurityKernel.authorize(current_user, UserRole.ANALYST)
+        config = ScopeSafetyConfig()
+        allowed = config.is_target_allowed(dto.target_ip)
+        SecurityKernel.audit(
+            user=current_user,
+            action="CHECK_SCOPE",
+            resource=dto.target_ip,
+            success=allowed,
+        )
+        return {
+            "target_ip": dto.target_ip,
+            "is_allowed": allowed,
+            "status": "AUTHORIZED" if allowed else "SCOPE_VIOLATION",
+        }
+    except PermissionError as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e)) from e
 
 
 # -----------------------------------------------------------------------------
@@ -119,8 +133,15 @@ async def list_tenants(
 ) -> list[TenantResponseDTO]:
     try:
         SecurityKernel.authorize(current_user, UserRole.VIEWER)
-        query = ListTenantsQuery(skip=skip, limit=limit, search=search, status=status_filter)
-        return await query_handler.list(query)
+        tenants = await query_handler.list(ListTenantsQuery(skip=skip, limit=limit, search=search, status=status_filter))
+        is_sys_admin = "system_admin" in current_user.roles
+        if not is_sys_admin:
+            user_tenant = current_user.tenant
+            return [
+                t for t in tenants
+                if str(t.id) == user_tenant or t.slug == user_tenant or t.name == user_tenant
+            ]
+        return tenants
     except PermissionError as e:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e)) from e
 
@@ -136,6 +157,9 @@ async def get_tenant_by_id(
 ) -> TenantResponseDTO:
     try:
         SecurityKernel.authorize(current_user, UserRole.VIEWER)
+        TenantAuthorizationService.authorize_tenant_access(
+            current_user, target_tenant=tenant_id, action="GET_TENANT_BY_ID"
+        )
         query = GetTenantByIdQuery(tenant_id=tenant_id)
         tenant = await query_handler.get_by_id(query)
         if not tenant:
@@ -144,6 +168,8 @@ async def get_tenant_by_id(
                 detail=f"Tenant com ID '{tenant_id}' não foi encontrado",
             )
         return tenant
+    except CrossTenantAccessDeniedError as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e)) from e
     except PermissionError as e:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e)) from e
 
@@ -199,20 +225,16 @@ async def ingest_log(
 ) -> dict[str, str]:
     try:
         SecurityKernel.authorize(current_user, UserRole.ANALYST)
-
-        # Isolamento Multi-Tenant Estrito: Não confiar em tenant_id do cliente para não-system_admin
-        is_sys_admin = "system_admin" in current_user.roles
-        if not is_sys_admin and dto.tenant_id and dto.tenant_id != current_user.tenant:
-            raise PermissionError(
-                f"Acesso negado. Usuário do tenant '{current_user.tenant}' não pode ingerir logs para o tenant '{dto.tenant_id}'."
-            )
-        effective_tenant = current_user.tenant if not is_sys_admin else (dto.tenant_id or current_user.tenant)
-
+        effective_tenant = TenantAuthorizationService.authorize_tenant_access(
+            current_user, target_tenant=dto.tenant_id, action="INGEST_LOG"
+        )
         command = IngestLogCommand(
             source=dto.source, raw_data=dto.raw_data, tenant_id=effective_tenant, timestamp=dto.timestamp
         )
         await command_bus.send(command)
         return {"status": "accepted", "message": "Log enviado para fila de ingestão"}
+    except CrossTenantAccessDeniedError as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e)) from e
     except PermissionError as e:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e)) from e
 
@@ -231,22 +253,13 @@ async def list_logs(
 ) -> list[LogResponseDTO]:
     try:
         SecurityKernel.authorize(current_user, UserRole.VIEWER)
-
-        # Isolamento Multi-Tenant Estrito
-        is_sys_admin = "system_admin" in current_user.roles
-        requested_tenant = str(tenant_id) if tenant_id else None
-
-        if not is_sys_admin:
-            if requested_tenant and requested_tenant != current_user.tenant:
-                raise PermissionError(
-                    f"Acesso negado. Usuário do tenant '{current_user.tenant}' não pode consultar logs do tenant '{requested_tenant}'."
-                )
-            effective_tenant: str | None = current_user.tenant
-        else:
-            effective_tenant = requested_tenant or current_user.tenant
-
+        effective_tenant = TenantAuthorizationService.authorize_tenant_access(
+            current_user, target_tenant=tenant_id, action="LIST_LOGS"
+        )
         query = ListLogsQuery(skip=skip, limit=limit, tenant_id=effective_tenant, source=source)
         return await query_handler.list(query)
+    except CrossTenantAccessDeniedError as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e)) from e
     except PermissionError as e:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e)) from e
 
@@ -266,15 +279,9 @@ async def acknowledge_alert(
     """
     try:
         SecurityKernel.authorize(current_user, UserRole.ANALYST)
-
-        # Isolamento Multi-Tenant Estrito
-        is_sys_admin = "system_admin" in current_user.roles
-        if not is_sys_admin and dto.tenant_id and dto.tenant_id != current_user.tenant:
-            raise PermissionError(
-                f"Acesso negado. Usuário do tenant '{current_user.tenant}' não pode reconhecer alertas do tenant '{dto.tenant_id}'."
-            )
-        effective_tenant = current_user.tenant if not is_sys_admin else (dto.tenant_id or current_user.tenant)
-
+        effective_tenant = TenantAuthorizationService.authorize_tenant_access(
+            current_user, target_tenant=dto.tenant_id, action="ACKNOWLEDGE_ALERT"
+        )
         command = AcknowledgeAlertCommand(
             alert_id=dto.alert_id,
             fingerprint=dto.fingerprint,
@@ -283,17 +290,14 @@ async def acknowledge_alert(
             tenant_id=effective_tenant,
         )
         result = await command_bus.send(command)
-        SecurityKernel.audit(
-            user={"user_id": current_user.user_id, "tenant_id": effective_tenant},
-            action="ACKNOWLEDGE_ALERT",
-            resource=f"alert:{dto.fingerprint}",
-            success=True,
-        )
         return result  # type: ignore[no-any-return]
+    except CrossTenantAccessDeniedError as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e)) from e
     except PermissionError as e:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e)) from e
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
+
 
 
 

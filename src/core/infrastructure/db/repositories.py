@@ -262,3 +262,48 @@ class InMemoryAlertAcknowledgementRepository(AlertAcknowledgementRepository):
         return filtered[skip : skip + limit]
 
 
+class InMemoryTenantRepository(TenantRepository):
+    """Repositório In-Memory para Tenants (Testes)."""
+
+    def __init__(self) -> None:
+        self._tenants: dict[UUID, Tenant] = {}
+
+    async def save(self, tenant: Tenant) -> Tenant:
+        self._tenants[tenant.id] = tenant
+        return tenant
+
+    async def get_by_id(self, tenant_id: UUID) -> Tenant | None:
+        return self._tenants.get(tenant_id)
+
+    async def get_by_slug(self, slug: str) -> Tenant | None:
+        for tenant in self._tenants.values():
+            if tenant.slug == slug:
+                return tenant
+        return None
+
+    async def list(
+        self,
+        skip: int = 0,
+        limit: int = 100,
+        search: str | None = None,
+        status: str | None = None,
+    ) -> list[Tenant]:
+        results = list(self._tenants.values())
+        if search:
+            s = search.lower()
+            results = [t for t in results if s in t.name.lower() or s in t.slug.lower()]
+        if status:
+            results = [t for t in results if str(t.status) == status or (hasattr(t.status, "value") and t.status.value == status)]
+        return results[skip : skip + limit]
+
+    async def delete(self, tenant_id: UUID) -> bool:
+        tenant = self._tenants.get(tenant_id)
+        if tenant:
+            tenant.status = TenantStatus.INACTIVE if hasattr(TenantStatus, "INACTIVE") else "INACTIVE"
+            return True
+        return False
+
+
+
+
+

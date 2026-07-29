@@ -12,23 +12,23 @@ import jwt
 from src.core.infrastructure.config import settings
 from src.core.infrastructure.security.revocation import (
     BaseTokenRevocationStore,
-)
-from src.core.infrastructure.security.revocation import (
-    revocation_store as _global_revocation_store,
+    get_token_revocation_store,
 )
 
 
 class JWTHandler:
-    _revocation_store: BaseTokenRevocationStore = _global_revocation_store
+    _override_store: BaseTokenRevocationStore | None = None
 
     @classmethod
-    def set_revocation_store(cls, store: BaseTokenRevocationStore) -> None:
+    def set_revocation_store(cls, store: BaseTokenRevocationStore | None) -> None:
         """Permite a injeção/mocking do token revocation store em testes."""
-        cls._revocation_store = store
+        cls._override_store = store
 
     @classmethod
     def get_revocation_store(cls) -> BaseTokenRevocationStore:
-        return cls._revocation_store
+        if cls._override_store is not None:
+            return cls._override_store
+        return get_token_revocation_store()
 
     @staticmethod
     def generate_token(
@@ -71,16 +71,41 @@ class JWTHandler:
         )
 
     @classmethod
+    async def verify_token_async(cls, token: str) -> dict[str, Any] | None:
+        try:
+            payload: dict[str, Any] = jwt.decode(
+                token, settings.GOVSEC_JWT_SECRET, algorithms=[settings.GOVSEC_JWT_ALGORITHM]
+            )
+            store = cls.get_revocation_store()
+            if await store.is_revoked(token, payload):
+                return None
+            return payload
+        except jwt.PyJWTError:
+            return None
+
+    @classmethod
     def verify_token(cls, token: str) -> dict[str, Any] | None:
         try:
             payload: dict[str, Any] = jwt.decode(
                 token, settings.GOVSEC_JWT_SECRET, algorithms=[settings.GOVSEC_JWT_ALGORITHM]
             )
-            if cls._revocation_store.is_revoked(token, payload):
+            store = cls.get_revocation_store()
+            if store.is_revoked_sync(token, payload):
                 return None
             return payload
         except jwt.PyJWTError:
             return None
+
+    @classmethod
+    async def refresh_token_async(cls, refresh_token: str) -> str:
+        payload = await cls.verify_token_async(refresh_token)
+        if not payload or payload.get("token_type") != "refresh":
+            raise ValueError("Refresh Token inválido ou expirado.")
+
+        user_id = payload["sub"]
+        tenant_id = payload.get("tenant_id") or payload.get("tenant", "betim")
+        roles = payload.get("roles", ["viewer"])
+        return cls.generate_token(user_id=user_id, tenant_id=tenant_id, roles=roles)
 
     @classmethod
     def refresh_token(cls, refresh_token: str) -> str:
@@ -94,9 +119,17 @@ class JWTHandler:
         return cls.generate_token(user_id=user_id, tenant_id=tenant_id, roles=roles)
 
     @classmethod
+    async def blacklist_token_async(cls, token: str) -> None:
+        payload = await cls.verify_token_async(token)
+        store = cls.get_revocation_store()
+        await store.revoke(token, payload)
+
+    @classmethod
     def blacklist_token(cls, token: str) -> None:
         payload = cls.verify_token(token)
-        cls._revocation_store.revoke(token, payload)
+        store = cls.get_revocation_store()
+        store.revoke_sync(token, payload)
+
 
 
 class JWTUtils(JWTHandler):
@@ -107,11 +140,16 @@ class JWTUtils(JWTHandler):
         expires_in = int(expires_delta.total_seconds()) if expires_delta else settings.GOVSEC_JWT_EXPIRE_MINUTES * 60
         return JWTHandler.generate_token(user_id=user_id, tenant_id=tenant, roles=roles, expires_in=expires_in)
 
+    @classmethod
+    async def decode_token_async(cls, token: str) -> dict[str, Any]:
+        verified = await JWTHandler.verify_token_async(token)
+        if verified is None:
+            raise jwt.PyJWTError("Token inválido ou revogado.")
+        return verified
+
     @staticmethod
     def decode_token(token: str) -> dict[str, Any]:
         verified = JWTHandler.verify_token(token)
         if verified is None:
             raise jwt.PyJWTError("Token inválido ou revogado.")
         return verified
-
-

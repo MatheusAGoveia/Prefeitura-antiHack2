@@ -3,6 +3,7 @@ Suíte de Testes de Integração e Contratos — Fechamento Capability M2
 GovSec Shield — SRE & Monitoring Integration Tests
 """
 
+import asyncio
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
@@ -52,11 +53,11 @@ def test_settings_environment_validation_success(tmp_path: pytest.TempPathFactor
         GOVSEC_ALERTMANAGER_CONFIG=str(valid_rendered),
         GOVSEC_SLACK_WEBHOOK_URL="https://hooks.slack.com/services/T00/B00/X00",
         GOVSEC_PAGERDUTY_SERVICE_KEY="pd-service-key-12345",
+        GOVSEC_CORS_ALLOWED_ORIGINS=["https://govsec.prefeitura.gov.br"],
     )
     assert s_prod.GOVSEC_ENV == "production"
     s = Settings(GOVSEC_ALERTMANAGER_CONFIG=str(valid_rendered))
     assert str(valid_rendered) == s.GOVSEC_ALERTMANAGER_CONFIG
-
 
 
 def test_settings_production_fails_with_default_or_short_jwt_secret():
@@ -65,13 +66,16 @@ def test_settings_production_fails_with_default_or_short_jwt_secret():
         Settings(
             GOVSEC_ENV="production",
             GOVSEC_JWT_SECRET="super-secret-govsec-key-change-in-production",
+            GOVSEC_CORS_ALLOWED_ORIGINS=["https://govsec.prefeitura.gov.br"],
         )
 
     with pytest.raises(ValueError, match="menos de 32 caracteres"):
         Settings(
             GOVSEC_ENV="production",
             GOVSEC_JWT_SECRET="curto-123",
+            GOVSEC_CORS_ALLOWED_ORIGINS=["https://govsec.prefeitura.gov.br"],
         )
+
 
 
 def test_dev_token_endpoint_disabled_outside_dev_env(client: TestClient, monkeypatch: pytest.MonkeyPatch):
@@ -375,6 +379,7 @@ def test_production_fails_if_alertmanager_config_points_to_local_yml(monkeypatch
     monkeypatch.setenv("GOVSEC_ALERTMANAGER_CONFIG", "deploy/alertmanager/alertmanager.yml")
     monkeypatch.setenv("GOVSEC_SLACK_WEBHOOK_URL", "https://hooks.slack.com/services/T00/B00/X00")
     monkeypatch.setenv("GOVSEC_PAGERDUTY_SERVICE_KEY", "pd-service-key-12345")
+    monkeypatch.setenv("GOVSEC_CORS_ALLOWED_ORIGINS", '["https://govsec.prefeitura.gov.br"]')
 
     with pytest.raises(ValueError, match="não pode utilizar o arquivo local 'alertmanager.yml'"):
         Settings()
@@ -389,6 +394,7 @@ def test_production_fails_if_rendered_config_file_does_not_exist(monkeypatch: py
     monkeypatch.setenv("GOVSEC_ALERTMANAGER_CONFIG", "deploy/alertmanager/non_existent.rendered.yml")
     monkeypatch.setenv("GOVSEC_SLACK_WEBHOOK_URL", "https://hooks.slack.com/services/T00/B00/X00")
     monkeypatch.setenv("GOVSEC_PAGERDUTY_SERVICE_KEY", "pd-service-key-12345")
+    monkeypatch.setenv("GOVSEC_CORS_ALLOWED_ORIGINS", '["https://govsec.prefeitura.gov.br"]')
 
     with pytest.raises(FileNotFoundError, match="não foi encontrado"):
         Settings()
@@ -402,6 +408,7 @@ def test_production_fails_without_slack_or_pagerduty_secrets(
 
     monkeypatch.setenv("GOVSEC_ENV", "production")
     monkeypatch.setenv("GOVSEC_JWT_SECRET", "super-secret-govsec-key-32-chars-long-prod")
+    monkeypatch.setenv("GOVSEC_CORS_ALLOWED_ORIGINS", '["https://govsec.prefeitura.gov.br"]')
 
     valid_rendered = tmp_path / "valid.rendered.yml"
     valid_rendered.write_text("global:\n  resolve_timeout: 5m\nreceivers:\n  - name: prod-receiver\n")
@@ -423,6 +430,7 @@ def test_production_accepts_only_validated_rendered_config(
 
     monkeypatch.setenv("GOVSEC_ENV", "production")
     monkeypatch.setenv("GOVSEC_JWT_SECRET", "super-secret-govsec-key-32-chars-long-prod")
+    monkeypatch.setenv("GOVSEC_CORS_ALLOWED_ORIGINS", '["https://govsec.prefeitura.gov.br"]')
 
     valid_rendered = tmp_path / "alertmanager.rendered.yml"
     valid_rendered.write_text("global:\n  resolve_timeout: 5m\nreceivers:\n  - name: prod-receiver\n")
@@ -432,6 +440,7 @@ def test_production_accepts_only_validated_rendered_config(
 
     s = Settings()
     assert str(valid_rendered) == s.GOVSEC_ALERTMANAGER_CONFIG
+
 
 
 # -----------------------------------------------------------------------------
@@ -565,7 +574,140 @@ def test_redis_token_revocation_fail_closed_in_production(monkeypatch: pytest.Mo
     store = RedisTokenRevocationStore(redis_url="redis://invalid_host_12345:6379/0")
 
     with pytest.raises(RuntimeError, match="FAIL-CLOSED"):
-        store.is_revoked("some_token")
+        asyncio.run(store.is_revoked("some_token"))
+
+
+def test_check_scope_unauthenticated_returns_401():
+    """Garante que POST /api/v1/security/check-scope sem token retorna 401."""
+    from src.api.main import app
+
+    client = TestClient(app)
+    res = client.post("/api/v1/security/check-scope", json={"target_ip": "10.1.0.5"})
+    assert res.status_code == 401
+
+
+def test_check_scope_viewer_role_returns_403():
+    """Garante que usuário com role 'viewer' recebe 403 ao acessar check-scope."""
+    from src.api.main import app
+
+    client = TestClient(app)
+    token = JWTHandler.generate_token(user_id="user-viewer", tenant_id="betim", roles=["viewer"])
+    res = client.post(
+        "/api/v1/security/check-scope",
+        json={"target_ip": "10.1.0.5"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert res.status_code == 403
+
+
+def test_check_scope_analyst_role_returns_200():
+    """Garante que usuário com role 'analyst' acessa check-scope com sucesso."""
+    from src.api.main import app
+
+    client = TestClient(app)
+    token = JWTHandler.generate_token(user_id="user-analyst", tenant_id="betim", roles=["analyst"])
+    res = client.post(
+        "/api/v1/security/check-scope",
+        json={"target_ip": "10.200.1.5"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert res.status_code == 200
+    assert res.json()["is_allowed"] is True
+
+
+
+def test_get_tenant_by_id_cross_tenant_forbidden_for_normal_user():
+    """Garante que GET /api/v1/tenants/{id} para um tenant diferente retorna 403."""
+    from uuid import uuid4
+
+    from src.api.main import app
+
+    client = TestClient(app)
+    token = JWTHandler.generate_token(user_id="user-norm", tenant_id="tenant-a", roles=["viewer"])
+    other_tenant_id = str(uuid4())
+
+    res = client.get(
+        f"/api/v1/tenants/{other_tenant_id}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert res.status_code == 403
+
+
+def test_list_tenants_restricted_to_own_tenant_for_normal_user():
+    """Garante que GET /api/v1/tenants retorna apenas o próprio tenant para usuário comum."""
+    from uuid import uuid4
+
+    from src.api.main import app
+    from src.core.application.queries import TenantQueryHandler
+    from src.core.domain.entities import Tenant
+    from src.core.infrastructure.db.repositories import InMemoryTenantRepository
+    from src.core.interfaces.rest.dependencies import get_query_handler
+
+    repo = InMemoryTenantRepository()
+    t1 = Tenant(id=uuid4(), name="Prefeitura de Betim", slug="betim")
+    t2 = Tenant(id=uuid4(), name="Prefeitura de Contagem", slug="contagem")
+    repo._tenants[t1.id] = t1
+    repo._tenants[t2.id] = t2
+
+    query_handler = TenantQueryHandler(tenant_repo=repo)
+    app.dependency_overrides[get_query_handler] = lambda: query_handler
+
+
+    try:
+        client = TestClient(app)
+        token = JWTHandler.generate_token(user_id="user-norm", tenant_id="betim", roles=["viewer"])
+
+        res = client.get(
+            "/api/v1/tenants",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert res.status_code == 200
+        tenants = res.json()
+        assert len(tenants) == 1
+        assert tenants[0]["slug"] == "betim"
+    finally:
+        app.dependency_overrides.pop(get_query_handler, None)
+
+
+
+@pytest.mark.asyncio
+async def test_async_token_revocation_ttl_and_check():
+    """Garante que revocation_store assíncrona registra revogação com JTI e expiração."""
+    from src.core.infrastructure.security.revocation import InMemoryTokenRevocationStore
+
+    store = InMemoryTokenRevocationStore()
+    token = JWTHandler.generate_token(user_id="user-rev", tenant_id="betim", roles=["analyst"])
+    payload = JWTHandler.verify_token(token)
+
+    assert await store.is_revoked(token, payload) is False
+    await store.revoke(token, payload)
+    assert await store.is_revoked(token, payload) is True
+
+
+def test_cors_origins_json_list_parsing(monkeypatch: pytest.MonkeyPatch):
+    """Garante que GOVSEC_CORS_ALLOWED_ORIGINS aceita formato JSON list."""
+    from src.core.infrastructure.config import Settings
+
+    monkeypatch.setenv("GOVSEC_CORS_ALLOWED_ORIGINS", '["http://localhost:3000", "http://127.0.0.1:3000"]')
+    s = Settings()
+    assert "http://localhost:3000" in s.GOVSEC_CORS_ALLOWED_ORIGINS
+    assert "http://127.0.0.1:3000" in s.GOVSEC_CORS_ALLOWED_ORIGINS
+
+
+def test_cors_prohibits_local_hosts_in_production(monkeypatch: pytest.MonkeyPatch):
+    """Garante que GOVSEC_CORS_ALLOWED_ORIGINS rejeita origens locais em produção."""
+    from src.core.infrastructure.config import Settings
+
+    monkeypatch.setenv("GOVSEC_ENV", "production")
+    monkeypatch.setenv("GOVSEC_JWT_SECRET", "super-secret-govsec-key-32-chars-long-prod")
+    monkeypatch.setenv("GOVSEC_ALERTMANAGER_CONFIG", "deploy/alertmanager/alertmanager.rendered.yml")
+    monkeypatch.setenv("GOVSEC_SLACK_WEBHOOK_URL", "https://hooks.slack.com/services/T00/B00/X00")
+    monkeypatch.setenv("GOVSEC_PAGERDUTY_SERVICE_KEY", "pd-service-key-12345")
+    monkeypatch.setenv("GOVSEC_CORS_ALLOWED_ORIGINS", "http://localhost:3000")
+
+    with pytest.raises(ValueError, match="estritamente proibida"):
+        Settings()
+
 
 
 

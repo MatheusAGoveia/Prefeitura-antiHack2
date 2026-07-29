@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     GOVSEC_SLACK_WEBHOOK_FILE: str = ""
     GOVSEC_PAGERDUTY_SERVICE_KEY: str = ""
     GOVSEC_PAGERDUTY_SERVICE_FILE: str = ""
-    GOVSEC_CORS_ALLOWED_ORIGINS: list[str] = [
+    GOVSEC_CORS_ALLOWED_ORIGINS: list[str] | str = [
         "http://localhost:3000",
         "http://127.0.0.1:3000",
     ]
@@ -39,9 +39,20 @@ class Settings(BaseSettings):
         if isinstance(data, dict):
             origins = data.get("GOVSEC_CORS_ALLOWED_ORIGINS")
             if isinstance(origins, str):
-                data["GOVSEC_CORS_ALLOWED_ORIGINS"] = [
-                    o.strip() for o in origins.split(",") if o.strip()
-                ]
+                origins_str = origins.strip()
+                if origins_str.startswith("[") and origins_str.endswith("]"):
+                    import json
+
+                    try:
+                        parsed = json.loads(origins_str)
+                        if isinstance(parsed, list):
+                            data["GOVSEC_CORS_ALLOWED_ORIGINS"] = [str(o).strip() for o in parsed if str(o).strip()]
+                    except Exception:
+                        data["GOVSEC_CORS_ALLOWED_ORIGINS"] = [o.strip() for o in origins_str.split(",") if o.strip()]
+                else:
+                    data["GOVSEC_CORS_ALLOWED_ORIGINS"] = [
+                        o.strip() for o in origins_str.split(",") if o.strip()
+                    ]
         return data
 
     @model_validator(mode="after")
@@ -50,12 +61,24 @@ class Settings(BaseSettings):
         if self.GOVSEC_ENV not in valid_envs:
             raise ValueError(f"GOVSEC_ENV inválido ('{self.GOVSEC_ENV}'). Escolha entre {valid_envs}.")
 
+        # Garantir lista de strings para CORS
+        if isinstance(self.GOVSEC_CORS_ALLOWED_ORIGINS, str):
+            cors_origins = [o.strip() for o in self.GOVSEC_CORS_ALLOWED_ORIGINS.split(",") if o.strip()]
+            self.GOVSEC_CORS_ALLOWED_ORIGINS = cors_origins
+        else:
+            cors_origins = [o.strip() for o in self.GOVSEC_CORS_ALLOWED_ORIGINS]
+
         # Validação Global de CORS
-        cors_origins = [o.strip() for o in self.GOVSEC_CORS_ALLOWED_ORIGINS]
         if "*" in cors_origins:
             raise ValueError(
                 "CORS Proibido: Wildcard '*' não é permitido em GOVSEC_CORS_ALLOWED_ORIGINS quando credenciais estão ativas."
             )
+
+        for origin in cors_origins:
+            if not origin.startswith(("http://", "https://")):
+                raise ValueError(
+                    f"Origem CORS inválida ('{origin}'). Deve iniciar obrigatoriamente com 'http://' ou 'https://'."
+                )
 
         if self.GOVSEC_ENV in ("staging", "production"):
             if not cors_origins:
@@ -63,21 +86,27 @@ class Settings(BaseSettings):
                     f"Em ambiente '{self.GOVSEC_ENV}', GOVSEC_CORS_ALLOWED_ORIGINS deve ser configurado com origens explícitas."
                 )
 
+            for origin in cors_origins:
+                if "localhost" in origin or "127.0.0.1" in origin:
+                    raise ValueError(
+                        f"Em ambiente '{self.GOVSEC_ENV}', a origem local '{origin}' é estritamente proibida em GOVSEC_CORS_ALLOWED_ORIGINS."
+                    )
+
             default_secret = "super-secret-govsec-key-change-in-production"
             if default_secret == self.GOVSEC_JWT_SECRET or len(self.GOVSEC_JWT_SECRET) < 32:
                 raise ValueError(
                     f"Em ambiente '{self.GOVSEC_ENV}', GOVSEC_JWT_SECRET não pode usar o valor padrão ou ter menos de 32 caracteres."
                 )
 
-
             # 1. Impedir uso do arquivo local alertmanager.yml em staging/production
             config_path = self.GOVSEC_ALERTMANAGER_CONFIG.strip()
-            if not config_path or config_path.endswith("alertmanager.yml"):
+            if not config_path or (config_path.endswith("alertmanager.yml") and not config_path.endswith(".rendered.yml")):
                 raise ValueError(
                     f"Em ambiente '{self.GOVSEC_ENV}', GOVSEC_ALERTMANAGER_CONFIG não pode utilizar o arquivo local 'alertmanager.yml'. Deve apontar para o arquivo renderizado (ex: deploy/alertmanager/alertmanager.rendered.yml)."
                 )
 
             # 2. Exigir existência do arquivo renderizado
+
             import os
 
             if not os.path.exists(config_path):

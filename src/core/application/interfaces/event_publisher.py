@@ -1,5 +1,5 @@
 """
-Interfaces para serviços da camada de Aplicação
+Interfaces para publicação de eventos de domínio (Clean Architecture)
 GovSec Shield — Application Interfaces
 """
 

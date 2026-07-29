@@ -1,0 +1,29 @@
+# ==============================================================================
+# GovSec Shield — Docker Compose de Produção/Staging (Hardened Profile)
+# ==============================================================================
+# Este arquivo estende o docker-compose.yml base adicionando o serviço init
+# de preflight obrigatório do Alertmanager (init-alertmanager-preflight).
+# ==============================================================================
+
+services:
+  init-alertmanager-preflight:
+    image: python:3.12-slim
+    container_name: govsec-alertmanager-preflight
+    environment:
+      GOVSEC_ENV: ${GOVSEC_ENV:-production}
+      GOVSEC_ALERTMANAGER_CONFIG: ${GOVSEC_ALERTMANAGER_CONFIG:-deploy/alertmanager/alertmanager.rendered.yml}
+      GOVSEC_SLACK_WEBHOOK_URL: ${GOVSEC_SLACK_WEBHOOK_URL:-}
+      GOVSEC_SLACK_WEBHOOK_FILE: ${GOVSEC_SLACK_WEBHOOK_FILE:-}
+      GOVSEC_PAGERDUTY_SERVICE_KEY: ${GOVSEC_PAGERDUTY_SERVICE_KEY:-}
+      GOVSEC_PAGERDUTY_SERVICE_FILE: ${GOVSEC_PAGERDUTY_SERVICE_FILE:-}
+    volumes:
+      - ../../:/app:ro
+    working_dir: /app
+    command: ["python", "scripts/validate_alertmanager_deploy.py"]
+
+  alertmanager:
+    depends_on:
+      init-alertmanager-preflight:
+        condition: service_completed_successfully
+    volumes:
+      - ${GOVSEC_ALERTMANAGER_CONFIG:-../../deploy/alertmanager/alertmanager.rendered.yml}:/etc/alertmanager/alertmanager.yml:ro
