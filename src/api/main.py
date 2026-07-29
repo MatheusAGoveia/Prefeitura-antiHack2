@@ -15,6 +15,7 @@ from fastapi.responses import HTMLResponse
 from src.api.dashboard_api import router as dashboard_router
 from src.api.middleware.auth import AuthenticationMiddleware
 from src.api.middleware.recovery import RecoveryMiddleware
+from src.core.infrastructure.config import settings
 from src.core.infrastructure.db.models import Base
 from src.core.infrastructure.db.unit_of_work import engine
 from src.core.interfaces.rest.auth_routers import router as auth_router
@@ -82,11 +83,12 @@ app.add_middleware(AuthenticationMiddleware)
 app.add_middleware(PrometheusMetricsMiddleware)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000", "*"],
+    allow_origins=settings.GOVSEC_CORS_ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 # RecoveryMiddleware deve ser o mais externo (último a ser adicionado)
 app.add_middleware(RecoveryMiddleware)
 

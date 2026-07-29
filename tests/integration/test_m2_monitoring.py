@@ -54,6 +54,8 @@ def test_settings_environment_validation_success(tmp_path: pytest.TempPathFactor
         GOVSEC_PAGERDUTY_SERVICE_KEY="pd-service-key-12345",
     )
     assert s_prod.GOVSEC_ENV == "production"
+    s = Settings(GOVSEC_ALERTMANAGER_CONFIG=str(valid_rendered))
+    assert str(valid_rendered) == s.GOVSEC_ALERTMANAGER_CONFIG
 
 
 
@@ -430,6 +432,142 @@ def test_production_accepts_only_validated_rendered_config(
 
     s = Settings()
     assert str(valid_rendered) == s.GOVSEC_ALERTMANAGER_CONFIG
+
+
+# -----------------------------------------------------------------------------
+# 9. Testes de Segurança Operacional M2 (Bloqueadores 1-7)
+# -----------------------------------------------------------------------------
+
+def test_auth_token_issuance_forbidden_outside_dev(monkeypatch: pytest.MonkeyPatch):
+    """Garante que POST /api/v1/auth/token retorna 403 fora do ambiente dev."""
+    from src.api.main import app
+    from src.core.infrastructure.config import settings
+
+    client = TestClient(app)
+    monkeypatch.setattr(settings, "GOVSEC_ENV", "production")
+    monkeypatch.setenv("GOVSEC_ENV", "production")
+    res = client.post(
+        "/api/v1/auth/token",
+        json={"user_id": "hacker", "tenant": "betim", "roles": ["system_admin"]},
+    )
+    assert res.status_code == 403
+
+
+def test_auth_dev_token_forbidden_outside_dev(monkeypatch: pytest.MonkeyPatch):
+    """Garante que POST /api/v1/auth/dev-token retorna 403 fora do ambiente dev."""
+    from src.api.main import app
+    from src.core.infrastructure.config import settings
+
+    client = TestClient(app)
+    monkeypatch.setattr(settings, "GOVSEC_ENV", "production")
+    monkeypatch.setenv("GOVSEC_ENV", "production")
+    res = client.post(
+        "/api/v1/auth/dev-token",
+        json={"user_id": "hacker", "tenant": "betim", "role": "system_admin"},
+    )
+    assert res.status_code == 403
+
+
+def test_simulated_login_forbidden_in_production(monkeypatch: pytest.MonkeyPatch):
+    """Garante que o login simulado em POST /api/v1/auth/login é bloqueado em staging/produção."""
+    from src.api.main import app
+    from src.core.infrastructure.config import settings
+
+    client = TestClient(app)
+    monkeypatch.setattr(settings, "GOVSEC_ENV", "production")
+    monkeypatch.setenv("GOVSEC_ENV", "production")
+    res = client.post(
+        "/api/v1/auth/login",
+        json={"email": "admin@govsec.com", "password": "senha123"},
+    )
+    assert res.status_code == 403
+    assert "Provedor de Identidade" in res.json()["detail"]
+
+
+def test_strict_multi_tenant_isolation_log_ingestion():
+    """Garante que usuário do tenant A não pode ingerir logs para tenant B."""
+    from uuid import uuid4
+
+    from src.api.main import app
+
+    client = TestClient(app)
+    token_tenant_a = JWTHandler.generate_token(user_id="user-a", tenant_id="tenant-a", roles=["analyst"])
+    tenant_b_id = str(uuid4())
+
+    res = client.post(
+        "/api/v1/logs",
+        json={"source": "syslog", "raw_data": "tentativa de invasao", "tenant_id": tenant_b_id},
+        headers={"Authorization": f"Bearer {token_tenant_a}"},
+    )
+    assert res.status_code == 403
+
+
+def test_strict_multi_tenant_isolation_log_query():
+    """Garante que usuário do tenant A não pode consultar logs do tenant B."""
+    from uuid import uuid4
+
+    from src.api.main import app
+
+    client = TestClient(app)
+    token_tenant_a = JWTHandler.generate_token(user_id="user-a", tenant_id="tenant-a", roles=["viewer"])
+    tenant_b_id = str(uuid4())
+
+    res = client.get(
+        f"/api/v1/logs?tenant_id={tenant_b_id}",
+        headers={"Authorization": f"Bearer {token_tenant_a}"},
+    )
+    assert res.status_code == 403
+
+
+def test_strict_multi_tenant_isolation_alert_ack():
+    """Garante que usuário do tenant A não pode reconhecer alertas do tenant B."""
+    from src.api.main import app
+
+    client = TestClient(app)
+    token_tenant_a = JWTHandler.generate_token(user_id="user-a", tenant_id="tenant-a", roles=["analyst"])
+
+    res = client.post(
+        "/api/v1/alerts/acknowledge",
+        json={"alert_id": "123", "fingerprint": "abc", "reason": "teste", "tenant_id": "tenant-b"},
+        headers={"Authorization": f"Bearer {token_tenant_a}"},
+    )
+    assert res.status_code == 403
+
+
+def test_cors_wildcard_prohibited_when_credentials_allowed():
+    """Garante que wildcard '*' no CORS é rejeitado quando credenciais estão ativas."""
+    from src.core.infrastructure.config import Settings
+
+    with pytest.raises(ValueError, match="CORS Proibido"):
+        Settings(GOVSEC_CORS_ALLOWED_ORIGINS=["*"])
+
+
+def test_validate_alertmanager_deploy_script_production_failure(
+    tmp_path: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+):
+    """Garante que scripts/validate_alertmanager_deploy.py retorna 1 em produção se ausente o arquivo renderizado."""
+    from scripts.validate_alertmanager_deploy import validate_deploy
+    from src.core.infrastructure.config import settings
+
+    monkeypatch.setattr(settings, "GOVSEC_ENV", "production")
+    monkeypatch.setenv("GOVSEC_ENV", "production")
+    monkeypatch.setenv("GOVSEC_ALERTMANAGER_CONFIG", "deploy/alertmanager/non_existent.rendered.yml")
+    assert validate_deploy() == 1
+
+
+def test_redis_token_revocation_fail_closed_in_production(monkeypatch: pytest.MonkeyPatch):
+    """Garante comportamento Fail-Closed se o Redis de revogação falhar em produção."""
+    from src.core.infrastructure.config import settings
+    from src.core.infrastructure.security.revocation import RedisTokenRevocationStore
+
+    monkeypatch.setattr(settings, "GOVSEC_ENV", "production")
+    monkeypatch.setenv("GOVSEC_ENV", "production")
+    store = RedisTokenRevocationStore(redis_url="redis://invalid_host_12345:6379/0")
+
+    with pytest.raises(RuntimeError, match="FAIL-CLOSED"):
+        store.is_revoked("some_token")
+
+
 
 
 

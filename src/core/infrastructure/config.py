@@ -3,6 +3,8 @@ Configurações da Plataforma
 GovSec Shield — Infrastructure Config
 """
 
+from typing import Any
+
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -24,9 +26,23 @@ class Settings(BaseSettings):
     GOVSEC_SLACK_WEBHOOK_FILE: str = ""
     GOVSEC_PAGERDUTY_SERVICE_KEY: str = ""
     GOVSEC_PAGERDUTY_SERVICE_FILE: str = ""
-
+    GOVSEC_CORS_ALLOWED_ORIGINS: list[str] = [
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ]
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+
+    @model_validator(mode="before")
+    @classmethod
+    def parse_cors_origins(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            origins = data.get("GOVSEC_CORS_ALLOWED_ORIGINS")
+            if isinstance(origins, str):
+                data["GOVSEC_CORS_ALLOWED_ORIGINS"] = [
+                    o.strip() for o in origins.split(",") if o.strip()
+                ]
+        return data
 
     @model_validator(mode="after")
     def validate_environment_and_secrets(self) -> "Settings":
@@ -34,12 +50,25 @@ class Settings(BaseSettings):
         if self.GOVSEC_ENV not in valid_envs:
             raise ValueError(f"GOVSEC_ENV inválido ('{self.GOVSEC_ENV}'). Escolha entre {valid_envs}.")
 
+        # Validação Global de CORS
+        cors_origins = [o.strip() for o in self.GOVSEC_CORS_ALLOWED_ORIGINS]
+        if "*" in cors_origins:
+            raise ValueError(
+                "CORS Proibido: Wildcard '*' não é permitido em GOVSEC_CORS_ALLOWED_ORIGINS quando credenciais estão ativas."
+            )
+
         if self.GOVSEC_ENV in ("staging", "production"):
+            if not cors_origins:
+                raise ValueError(
+                    f"Em ambiente '{self.GOVSEC_ENV}', GOVSEC_CORS_ALLOWED_ORIGINS deve ser configurado com origens explícitas."
+                )
+
             default_secret = "super-secret-govsec-key-change-in-production"
             if default_secret == self.GOVSEC_JWT_SECRET or len(self.GOVSEC_JWT_SECRET) < 32:
                 raise ValueError(
                     f"Em ambiente '{self.GOVSEC_ENV}', GOVSEC_JWT_SECRET não pode usar o valor padrão ou ter menos de 32 caracteres."
                 )
+
 
             # 1. Impedir uso do arquivo local alertmanager.yml em staging/production
             config_path = self.GOVSEC_ALERTMANAGER_CONFIG.strip()

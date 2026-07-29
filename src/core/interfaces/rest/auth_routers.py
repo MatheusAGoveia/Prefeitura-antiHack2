@@ -1,3 +1,6 @@
+from abc import ABC, abstractmethod
+from typing import Any
+
 from fastapi import APIRouter, Header, HTTPException, status
 from pydantic import BaseModel, Field
 
@@ -6,6 +9,28 @@ from src.core.infrastructure.security.jwt import JWTHandler
 from src.core.infrastructure.security.kernel import SecurityKernel
 
 router = APIRouter(prefix="/api/v1/auth", tags=["Authentication"])
+
+
+class AuthenticationProviderPort(ABC):
+    """Porta para integração com Provedores de Identidade Externos (OIDC/OAuth2/Keycloak)."""
+
+    @abstractmethod
+    async def authenticate_credentials(
+        self, email: str, password: str, tenant_id: str | None = None
+    ) -> dict[str, Any]:
+        pass
+
+
+class DefaultOIDCAuthenticationProvider(AuthenticationProviderPort):
+    """Implementação Padrão Fail-Closed quando nenhum provedor OIDC está configurado."""
+
+    async def authenticate_credentials(
+        self, email: str, password: str, tenant_id: str | None = None
+    ) -> dict[str, Any]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Provedor de Identidade (OIDC/OAuth2) não configurado para staging/produção (Fail-Closed).",
+        )
 
 
 class LoginDTO(BaseModel):
@@ -42,7 +67,7 @@ class LogoutResponseDTO(BaseModel):
 
 
 def _resolve_roles_for_user(email: str) -> list[str]:
-    """Mapeia o e-mail do usuário para roles específicas com menor privilégio."""
+    """Mapeia o e-mail do usuário para roles específicas com menor privilégio em dev/test."""
     email_lower = email.lower()
     if email_lower.startswith("admin@") or email_lower.startswith("sysadmin@"):
         return ["system_admin"]
@@ -58,8 +83,13 @@ def _resolve_roles_for_user(email: str) -> list[str]:
 @router.post("/login", response_model=LoginResponseDTO)
 async def login(dto: LoginDTO) -> LoginResponseDTO:
     """
-    Autentica usuário e retorna Access Token e Refresh Token JWT com menor privilégio.
+    Autentica usuário e retorna Access Token e Refresh Token JWT.
+    Bloqueado em staging e production (Fail-Closed).
     """
+    if settings.GOVSEC_ENV not in ("dev", "test"):
+        provider = DefaultOIDCAuthenticationProvider()
+        await provider.authenticate_credentials(dto.email, dto.password, dto.tenant_id)
+
     if not dto.email or not dto.password:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Email e senha são obrigatórios."
@@ -74,7 +104,7 @@ async def login(dto: LoginDTO) -> LoginResponseDTO:
 
     SecurityKernel.audit(
         user={"user_id": user_id, "tenant_id": tenant_id},
-        action="LOGIN",
+        action="LOGIN_SIMULATED",
         resource="auth",
         success=True,
     )
@@ -85,6 +115,7 @@ async def login(dto: LoginDTO) -> LoginResponseDTO:
         token_type="Bearer",
         expires_in=28800,
     )
+
 
 
 @router.post("/dev-token", response_model=LoginResponseDTO)

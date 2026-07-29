@@ -20,9 +20,13 @@ PUBLIC_PATH_PREFIXES = (
     "/docs",
     "/redoc",
     "/openapi.json",
-    "/api/v1/auth/",
+    "/api/v1/auth/login",
+    "/api/v1/auth/dev-token",
+    "/api/v1/auth/token",
+    "/api/v1/auth/refresh",
     "/api/v1/security/check-scope",
 )
+
 
 
 class AuthenticationMiddleware(BaseHTTPMiddleware):

@@ -32,6 +32,7 @@ from src.core.application.queries import (
     LogQueryHandler,
     TenantQueryHandler,
 )
+from src.core.infrastructure.config import settings
 from src.core.infrastructure.messaging.command_bus import CommandBus
 from src.core.infrastructure.security.jwt import JWTUtils
 from src.core.infrastructure.security.kernel import AuthenticatedUser, SecurityKernel
@@ -59,11 +60,17 @@ class ScopeCheckDTO(BaseModel):
 
 @router.post("/auth/token")
 async def generate_token(dto: TokenRequestDTO) -> dict[str, str]:
-    """Gera token JWT assinado para autenticação na API."""
+    """Gera token JWT assinado para autenticação na API (apenas dev)."""
+    if settings.GOVSEC_ENV != "dev":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Endpoint de emissão direta de token desabilitado fora do ambiente 'dev'.",
+        )
     token = JWTUtils.create_access_token(
         user_id=dto.user_id, tenant=dto.tenant, roles=dto.roles
     )
     return {"access_token": token, "token_type": "Bearer"}
+
 
 
 @router.post("/security/check-scope")
@@ -192,8 +199,17 @@ async def ingest_log(
 ) -> dict[str, str]:
     try:
         SecurityKernel.authorize(current_user, UserRole.ANALYST)
+
+        # Isolamento Multi-Tenant Estrito: Não confiar em tenant_id do cliente para não-system_admin
+        is_sys_admin = "system_admin" in current_user.roles
+        if not is_sys_admin and dto.tenant_id and dto.tenant_id != current_user.tenant:
+            raise PermissionError(
+                f"Acesso negado. Usuário do tenant '{current_user.tenant}' não pode ingerir logs para o tenant '{dto.tenant_id}'."
+            )
+        effective_tenant = current_user.tenant if not is_sys_admin else (dto.tenant_id or current_user.tenant)
+
         command = IngestLogCommand(
-            source=dto.source, raw_data=dto.raw_data, tenant_id=dto.tenant_id, timestamp=dto.timestamp
+            source=dto.source, raw_data=dto.raw_data, tenant_id=effective_tenant, timestamp=dto.timestamp
         )
         await command_bus.send(command)
         return {"status": "accepted", "message": "Log enviado para fila de ingestão"}
@@ -208,14 +224,28 @@ async def ingest_log(
 async def list_logs(
     skip: int = Query(0, ge=0, description="Offset de paginação"),
     limit: int = Query(100, ge=1, le=500, description="Limite por página"),
-    tenant_id: UUID | None = Query(None, description="Filtro por UUID do Tenant"),
+    tenant_id: UUID | str | None = Query(None, description="Filtro por UUID/slug do Tenant"),
     source: str | None = Query(None, description="Filtro por nome da fonte ingestora"),
     query_handler: LogQueryHandler = Depends(get_log_query_handler),
     current_user: AuthenticatedUser = Depends(get_current_user),
 ) -> list[LogResponseDTO]:
     try:
         SecurityKernel.authorize(current_user, UserRole.VIEWER)
-        query = ListLogsQuery(skip=skip, limit=limit, tenant_id=tenant_id, source=source)
+
+        # Isolamento Multi-Tenant Estrito
+        is_sys_admin = "system_admin" in current_user.roles
+        requested_tenant = str(tenant_id) if tenant_id else None
+
+        if not is_sys_admin:
+            if requested_tenant and requested_tenant != current_user.tenant:
+                raise PermissionError(
+                    f"Acesso negado. Usuário do tenant '{current_user.tenant}' não pode consultar logs do tenant '{requested_tenant}'."
+                )
+            effective_tenant: str | None = current_user.tenant
+        else:
+            effective_tenant = requested_tenant or current_user.tenant
+
+        query = ListLogsQuery(skip=skip, limit=limit, tenant_id=effective_tenant, source=source)
         return await query_handler.list(query)
     except PermissionError as e:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e)) from e
@@ -236,18 +266,25 @@ async def acknowledge_alert(
     """
     try:
         SecurityKernel.authorize(current_user, UserRole.ANALYST)
-        tenant_id = dto.tenant_id or current_user.tenant_id
+
+        # Isolamento Multi-Tenant Estrito
+        is_sys_admin = "system_admin" in current_user.roles
+        if not is_sys_admin and dto.tenant_id and dto.tenant_id != current_user.tenant:
+            raise PermissionError(
+                f"Acesso negado. Usuário do tenant '{current_user.tenant}' não pode reconhecer alertas do tenant '{dto.tenant_id}'."
+            )
+        effective_tenant = current_user.tenant if not is_sys_admin else (dto.tenant_id or current_user.tenant)
 
         command = AcknowledgeAlertCommand(
             alert_id=dto.alert_id,
             fingerprint=dto.fingerprint,
             reason=dto.reason,
             acknowledged_by=current_user.user_id,
-            tenant_id=tenant_id,
+            tenant_id=effective_tenant,
         )
         result = await command_bus.send(command)
         SecurityKernel.audit(
-            user={"user_id": current_user.user_id, "tenant_id": tenant_id},
+            user={"user_id": current_user.user_id, "tenant_id": effective_tenant},
             action="ACKNOWLEDGE_ALERT",
             resource=f"alert:{dto.fingerprint}",
             success=True,
@@ -257,6 +294,7 @@ async def acknowledge_alert(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e)) from e
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
+
 
 
 
