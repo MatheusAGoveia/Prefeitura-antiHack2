@@ -1129,6 +1129,7 @@ async def test_migration_0004_mapped_legacy_slug_and_downgrade():
     from alembic.operations import Operations
     from sqlalchemy import create_engine, text
     migration_mod = importlib.import_module("src.core.infrastructure.db.migrations.versions.0004_alert_ack_tenant_id_uuid")
+    migration_mod.LEGACY_TENANT_MAP["betim"] = "00000000-0000-0000-0000-000000000001"
     upgrade = migration_mod.upgrade
     downgrade = migration_mod.downgrade
 

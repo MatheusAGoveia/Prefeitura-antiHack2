@@ -7,7 +7,7 @@
 ## 📌 Estado Atual do Projeto
 - **Repositório:** `MatheusAGoveia/Prefeitura-antiHack2`
 - **Branch Ativa:** `feature/core-platform`
-- **Data da Última Atualização:** 2026-07-29T18:34:00Z
+- **Data da Última Atualização:** 2026-07-29T18:38:00Z
 - **Responsável:** IA Assistente (Arquiteto Principal GovSec Shield)
 
 ---
@@ -52,30 +52,26 @@
   - Rotas REST FastAPI: `POST /api/v1/tenants`, `GET /api/v1/tenants`, `POST /api/v1/logs`, `/healthz`, `/ready`.
   - CLI Admin: `src/cli/main.py` com o comando `govsec tenant create`.
 
-### 3. Refatoração Canônica de Identidade de Tenant (Zero Fallback Slug) (2026-07-29)
+### 3. Exigência Estrita da Claim Canônica `tenant_id` no JWT (2026-07-29)
 - [x] **Segurança & Kernel (`SecurityKernel` & `JWTHandler`):**
-  - Removidas conversões implícitas `uuid5(NAMESPACE_DNS, slug)` para `tenant_id`.
-  - `_parse_tenant_id` no SecurityKernel valida estritamente `UUID`. Strings inválidas ou ausentes lançam `PermissionError`.
-  - `generate_token`, `verify_token` e `refresh_token_async` validam estritamente o tipo `UUID`. Tokens com `tenant_id` ausente, vazio ou não-UUID são rejeitados imediatamente.
-  - `dev-token` e `login` em modo dev/test utilizam UUID estável de dev `00000000-0000-0000-0000-000000000001` quando o parâmetro `tenant_id` for omitido.
-- [x] **DTOs & Entidades:**
-  - `AuditLog`, `AlertAcknowledgement`, `IngestLogDTO`, `AcknowledgeAlertDTO` e `TargetScopeRequest` exigem obrigatoriamente um `UUID` válido para `tenant_id`.
-  - Requisições REST com payload contendo `tenant_id` inválido retornam HTTP `400 Bad Request`.
-- [x] **Repositórios:**
-  - `PostgresAlertAcknowledgementRepository` e `InMemoryAlertAcknowledgementRepository` utilizam validação estrita de UUID no `_parse_uuid`.
-  - Paginação no repositório aplica o filtro de tenant por UUID no banco/memória **antes** do `offset` e `limit`.
+  - Removido totalmente qualquer fallback para a claim legada `tenant` (`payload.get("tenant")`).
+  - `tenant_id` passa a ser a **única** claim aceita para identidade de tenant no payload JWT.
+  - Tokens sem `tenant_id`, com `tenant_id` vazio ou não-UUID são imediatamente rejeitados (retornam `None` ou lançam `PermissionError`).
+  - Refresh tokens preservam apenas a claim `tenant_id` com UUID válido.
+  - Removida a duplicação da chave `"tenant"` nos novos tokens gerados pela aplicação.
+  - Proibida a compatibilidade silenciosa com tokens legados.
 
-### 4. Migração Segura de `alert_acknowledgements.tenant_id` para UUID (2026-07-29)
+### 4. Correção da Migração Segura 0004 e Saneamento de Dados Legados (2026-07-29)
 - [x] **Migração Alembic (`0004_alert_ack_tenant_id_uuid.py`):**
-  - Estratégia Híbrida de Mapeamento Explícito + Fail-Fast (Interrupção de segurança em dados não mapeados).
-  - Converte slugs legados versionados (ex: `"betim"`, `"dev"`) para o UUID canônico `00000000-0000-0000-0000-000000000001`.
-  - Aborta a migração lançando `ValueError` com mensagem explícita caso existam registros não-UUID desmapeados.
-  - Suporte a `upgrade()` e `downgrade()` totalmente simétricos e seguros em PostgreSQL e SQLite batch mode.
+  - Removido o mapeamento automático do slug `"betim"` para o UUID de dev/test (`00000000-0000-0000-0000-000000000001`).
+  - `LEGACY_TENANT_MAP` mantido como dicionário explícito configurável por ambiente.
+  - Caso existam slugs não mapeados para o UUID oficial do tenant real, a migração falha fechada (`Fail-Closed`) com mensagem explicativa e instrução de remediação.
+  - Proibida a geração de UUID v5 ou aleatório.
+  - `upgrade()` e `downgrade()` simétricos e reversíveis.
 - [x] **Documentação Operacional (SOP-GOVSEC-DB-004):**
-  - Criado o documento [`docs/operational/legacy_tenant_cleanup.md`](file:///c:/Users/matheus.damiao/Desktop/AntiHackin/Prefeitura-antiHack2/docs/operational/legacy_tenant_cleanup.md) detalhando as consultas SQL de inspeção e remediação manual de dados legados desmapeados.
-- [x] **Suíte de Testes & Validação:**
-  - Adicionados testes de migração e idempotência: migração de tabela com UUIDs válidos, falha segura ao encontrar slug não mapeado, conversão de slug mapeado com downgrade funcional, persistência e consulta por UUID, e isolamento de idempotência por tenant UUID.
-  - Suíte total de **116 testes executados e aprovados (100% de sucesso)**.
+  - Atualizado [`docs/operational/legacy_tenant_cleanup.md`](file:///c:/Users/matheus.damiao/Desktop/AntiHackin/Prefeitura-antiHack2/docs/operational/legacy_tenant_cleanup.md) removendo a instrução de associar `"betim"` ao UUID de dev/test.
+  - Orientado o saneamento manual via busca do UUID oficial do tenant na tabela `tenants` ou registro explícito em `LEGACY_TENANT_MAP`.
+  - Formatado sem espaços em branco no final de linhas.
 
 ---
 
@@ -88,19 +84,5 @@
 | **2026-07-28** | Policy-as-Code via OPA | Invariante INV-005 exige que todo Command passe pela validação de políticas antes de alterar estado. |
 | **2026-07-28** | Soft Delete com timestamp | Regulamentações governamentais proíbem exclusão física de registros de auditoria e configurações. |
 | **2026-07-29** | Docker preflight isolado para Alertmanager | Preflight em container dedicado garante PyYAML e amtool sem dependências dinâmicas em runtime. |
-| **2026-07-29** | Identidade Estrita de Tenant via UUID Canônico | Eliminação total de fallback de slug para UUID v5 em autenticação/autorização, assegurando isolamento multi-tenant determinístico. |
-| **2026-07-29** | Migração Híbrida Fail-Fast + Mapeamento Explícito | Saneamento auditável de slugs legados para UUID canônico sem geração de UUID v5 ou aleatório, com interrupção de segurança em dados desconhecidos. |
-
----
-
-## 📈 Histórico de Validações e Testes
-
-- **2026-07-29 (Migração Segura alert_acknowledgements.tenant_id -> UUID):**
-  - `poetry run pytest --override-ini="addopts=" -v`: **116 passed** (0 failures).
-  - `poetry run ruff check src tests scripts`: **0 issues**.
-  - `poetry run mypy src`: **Success (107 source files)**.
-  - `poetry run bandit -r src -s B105,B106`: **0 issues**.
-  - `poetry run python -m compileall -q src scripts`: **0 errors**.
-  - `git diff --check`: **0 errors**.
-  - `docker compose config`: **OK**.
-  - `docker compose ps`: **Todos os 5 serviços Up & Healthy**.
+| **2026-07-29** | Identidade Estrita de Tenant via `tenant_id` | Eliminação total de fallback da claim legada `tenant`, exigindo `tenant_id` UUID em todas as requisições JWT. |
+| **2026-07-29** | Migração Fail-Closed sem Defaults Sintéticos | Slugs legados não são mapeados automaticamente para UUID de dev; exigem cadastro do UUID oficial real ou falham a migração. |

@@ -18,20 +18,17 @@ down_revision: str | None = "0003_create_alert_acknowledgements"
 branch_labels: Sequence[str] | None = None
 depends_on: Sequence[str] | None = None
 
-DEV_TEST_TENANT_ID = "00000000-0000-0000-0000-000000000001"
-
-# Mapeamento explícito, versionado e auditável entre slugs legados conhecidos e UUID canônico
-LEGACY_TENANT_MAP: dict[str, str] = {
-    "betim": DEV_TEST_TENANT_ID,
-    "dev": DEV_TEST_TENANT_ID,
-}
+# Mapeamento explícito, versionado e auditável entre slugs legados e UUIDs oficiais dos tenants reais.
+# NOTA: Em produção ou staging, cadastre aqui os UUIDs oficiais dos tenants antes de executar a migração.
+# Slugs não cadastrados neste dicionário farão a migração falhar fechada (Fail-Closed).
+LEGACY_TENANT_MAP: dict[str, str] = {}
 
 
 def upgrade(op_ctx: Operations | None = None) -> None:
     bind = op_ctx.get_bind() if op_ctx is not None else op.get_bind()
     op_impl = op_ctx if op_ctx is not None else op
 
-    # 1. Aplicar mapeamento explícito e auditado de slugs legados para UUIDs canônicos
+    # 1. Aplicar mapeamento explícito e auditado de slugs legados para UUIDs oficiais
     for legacy_slug, canonical_uuid in LEGACY_TENANT_MAP.items():
         bind.execute(
             sa.text(
@@ -40,7 +37,7 @@ def upgrade(op_ctx: Operations | None = None) -> None:
             {"canonical_uuid": canonical_uuid, "legacy_slug": legacy_slug},
         )
 
-    # 2. Identificar se existem registros com tenant_id que não são UUIDs válidos
+    # 2. Identificar se existem registros com tenant_id que não são UUIDs válidos (Fail-Closed)
     result = bind.execute(sa.text("SELECT DISTINCT tenant_id FROM alert_acknowledgements WHERE tenant_id IS NOT NULL"))
     invalid_tenants: list[str] = []
     for row in result.fetchall():
@@ -52,10 +49,11 @@ def upgrade(op_ctx: Operations | None = None) -> None:
 
     if invalid_tenants:
         raise ValueError(
-            f"Migração 0004 interrompida: Foram encontrados registros em 'alert_acknowledgements' "
+            f"Migração 0004 interrompida (Fail-Closed): Foram encontrados registros em 'alert_acknowledgements' "
             f"com tenant_id não-UUID não mapeado: {invalid_tenants}. "
-            f"Execute o procedimento operacional de saneamento de dados legados "
-            f"(docs/operational/legacy_tenant_cleanup.md) antes de prosseguir."
+            f"Consulte o procedimento operacional de saneamento de dados legados "
+            f"(docs/operational/legacy_tenant_cleanup.md) para realizar o mapeamento explícito do UUID oficial "
+            f"antes de prosseguir."
         )
 
     # 3. Alterar a coluna tenant_id para postgresql.UUID

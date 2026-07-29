@@ -1,8 +1,9 @@
 """
-Utilitários para Geração e Validação de JWT
-GovSec Shield — Infrastructure Security
+Manipulador de JSON Web Tokens (JWT)
+GovSec Shield — Security Infrastructure
 """
 
+import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -12,31 +13,38 @@ import jwt
 
 from src.core.infrastructure.config import settings
 from src.core.infrastructure.security.revocation import (
-    BaseTokenRevocationStore,
-    get_token_revocation_store,
+    ITokenRevocationStore,
+    InMemoryTokenRevocationStore,
+    RedisTokenRevocationStore,
 )
+
+logger = logging.getLogger("govsec.security.jwt")
 
 
 class JWTHandler:
-    _override_store: BaseTokenRevocationStore | None = None
+    """
+    Gerencia emissão, decodificação e revogação assíncrona de tokens JWT.
+    """
+
+    _revocation_store: ITokenRevocationStore | None = None
 
     @classmethod
-    def set_revocation_store(cls, store: BaseTokenRevocationStore | None) -> None:
-        """Permite a injeção/mocking do token revocation store em testes."""
-        cls._override_store = store
+    def get_revocation_store(cls) -> ITokenRevocationStore:
+        if cls._revocation_store is None:
+            if settings.GOVSEC_REDIS_URL:
+                cls._revocation_store = RedisTokenRevocationStore(settings.GOVSEC_REDIS_URL)
+            else:
+                cls._revocation_store = InMemoryTokenRevocationStore()
+        return cls._revocation_store
 
     @classmethod
-    def get_revocation_store(cls) -> BaseTokenRevocationStore:
-        if cls._override_store is not None:
-            return cls._override_store
-        return get_token_revocation_store()
+    def set_revocation_store(cls, store: ITokenRevocationStore) -> None:
+        cls._revocation_store = store
 
     @staticmethod
-    def _validate_tenant_uuid(tenant_id: Any) -> str:
+    def _validate_tenant_uuid(tenant_id: str | UUID) -> str:
         if isinstance(tenant_id, UUID):
             return str(tenant_id)
-        if not tenant_id:
-            raise ValueError("tenant_id deve ser um UUID válido.")
         try:
             return str(UUID(str(tenant_id)))
         except (ValueError, TypeError) as err:
@@ -53,7 +61,6 @@ class JWTHandler:
             "jti": str(uuid.uuid4()),
             "sub": user_id,
             "tenant_id": t_str,
-            "tenant": t_str,
             "roles": roles,
             "token_type": "access",
             "exp": expire,
@@ -74,7 +81,6 @@ class JWTHandler:
             "jti": str(uuid.uuid4()),
             "sub": user_id,
             "tenant_id": t_str,
-            "tenant": t_str,
             "roles": roles,
             "token_type": "refresh",
             "exp": expire,
@@ -90,7 +96,7 @@ class JWTHandler:
             payload: dict[str, Any] = jwt.decode(
                 token, settings.GOVSEC_JWT_SECRET, algorithms=[settings.GOVSEC_JWT_ALGORITHM]
             )
-            raw_tenant = payload.get("tenant_id") or payload.get("tenant")
+            raw_tenant = payload.get("tenant_id")
             if not raw_tenant:
                 return None
             try:
@@ -111,7 +117,7 @@ class JWTHandler:
             payload: dict[str, Any] = jwt.decode(
                 token, settings.GOVSEC_JWT_SECRET, algorithms=[settings.GOVSEC_JWT_ALGORITHM]
             )
-            raw_tenant = payload.get("tenant_id") or payload.get("tenant")
+            raw_tenant = payload.get("tenant_id")
             if not raw_tenant:
                 return None
             try:
@@ -133,7 +139,7 @@ class JWTHandler:
             raise ValueError("Refresh Token inválido ou expirado.")
 
         user_id = payload["sub"]
-        raw_tenant = payload.get("tenant_id") or payload.get("tenant")
+        raw_tenant = payload.get("tenant_id")
         if not raw_tenant:
             raise ValueError("Refresh token inválido: tenant_id não encontrado.")
         try:
@@ -151,7 +157,7 @@ class JWTHandler:
             raise ValueError("Refresh Token inválido ou expirado.")
 
         user_id = payload["sub"]
-        raw_tenant = payload.get("tenant_id") or payload.get("tenant")
+        raw_tenant = payload.get("tenant_id")
         if not raw_tenant:
             raise ValueError("Refresh token inválido: tenant_id não encontrado.")
         try:
@@ -178,10 +184,10 @@ class JWTHandler:
 class JWTUtils(JWTHandler):
     @staticmethod
     def create_access_token(
-        user_id: str, tenant: str | UUID, roles: list[str], expires_delta: timedelta | None = None
+        user_id: str, tenant_id: str | UUID, roles: list[str], expires_delta: timedelta | None = None
     ) -> str:
         expires_in = int(expires_delta.total_seconds()) if expires_delta else settings.GOVSEC_JWT_EXPIRE_MINUTES * 60
-        return JWTHandler.generate_token(user_id=user_id, tenant_id=tenant, roles=roles, expires_in=expires_in)
+        return JWTHandler.generate_token(user_id=user_id, tenant_id=tenant_id, roles=roles, expires_in=expires_in)
 
     @classmethod
     async def decode_token_async(cls, token: str) -> dict[str, Any]:

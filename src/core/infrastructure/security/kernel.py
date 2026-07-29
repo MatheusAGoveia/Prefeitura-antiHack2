@@ -38,7 +38,7 @@ class SecurityKernel:
             raise PermissionError("Claim tenant_id ausente no token de autenticação.")
         try:
             return UUID(str(val))
-        except ValueError as e:
+        except (ValueError, TypeError) as e:
             raise PermissionError("Claim tenant_id no token de autenticação deve ser um UUID válido.") from e
 
     @staticmethod
@@ -48,7 +48,7 @@ class SecurityKernel:
             raise PermissionError("Token de autenticação inválido, expirado ou revogado.")
 
         user_id = payload.get("sub", "")
-        raw_tenant = payload.get("tenant_id") or payload.get("tenant")
+        raw_tenant = payload.get("tenant_id")
         tenant_id = SecurityKernel._parse_tenant_id(raw_tenant)
         roles = payload.get("roles", [])
 
@@ -61,7 +61,7 @@ class SecurityKernel:
             raise PermissionError("Token de autenticação inválido, expirado ou revogado.")
 
         user_id = payload.get("sub", "")
-        raw_tenant = payload.get("tenant_id") or payload.get("tenant")
+        raw_tenant = payload.get("tenant_id")
         tenant_id = SecurityKernel._parse_tenant_id(raw_tenant)
         roles = payload.get("roles", [])
 
@@ -106,7 +106,7 @@ class SecurityKernel:
             tenant_id = str(user.tenant_id)
         elif isinstance(user, dict):
             user_id = user.get("user_id") or user.get("sub", "anonymous")
-            tenant_id = str(user.get("tenant_id") or user.get("tenant", "system"))
+            tenant_id = str(user.get("tenant_id", "system"))
 
         status_str = "SUCCESS" if success else "DENIED"
         logger.info(

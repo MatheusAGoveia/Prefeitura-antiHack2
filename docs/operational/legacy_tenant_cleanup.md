@@ -1,27 +1,27 @@
 # Procedimento Operacional Padrão (SOP) — Saneamento de Dados Legados de Tenant (`alert_acknowledgements.tenant_id`)
 
-**Código:** SOP-GOVSEC-DB-004  
-**Versão:** 1.0.0  
-**Classificação:** Uso Interno / Engenharia & Operações (SRE)  
-**Data de Emissão:** 2026-07-29  
+**Código:** SOP-GOVSEC-DB-004
+**Versão:** 1.1.0
+**Classificação:** Uso Interno / Engenharia & Operações (SRE)
+**Data de Emissão:** 2026-07-29
 
 ---
 
 ## 1. Objetivo
-Este documento instrui a equipe de Operações/SRE no saneamento e mapeamento de registros históricos da tabela `alert_acknowledgements` que possuem valores de `tenant_id` no formato de slug textual legado (ex: `"betim"`), antes da execução da migração de banco de dados `0004_alert_ack_tenant_id_uuid`.
+Este documento instrui a equipe de Operações/SRE no saneamento e mapeamento de registros históricos da tabela `alert_acknowledgements` que possuem valores de `tenant_id` no formato de slug textual legado (ex: `"betim"`, `"pref-contagem"`), antes da execução da migração de banco de dados `0004_alert_ack_tenant_id_uuid`.
 
 ---
 
 ## 2. Princípios de Segurança e Integridade
-1. **Zero Trust & Dados Canônicos:** Não é permitida a geração de UUIDs v5 determinísticos a partir de slugs, nem a criação de UUIDs aleatórios para mascarar dados.
-2. **Fail-Closed:** Se a migração `0004` encontrar qualquer registro com `tenant_id` não-UUID que não esteja presente no mapeamento canônico explícito, o processo de migração será **imediatamente interrompido com falha explícita**.
-3. **Auditabilidade:** Todas as alterações devem ser gravadas e associadas ao UUID canônico oficial cadastrado no ecossistema do Tenant.
+1. **Zero Trust & Dados Canônicos:** Não é permitida a conversão automática de slugs em UUID v5 determinístico, nem o uso de UUIDs padrão de dev/test (`00000000-0000-0000-0000-000000000001`) para substituir tenants reais em staging ou produção.
+2. **Fail-Closed:** A migração `0004` opera em modo Fail-Closed. Se a migração encontrar qualquer registro com `tenant_id` não-UUID que não esteja cadastrado no dicionário `LEGACY_TENANT_MAP` da própria migração, o processo será **imediatamente abortado**.
+3. **Auditabilidade:** Todo mapeamento deve vincular o slug legado exclusivamente ao UUID oficial cadastrado na tabela de tenants.
 
 ---
 
 ## 3. Identificação de Registros Legados Não-Conformes
 
-Conecte ao banco de dados PostgreSQL do GovSec Shield e execute a query abaixo para identificar valores de `tenant_id` legados que não correspondem a um UUID válido:
+Conecte ao banco de dados PostgreSQL do GovSec Shield e execute a consulta SQL abaixo para identificar todos os slugs de `tenant_id` legados que precisam de saneamento:
 
 ```sql
 SELECT DISTINCT tenant_id, COUNT(*) AS total_registros
@@ -32,52 +32,59 @@ GROUP BY tenant_id;
 
 ---
 
-## 4. Mapeamento e Saneamento
+## 4. Mapeamento e Saneamento de Dados
 
-### 4.1 Mapeamentos Canônicos Pré-Aprovados
-Os seguintes slugs legados possuem mapeamento oficial pré-aprovado na migração `0004`:
+### 4.1 Obter o UUID Oficial do Tenant Real
+Para cada slug retornado na consulta acima (ex: `"betim"` ou `"pref-contagem"`), obtenha o UUID oficial cadastrado na tabela `tenants`:
 
-| Slug Legado | UUID Canônico Mapeado | Descrição |
-| :--- | :--- | :--- |
-| `betim` | `00000000-0000-0000-0000-000000000001` | Tenant Padrão Dev/Test |
-| `dev` | `00000000-0000-0000-0000-000000000001` | Tenant Padrão Dev |
+```sql
+SELECT id, name, slug FROM tenants WHERE slug = 'betim';
+```
 
-### 4.2 Remediar Novos Slugs Desconhecidos (Se Existirem)
-Caso a consulta na Seção 3 retorne slugs que não estejam listados acima (ex: `"contagem"`):
+### 4.2 Opção A — Atualização via Banco de Dados (Recomendado)
+Atualize os registros históricos na tabela `alert_acknowledgements` com o UUID oficial obtido:
 
-1. **Obter o UUID Oficial do Tenant:**
-   ```sql
-   SELECT id, name, slug FROM tenants WHERE slug = 'contagem';
-   ```
+```sql
+UPDATE alert_acknowledgements
+SET tenant_id = '<UUID_OFICIAL_OBTIDO>'
+WHERE tenant_id = 'betim';
+```
 
-2. **Atualizar os Registros Legados:**
-   ```sql
-   UPDATE alert_acknowledgements
-   SET tenant_id = '<UUID_OFICIAL_OBTIDO>'
-   WHERE tenant_id = 'contagem';
-   ```
+### 4.3 Opção B — Mapeamento Explícito na Migração Alembic
+Caso prefira registrar a conversão na própria migração, edite o arquivo `src/core/infrastructure/db/migrations/versions/0004_alert_ack_tenant_id_uuid.py` e adicione a correspondência no dicionário `LEGACY_TENANT_MAP`:
 
-3. **Re-executar a Validação:**
-   Execute a query da Seção 3. O resultado deve ser **0 linhas retornadas**.
+```python
+LEGACY_TENANT_MAP: dict[str, str] = {
+    "betim": "<UUID_OFICIAL_DO_TENANT_BETIM>",
+}
+```
 
 ---
 
-## 5. Execução da Migração
+## 5. Validação Pré-Migração
 
-Após garantir que todos os dados legados foram saneados ou mapeados:
+Execute novamente a consulta de verificação:
 
+```sql
+SELECT DISTINCT tenant_id
+FROM alert_acknowledgements
+WHERE tenant_id !~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$';
+```
+
+O resultado deve ser **0 linhas retornadas** antes de rodar `alembic upgrade head`.
+
+---
+
+## 6. Execução e Downgrade da Migração
+
+### Executar Migração
 ```bash
 poetry run alembic upgrade head
 ```
 
----
-
-## 6. Procedimento de Rollback (Downgrade)
-
-Caso seja necessário reverter a migração:
-
+### Reverter Migração (Downgrade)
 ```bash
 poetry run alembic downgrade -1
 ```
 
-O tipo da coluna `tenant_id` será revertido para `VARCHAR(64)` de forma transparente e coerente.
+A coluna `tenant_id` retornará ao tipo `VARCHAR(64)` preservando os dados intactos.
