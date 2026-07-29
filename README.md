@@ -86,8 +86,8 @@ Toda a arquitetura e governança do projeto estão detalhadas na pasta [`docs/`]
 
 ## 📈 Modelo de Maturidade (Capability Maturity Model)
 
-- **M0 - Arquitetura (Foundation):** Estrutura de domínio, ADRs, Bounded Contexts *(Nível Atual)*
-- **M1 - Observabilidade:** Coleta de logs, métricas e tracing (OTel)
+- **M0 - Arquitetura (Foundation):** Estrutura de domínio, ADRs, Bounded Contexts 
+- **M1 - Observabilidade:** Coleta de logs, métricas e tracing (OTel) *(Nível Atual)*
 - **M2 - Monitoramento:** Detecção de anomalias e falhas
 - **M3 - Correlação:** União de eventos em incidentes (CEP)
 - **M4 - Threat Intelligence:** Enriquecimento com IoCs, STIX/TAXII, MITRE ATT&CK
