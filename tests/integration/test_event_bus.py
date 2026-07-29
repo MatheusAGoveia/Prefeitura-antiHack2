@@ -85,10 +85,11 @@ async def test_kafka_event_bus_idempotency_deduplication():
 async def test_event_handlers_execution():
     tenant_handler = TenantEventHandler()
     log_handler = LogEventHandler()
+    test_tenant_uuid = str(uuid4())
 
     # Executa sem exceções
-    await tenant_handler.handle_tenant_created({"tenant_id": "betim", "name": "Betim", "slug": "betim"})
-    await log_handler.handle_log_ingested({"tenant_id": "betim", "source": "wazuh", "raw_data": "LOG DATA"})
+    await tenant_handler.handle_tenant_created({"tenant_id": test_tenant_uuid, "name": "Betim", "slug": "betim"})
+    await log_handler.handle_log_ingested({"tenant_id": test_tenant_uuid, "source": "wazuh", "raw_data": "LOG DATA"})
 
 
 # -----------------------------------------------------------------------------
@@ -99,6 +100,7 @@ async def test_command_bus_retry_and_dlq_integration():
     dlq = DeadLetterQueue()
     dlq.clear()
     cmd_bus = CommandBus(opa_client=OPAClient(mock_mode=True), dlq=dlq, max_retries=2)
+    test_tenant_uuid = str(uuid4())
 
     class FailingCommand(Command):
         pass
@@ -109,7 +111,7 @@ async def test_command_bus_retry_and_dlq_integration():
     cmd_bus.register("FailingCommand", failing_handler)
 
     fail_cmd = FailingCommand(
-        metadata=CommandMetadata(command_name="FailingCommand", tenant="betim"),
+        metadata=CommandMetadata(command_name="FailingCommand", tenant=test_tenant_uuid),
         payload={},
     )
 
@@ -134,6 +136,7 @@ async def test_command_bus_circuit_breaker():
     cmd_bus = CommandBus(opa_client=OPAClient(mock_mode=True), dlq=dlq, max_retries=1)
     cmd_bus.circuit_breaker.failure_threshold = 2
     cmd_bus.circuit_breaker.recovery_time = 60.0
+    test_tenant_uuid = str(uuid4())
 
     class FlakyCommand(Command):
         pass
@@ -143,10 +146,9 @@ async def test_command_bus_circuit_breaker():
 
     cmd_bus.register("FlakyCommand", flaky_handler)
     cmd = FlakyCommand(
-        metadata=CommandMetadata(command_name="FlakyCommand", tenant="betim"),
+        metadata=CommandMetadata(command_name="FlakyCommand", tenant=test_tenant_uuid),
         payload={},
     )
-
 
     # Falha 1
     with pytest.raises(RuntimeError):

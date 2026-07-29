@@ -223,13 +223,14 @@ def test_alertmanager_yml_structural_validation():
 async def test_acknowledge_alert_repository_and_idempotency():
     """Valida salvamento e idempotência no repositório de acknowledgements."""
     ack_repo: AlertAcknowledgementRepository = InMemoryAlertAcknowledgementRepository()
+    test_tenant_uuid = uuid4()
 
     ack1 = AlertAcknowledgement(
         alert_id="ServiceDown-01",
         fingerprint="fingerprint-abc12345",
         reason="Servidor reiniciado manualmente pela equipe SRE",
         acknowledged_by="operador-oncall",
-        tenant_id="betim",
+        tenant_id=test_tenant_uuid,
     )
 
     saved1 = await ack_repo.save(ack1)
@@ -241,7 +242,7 @@ async def test_acknowledge_alert_repository_and_idempotency():
         fingerprint="fingerprint-abc12345",
         reason="Tentativa duplicada",
         acknowledged_by="outro-operador",
-        tenant_id="betim",
+        tenant_id=test_tenant_uuid,
     )
 
     saved2 = await ack_repo.save(ack2)
@@ -266,14 +267,15 @@ def test_acknowledge_alert_endpoint_rbac_authorization(client: TestClient):
 
     app.dependency_overrides[get_command_bus] = mock_get_command_bus
 
+    test_tenant_uuid = uuid4()
     try:
         # Token com perfil 'viewer' deve ser recusado com 403
-        viewer_token = JWTHandler.generate_token(user_id="user-viewer", tenant_id="betim", roles=["viewer"])
+        viewer_token = JWTHandler.generate_token(user_id="user-viewer", tenant_id=test_tenant_uuid, roles=["viewer"])
         dto_data = {
             "alert_id": "ServiceDown-01",
             "fingerprint": "fp-123456",
             "reason": "Análise iniciada pelo analista de plantão",
-            "tenant_id": "betim",
+            "tenant_id": str(test_tenant_uuid),
         }
 
         res_viewer = client.post(
@@ -284,7 +286,7 @@ def test_acknowledge_alert_endpoint_rbac_authorization(client: TestClient):
         assert res_viewer.status_code == 403
 
         # Token com perfil 'analyst' deve ser aceito com 200 OK
-        analyst_token = JWTHandler.generate_token(user_id="user-analyst", tenant_id="betim", roles=["analyst"])
+        analyst_token = JWTHandler.generate_token(user_id="user-analyst", tenant_id=test_tenant_uuid, roles=["analyst"])
         res_analyst = client.post(
             "/api/v1/alerts/acknowledge",
             json=dto_data,
@@ -502,7 +504,8 @@ def test_strict_multi_tenant_isolation_log_ingestion():
     from src.api.main import app
 
     client = TestClient(app)
-    token_tenant_a = JWTHandler.generate_token(user_id="user-a", tenant_id="tenant-a", roles=["analyst"])
+    tenant_a_uuid = uuid4()
+    token_tenant_a = JWTHandler.generate_token(user_id="user-a", tenant_id=tenant_a_uuid, roles=["analyst"])
     tenant_b_id = str(uuid4())
 
     res = client.post(
@@ -520,7 +523,8 @@ def test_strict_multi_tenant_isolation_log_query():
     from src.api.main import app
 
     client = TestClient(app)
-    token_tenant_a = JWTHandler.generate_token(user_id="user-a", tenant_id="tenant-a", roles=["viewer"])
+    tenant_a_uuid = uuid4()
+    token_tenant_a = JWTHandler.generate_token(user_id="user-a", tenant_id=tenant_a_uuid, roles=["viewer"])
     tenant_b_id = str(uuid4())
 
     res = client.get(
@@ -532,14 +536,18 @@ def test_strict_multi_tenant_isolation_log_query():
 
 def test_strict_multi_tenant_isolation_alert_ack():
     """Garante que usuário do tenant A não pode reconhecer alertas do tenant B."""
+    from uuid import uuid4
+
     from src.api.main import app
 
     client = TestClient(app)
-    token_tenant_a = JWTHandler.generate_token(user_id="user-a", tenant_id="tenant-a", roles=["analyst"])
+    tenant_a_uuid = uuid4()
+    tenant_b_uuid = uuid4()
+    token_tenant_a = JWTHandler.generate_token(user_id="user-a", tenant_id=tenant_a_uuid, roles=["analyst"])
 
     res = client.post(
         "/api/v1/alerts/acknowledge",
-        json={"alert_id": "123", "fingerprint": "abc", "reason": "teste", "tenant_id": "tenant-b"},
+        json={"alert_id": "123", "fingerprint": "abc", "reason": "teste", "tenant_id": str(tenant_b_uuid)},
         headers={"Authorization": f"Bearer {token_tenant_a}"},
     )
     assert res.status_code == 403
@@ -590,10 +598,12 @@ def test_check_scope_unauthenticated_returns_401():
 
 def test_check_scope_viewer_role_returns_403():
     """Garante que usuário com role 'viewer' recebe 403 ao acessar check-scope."""
+    from uuid import uuid4
+
     from src.api.main import app
 
     client = TestClient(app)
-    token = JWTHandler.generate_token(user_id="user-viewer", tenant_id="betim", roles=["viewer"])
+    token = JWTHandler.generate_token(user_id="user-viewer", tenant_id=uuid4(), roles=["viewer"])
     res = client.post(
         "/api/v1/security/check-scope",
         json={"target_ip": "10.1.0.5"},
@@ -604,10 +614,12 @@ def test_check_scope_viewer_role_returns_403():
 
 def test_check_scope_analyst_role_returns_200():
     """Garante que usuário com role 'analyst' acessa check-scope com sucesso."""
+    from uuid import uuid4
+
     from src.api.main import app
 
     client = TestClient(app)
-    token = JWTHandler.generate_token(user_id="user-analyst", tenant_id="betim", roles=["analyst"])
+    token = JWTHandler.generate_token(user_id="user-analyst", tenant_id=uuid4(), roles=["analyst"])
     res = client.post(
         "/api/v1/security/check-scope",
         json={"target_ip": "10.200.1.5"},
@@ -617,7 +629,6 @@ def test_check_scope_analyst_role_returns_200():
     assert res.json()["is_allowed"] is True
 
 
-
 def test_get_tenant_by_id_cross_tenant_forbidden_for_normal_user():
     """Garante que GET /api/v1/tenants/{id} para um tenant diferente retorna 403."""
     from uuid import uuid4
@@ -625,7 +636,7 @@ def test_get_tenant_by_id_cross_tenant_forbidden_for_normal_user():
     from src.api.main import app
 
     client = TestClient(app)
-    token = JWTHandler.generate_token(user_id="user-norm", tenant_id="tenant-a", roles=["viewer"])
+    token = JWTHandler.generate_token(user_id="user-norm", tenant_id=uuid4(), roles=["viewer"])
     other_tenant_id = str(uuid4())
 
     res = client.get(
@@ -655,7 +666,6 @@ def test_list_tenants_restricted_to_own_tenant_for_normal_user():
     query_handler = TenantQueryHandler(tenant_repo=repo)
     app.dependency_overrides[get_query_handler] = lambda: query_handler
 
-
     try:
         client = TestClient(app)
         token = JWTHandler.generate_token(user_id="user-norm", tenant_id=tenant_uuid, roles=["viewer"])
@@ -672,14 +682,15 @@ def test_list_tenants_restricted_to_own_tenant_for_normal_user():
         app.dependency_overrides.pop(get_query_handler, None)
 
 
-
 @pytest.mark.asyncio
 async def test_async_token_revocation_ttl_and_check():
     """Garante que revocation_store assíncrona registra revogação com JTI e expiração."""
+    from uuid import uuid4
+
     from src.core.infrastructure.security.revocation import InMemoryTokenRevocationStore
 
     store = InMemoryTokenRevocationStore()
-    token = JWTHandler.generate_token(user_id="user-rev", tenant_id="betim", roles=["analyst"])
+    token = JWTHandler.generate_token(user_id="user-rev", tenant_id=uuid4(), roles=["analyst"])
     payload = JWTHandler.verify_token(token)
 
     assert await store.is_revoked(token, payload) is False
@@ -996,4 +1007,92 @@ def test_oidc_claims_strict_behavior_in_production(monkeypatch: pytest.MonkeyPat
     assert res3.status_code == 401
     assert "uuid" in res3.json()["detail"].lower()
 
+
+def test_jwt_valid_uuid_authenticates():
+    """Garante que JWT com tenant_id UUID válido é autenticado com sucesso."""
+    from src.core.infrastructure.security.kernel import SecurityKernel
+
+    valid_uuid = uuid.uuid4()
+    token = JWTHandler.generate_token(user_id="u-valid", tenant_id=valid_uuid, roles=["viewer"])
+    user = SecurityKernel.authenticate(token)
+    assert user.tenant_id == valid_uuid
+
+
+def test_jwt_slug_or_invalid_uuid_rejected():
+    """Garante que JWT com 'betim' ou valor não-UUID no tenant_id é rejeitado."""
+    with pytest.raises(ValueError, match="tenant_id deve ser um UUID válido"):
+        JWTHandler.generate_token(user_id="u-invalid", tenant_id="betim", roles=["viewer"])
+
+
+def test_dev_login_generates_stable_uuid(monkeypatch: pytest.MonkeyPatch):
+    """Garante que login em dev/test gera token com UUID estável 00000000-0000-0000-0000-000000000001."""
+    from src.api.main import app
+    from src.core.infrastructure.config import settings
+
+    monkeypatch.setattr(settings, "GOVSEC_ENV", "dev")
+    client = TestClient(app)
+
+    res = client.post("/api/v1/auth/dev-token", json={"user_id": "dev-user", "role": "analyst"})
+    assert res.status_code == 200
+    token = res.json()["access_token"]
+
+    payload = JWTHandler.verify_token(token)
+    assert payload is not None
+    assert payload["tenant_id"] == "00000000-0000-0000-0000-000000000001"
+
+
+def test_log_ingestion_and_ack_reject_invalid_tenant(monkeypatch: pytest.MonkeyPatch):
+    """Garante que POST /api/v1/logs e /api/v1/alerts/acknowledge rejeitam tenant_id inválido com 400."""
+    from src.api.main import app
+    from src.core.infrastructure.config import settings
+
+    monkeypatch.setattr(settings, "GOVSEC_ENV", "dev")
+    client = TestClient(app)
+
+    valid_uuid = uuid.uuid4()
+    token = JWTHandler.generate_token(user_id="u-analyst", tenant_id=valid_uuid, roles=["analyst"])
+    headers = {"Authorization": f"Bearer {token}"}
+
+    # Ingestão de log com tenant_id string inválida
+    res_log = client.post(
+        "/api/v1/logs",
+        json={"source": "wazuh", "raw_data": "raw log data", "tenant_id": "betim"},
+        headers=headers,
+    )
+    assert res_log.status_code == 400
+
+    # Ack de alerta com tenant_id string inválida
+    res_ack = client.post(
+        "/api/v1/alerts/acknowledge",
+        json={
+            "alert_id": "ServiceDown-01",
+            "fingerprint": "fp-123456",
+            "reason": "Análise de incide nte",
+            "tenant_id": "betim",
+        },
+        headers=headers,
+    )
+    assert res_ack.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_pagination_applies_filter_before_offset_and_limit():
+    """Garante que a paginação no repositório aplica o filtro de tenant ANTES de skip e limit."""
+    from src.core.domain.entities import Tenant
+    from src.core.infrastructure.db.repositories import InMemoryTenantRepository
+
+    repo = InMemoryTenantRepository()
+
+    t1 = Tenant(id=uuid.uuid4(), name="Prefeitura 1", slug="pref-1")
+    t2 = Tenant(id=uuid.uuid4(), name="Prefeitura 2", slug="pref-2")
+    t3 = Tenant(id=uuid.uuid4(), name="Prefeitura 3", slug="pref-3")
+
+    await repo.save(t1)
+    await repo.save(t2)
+    await repo.save(t3)
+
+    # Filtrar por t2 com skip=0 e limit=1
+    res = await repo.list(skip=0, limit=1, tenant_filter=t2.id)
+    assert len(res) == 1
+    assert res[0].id == t2.id
 

@@ -5,7 +5,7 @@ GovSec Shield — Application Layer DTOs
 
 from datetime import datetime
 from typing import Any
-from uuid import NAMESPACE_DNS, UUID, uuid5
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -44,8 +44,8 @@ class IngestLogDTO(BaseModel):
             return v
         try:
             return UUID(str(v))
-        except ValueError:
-            return uuid5(NAMESPACE_DNS, str(v))
+        except (ValueError, TypeError) as err:
+            raise ValueError(f"tenant_id deve ser um UUID válido, recebido: '{v}'") from err
 
 
 class LogResponseDTO(BaseModel):
@@ -62,7 +62,7 @@ class AcknowledgeAlertDTO(BaseModel):
     alert_id: str = Field(..., min_length=1, max_length=128, examples=["ServiceDown-Betim-01"])
     fingerprint: str = Field(..., min_length=1, max_length=128, examples=["a1b2c3d4e5f6"])
     reason: str = Field(..., min_length=5, max_length=512, examples=["Incidente verificado e servidor em reinício manual."])
-    tenant_id: UUID | str | None = None
+    tenant_id: UUID | None = None
 
     @field_validator("tenant_id", mode="before")
     @classmethod
@@ -73,8 +73,8 @@ class AcknowledgeAlertDTO(BaseModel):
             return v
         try:
             return UUID(str(v))
-        except ValueError:
-            return uuid5(NAMESPACE_DNS, str(v))
+        except (ValueError, TypeError) as err:
+            raise ValueError(f"tenant_id deve ser um UUID válido, recebido: '{v}'") from err
 
 
 class AlertAcknowledgementResponseDTO(BaseModel):

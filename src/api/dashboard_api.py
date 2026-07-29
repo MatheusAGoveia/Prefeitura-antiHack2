@@ -3,6 +3,7 @@ Endpoint de API para o Dashboard de Desenvolvimento (Leitura da MEMORIA.md e Sta
 GovSec Shield — Dev Dashboard API
 """
 
+import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path

@@ -3,7 +3,7 @@ Testes Unitários do Módulo Core
 GovSec Shield — Unit Tests
 """
 
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -39,14 +39,11 @@ class MockTenantRepository:
         limit: int = 100,
         search: str | None = None,
         status: str | None = None,
-        tenant_filter: str | None = None,
+        tenant_filter: UUID | None = None,
     ):
         res = list(self.tenants.values())
         if tenant_filter:
-            res = [
-                t for t in res
-                if str(t.id) == tenant_filter or t.slug == tenant_filter or t.name == tenant_filter
-            ]
+            res = [t for t in res if t.id == tenant_filter]
         if search:
             res = [
                 t
@@ -63,8 +60,6 @@ class MockTenantRepository:
             tenant.deactivate()
             return True
         return False
-
-
 
 
 class MockEventPublisher:
@@ -122,7 +117,7 @@ async def test_ingest_log_handler():
 
 def test_jwt_and_security_kernel_flow():
     tenant_uuid = uuid4()
-    token = JWTUtils.create_access_token(user_id="usr-123", tenant=str(tenant_uuid), roles=["system_admin"])
+    token = JWTUtils.create_access_token(user_id="usr-123", tenant=tenant_uuid, roles=["system_admin"])
     user = SecurityKernel.authenticate(token)
     assert user.user_id == "usr-123"
     assert user.tenant_id == tenant_uuid
@@ -134,7 +129,7 @@ def test_jwt_and_security_kernel_flow():
 
 
 def test_security_kernel_unauthorized():
-    token = JWTUtils.create_access_token(user_id="usr-456", tenant="betim", roles=["viewer"])
+    token = JWTUtils.create_access_token(user_id="usr-456", tenant=uuid4(), roles=["viewer"])
     user = SecurityKernel.authenticate(token)
     with pytest.raises(PermissionError, match="Acesso negado"):
         SecurityKernel.authorize(user, UserRole.SYSTEM_ADMIN)
@@ -189,14 +184,15 @@ def test_rest_api_endpoints_sprint1():
     app.dependency_overrides[get_query_handler] = override_get_query_handler
     app.dependency_overrides[get_log_query_handler] = override_get_log_query_handler
 
-
     try:
         client = TestClient(app)
+
+        test_tenant_uuid = str(uuid4())
 
         # 1. Gerar token de admin
         token_res = client.post(
             "/api/v1/auth/token",
-            json={"user_id": "admin-test", "tenant": "betim", "roles": ["system_admin", "analyst", "viewer"]},
+            json={"user_id": "admin-test", "tenant": test_tenant_uuid, "roles": ["system_admin", "analyst", "viewer"]},
         )
         assert token_res.status_code == 200
         token = token_res.json()["access_token"]
@@ -256,5 +252,3 @@ def test_rest_api_endpoints_sprint1():
         assert del_res.status_code == 204
     finally:
         app.dependency_overrides.clear()
-
-

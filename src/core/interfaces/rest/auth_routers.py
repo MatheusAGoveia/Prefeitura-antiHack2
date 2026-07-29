@@ -21,16 +21,19 @@ if TYPE_CHECKING:
 
 router = APIRouter(prefix="/api/v1/auth", tags=["Authentication"])
 
+DEV_TEST_TENANT_UUID_STR = "00000000-0000-0000-0000-000000000001"
+DEV_TEST_TENANT_UUID = UUID(DEV_TEST_TENANT_UUID_STR)
+
 
 class LoginDTO(BaseModel):
     email: str = Field(..., examples=["admin@govsec.com"])
     password: str = Field(..., examples=["senha123"])
-    tenant_id: str | None = Field(default="betim", examples=["betim"])
+    tenant_id: str | None = Field(default=DEV_TEST_TENANT_UUID_STR, examples=[DEV_TEST_TENANT_UUID_STR])
 
 
 class DevTokenDTO(BaseModel):
     user_id: str = Field(default="dev_user")
-    tenant_id: str = Field(default="betim")
+    tenant_id: str = Field(default=DEV_TEST_TENANT_UUID_STR)
     role: str = Field(default="analyst", description="Role única concedida para dev (viewer, analyst, engineer, security_admin, system_admin)")
 
 
@@ -131,10 +134,13 @@ async def login(dto: LoginDTO) -> LoginResponseDTO:
         if raw_t:
             try:
                 tenant_id = UUID(raw_t)
-            except ValueError:
-                tenant_id = UUID("00000000-0000-0000-0000-000000000001")
+            except ValueError as e:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Parâmetro tenant_id '{raw_t}' não é um UUID válido.",
+                ) from e
         else:
-            tenant_id = UUID("00000000-0000-0000-0000-000000000001")
+            tenant_id = DEV_TEST_TENANT_UUID
 
     access_token = JWTHandler.generate_token(user_id=user_id, tenant_id=tenant_id, roles=roles)
     refresh_token = JWTHandler.generate_refresh_token(user_id=user_id, tenant_id=tenant_id, roles=roles)
@@ -152,7 +158,6 @@ async def login(dto: LoginDTO) -> LoginResponseDTO:
         token_type="Bearer",
         expires_in=28800,
     )
-
 
 
 @router.post("/dev-token", response_model=LoginResponseDTO)
@@ -176,8 +181,11 @@ async def dev_token(dto: DevTokenDTO) -> LoginResponseDTO:
 
     try:
         dev_tenant_uuid = UUID(dto.tenant_id)
-    except ValueError:
-        dev_tenant_uuid = UUID("00000000-0000-0000-0000-000000000001")
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Parâmetro tenant_id '{dto.tenant_id}' não é um UUID válido.",
+        ) from e
 
     roles = [dto.role]
     access_token = JWTHandler.generate_token(user_id=dto.user_id, tenant_id=dev_tenant_uuid, roles=roles)
@@ -231,4 +239,3 @@ async def logout(authorization: str = Header(..., alias="Authorization")) -> Log
         ) from err
 
     return LogoutResponseDTO()
-

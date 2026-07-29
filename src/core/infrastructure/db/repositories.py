@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from uuid import NAMESPACE_DNS, UUID, uuid5
+from uuid import UUID
 
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -210,7 +210,6 @@ class PostgresAlertAcknowledgementRepository(AlertAcknowledgementRepository):
         await self.session.flush()
         return self._to_entity(model)
 
-
     @staticmethod
     def _parse_uuid(val: UUID | str | None) -> UUID | None:
         if val is None:
@@ -219,8 +218,8 @@ class PostgresAlertAcknowledgementRepository(AlertAcknowledgementRepository):
             return val
         try:
             return UUID(str(val))
-        except ValueError:
-            return uuid5(NAMESPACE_DNS, str(val))
+        except (ValueError, TypeError) as err:
+            raise ValueError(f"tenant_id deve ser um UUID válido: '{val}'") from err
 
     async def get_by_fingerprint(
         self, fingerprint: str, tenant_id: UUID | str
@@ -263,8 +262,8 @@ class InMemoryAlertAcknowledgementRepository(AlertAcknowledgementRepository):
             return val
         try:
             return UUID(str(val))
-        except ValueError:
-            return uuid5(NAMESPACE_DNS, str(val))
+        except (ValueError, TypeError) as err:
+            raise ValueError(f"tenant_id deve ser um UUID válido: '{val}'") from err
 
     async def save(self, ack: AlertAcknowledgement) -> AlertAcknowledgement:
         for existing in self._acks:
@@ -335,8 +334,3 @@ class InMemoryTenantRepository(TenantRepository):
             tenant.status = TenantStatus.INACTIVE
             return True
         return False
-
-
-
-
-

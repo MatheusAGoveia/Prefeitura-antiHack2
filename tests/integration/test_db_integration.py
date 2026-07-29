@@ -3,6 +3,8 @@ Testes de Integração com Banco de Dados em Memória / SQLite / Async Postgres
 GovSec Shield — Integration Tests
 """
 
+from uuid import uuid4
+
 import pytest
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -88,12 +90,13 @@ async def test_postgres_alert_acknowledgement_repository_real_persistence(async_
 
     ack_repo = PostgresAlertAcknowledgementRepository(async_session)
 
+    tenant_uuid = uuid4()
     ack = AlertAcknowledgement(
         alert_id="ServiceDown-01",
         fingerprint="fp-real-pg-test-9999",
         reason="Servidor reiniciado graciosamente pela equipe SRE",
         acknowledged_by="operador-sre",
-        tenant_id="betim",
+        tenant_id=tenant_uuid,
     )
 
     saved_ack = await ack_repo.save(ack)
@@ -101,7 +104,7 @@ async def test_postgres_alert_acknowledgement_repository_real_persistence(async_
 
     assert saved_ack.fingerprint == "fp-real-pg-test-9999"
 
-    retrieved = await ack_repo.get_by_fingerprint("fp-real-pg-test-9999", "betim")
+    retrieved = await ack_repo.get_by_fingerprint("fp-real-pg-test-9999", tenant_uuid)
     assert retrieved is not None
     assert retrieved.alert_id == "ServiceDown-01"
     assert retrieved.reason == "Servidor reiniciado graciosamente pela equipe SRE"

@@ -110,7 +110,11 @@ class IngestLogHandler:
         source = command.payload["source"]
         raw_data = command.payload["raw_data"]
         tenant_id_str = command.payload["tenant_id"]
-        tenant_id = UUID(tenant_id_str)
+        try:
+            tenant_id = UUID(str(tenant_id_str))
+        except (ValueError, TypeError) as err:
+            raise ValueError(f"tenant_id deve ser um UUID válido: '{tenant_id_str}'") from err
+
         timestamp_str = command.payload.get("timestamp")
         timestamp = (
             datetime.fromisoformat(timestamp_str) if timestamp_str else datetime.now(timezone.utc)
@@ -150,9 +154,12 @@ class AcknowledgeAlertHandler:
         if isinstance(raw_tenant, UUID):
             tenant_id = raw_tenant
         elif raw_tenant:
-            tenant_id = UUID(str(raw_tenant))
+            try:
+                tenant_id = UUID(str(raw_tenant))
+            except (ValueError, TypeError) as err:
+                raise ValueError(f"tenant_id deve ser um UUID válido: '{raw_tenant}'") from err
         else:
-            tenant_id = UUID("00000000-0000-0000-0000-000000000001")
+            raise ValueError("tenant_id é obrigatório e deve ser um UUID válido.")
 
         # Idempotência: verificar se já existe acknowledgement com este fingerprint e tenant
         existing = await self.ack_repo.get_by_fingerprint(fingerprint, tenant_id)
@@ -194,5 +201,3 @@ class AcknowledgeAlertHandler:
             tenant_id=saved.tenant_id,
             timestamp=saved.timestamp,
         )
-
-

@@ -3,7 +3,7 @@ Rotas FastAPI para o Módulo Core
 GovSec Shield — API Routers
 """
 
-
+from typing import cast
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -49,10 +49,12 @@ from src.core.security import ScopeSafetyConfig
 
 router = APIRouter(prefix="/api/v1", tags=["Core Platform"])
 
+DEV_TEST_TENANT_UUID_STR = "00000000-0000-0000-0000-000000000001"
+
 
 class TokenRequestDTO(BaseModel):
     user_id: str = Field(default="admin-01")
-    tenant: str = Field(default="betim")
+    tenant: str = Field(default=DEV_TEST_TENANT_UUID_STR)
     roles: list[str] = Field(default=["system_admin"])
 
 
@@ -68,8 +70,16 @@ async def generate_token(dto: TokenRequestDTO) -> dict[str, str]:
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Endpoint de emissão direta de token desabilitado fora do ambiente 'dev'.",
         )
+    try:
+        tenant_uuid = UUID(dto.tenant)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Parâmetro tenant '{dto.tenant}' não é um UUID válido.",
+        ) from e
+
     token = JWTUtils.create_access_token(
-        user_id=dto.user_id, tenant=dto.tenant, roles=dto.roles
+        user_id=dto.user_id, tenant=tenant_uuid, roles=dto.roles
     )
     return {"access_token": token, "token_type": "Bearer"}
 
@@ -112,7 +122,7 @@ async def create_tenant(
         SecurityKernel.authorize(current_user, UserRole.SYSTEM_ADMIN)
         command = CreateTenantCommand(name=dto.name, slug=dto.slug)
         result = await command_bus.send(command)
-        return result  # type: ignore[no-any-return]
+        return cast(TenantResponseDTO, result)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
     except PermissionError as e:
@@ -195,7 +205,7 @@ async def update_tenant(
         SecurityKernel.authorize(current_user, UserRole.SYSTEM_ADMIN)
         command = UpdateTenantCommand(tenant_id=tenant_id, name=dto.name, status=dto.status)
         result = await command_bus.send(command)
-        return result  # type: ignore[no-any-return]
+        return cast(TenantResponseDTO, result)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND if "não foi encontrado" in str(e) else status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
     except PermissionError as e:
@@ -307,15 +317,10 @@ async def acknowledge_alert(
             tenant_id=effective_tenant,
         )
         result = await command_bus.send(command)
-        return result  # type: ignore[no-any-return]
+        return cast(AlertAcknowledgementResponseDTO, result)
     except CrossTenantAccessDeniedError as e:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e)) from e
     except PermissionError as e:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e)) from e
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
-
-
-
-
-

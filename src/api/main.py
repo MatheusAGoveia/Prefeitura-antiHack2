@@ -4,13 +4,15 @@ GovSec Shield — API App
 """
 
 import asyncio
+import os
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, status
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 
 from src.api.dashboard_api import router as dashboard_router
 from src.api.middleware.auth import AuthenticationMiddleware
@@ -45,11 +47,9 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
     Inicia e encerra graciosamente o coletor de métricas de sistema.
     """
     # Garantir criação de tabelas se necessário
-    try:
+    with suppress(Exception):
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
-    except Exception as e:
-        logger.warning("Falha ao verificar/criar tabelas no startup: %s", e)
 
     # Startup: iniciar coleta periódica de métricas de sistema (CPU, RAM, Disco)
     metrics_task = asyncio.create_task(
@@ -65,14 +65,28 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
             await metrics_task
 
 
-
-
 app = FastAPI(
     title="GovSec Shield — Core Platform API",
     version="1.0.0",
     description="API do Sistema Operacional de Segurança GovSec Shield",
     lifespan=lifespan,
 )
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+    for err in exc.errors():
+        loc = err.get("loc", ())
+        if "tenant_id" in loc or "tenant" in loc:
+            return JSONResponse(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                content={"detail": f"Parâmetro tenant_id inválido: {err.get('msg')}"},
+            )
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        content={"detail": exc.errors()},
+    )
+
 
 # 3. Middlewares em ordem (outermost → innermost):
 #    RecoveryMiddleware → CORSMiddleware → PrometheusMetrics → Auth

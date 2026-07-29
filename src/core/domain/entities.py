@@ -6,7 +6,7 @@ GovSec Shield — Domain Layer
 from datetime import datetime, timezone
 from enum import StrEnum
 from typing import Any, NewType
-from uuid import NAMESPACE_DNS, UUID, uuid4, uuid5
+from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -62,8 +62,8 @@ class AuditLog(BaseModel):
             return v
         try:
             return UUID(str(v))
-        except ValueError:
-            return uuid5(NAMESPACE_DNS, str(v))
+        except (ValueError, TypeError) as err:
+            raise ValueError(f"tenant_id deve ser um UUID válido, recebido: '{v}'") from err
 
 
 class AlertAcknowledgement(BaseModel):
@@ -86,5 +86,5 @@ class AlertAcknowledgement(BaseModel):
             return v
         try:
             return UUID(str(v))
-        except ValueError:
-            return uuid5(NAMESPACE_DNS, str(v))
+        except (ValueError, TypeError) as err:
+            raise ValueError(f"tenant_id deve ser um UUID válido, recebido: '{v}'") from err

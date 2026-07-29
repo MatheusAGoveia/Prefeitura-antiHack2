@@ -9,6 +9,8 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field
 
+DEV_TEST_TENANT_ID = UUID("00000000-0000-0000-0000-000000000001")
+
 
 class CommandMetadata(BaseModel):
     command_id: UUID = Field(default_factory=uuid4)
@@ -80,7 +82,7 @@ class AcknowledgeAlertCommand(Command):
         fingerprint: str,
         reason: str,
         acknowledged_by: str,
-        tenant_id: UUID | str = "betim",
+        tenant_id: UUID | str = DEV_TEST_TENANT_ID,
         **kwargs: Any,
     ):
         meta = CommandMetadata(command_name="AcknowledgeAlertCommand", tenant=tenant_id)
@@ -92,5 +94,3 @@ class AcknowledgeAlertCommand(Command):
             "tenant_id": tenant_id,
         }
         super().__init__(metadata=meta, payload=payload)
-
-

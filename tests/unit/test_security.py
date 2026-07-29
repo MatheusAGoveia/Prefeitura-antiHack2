@@ -20,7 +20,7 @@ from src.core.infrastructure.security.rbac import UserRole, has_permission
 # -----------------------------------------------------------------------------
 def test_jwt_handler_generate_and_verify():
     user_id = "user-sec-01"
-    tenant_id = "betim"
+    tenant_id = uuid4()
     roles = ["analyst"]
 
     token = JWTHandler.generate_token(user_id=user_id, tenant_id=tenant_id, roles=roles)
@@ -29,14 +29,14 @@ def test_jwt_handler_generate_and_verify():
     payload = JWTHandler.verify_token(token)
     assert payload is not None
     assert payload["sub"] == user_id
-    assert payload["tenant_id"] == tenant_id
+    assert payload["tenant_id"] == str(tenant_id)
     assert payload["roles"] == roles
     assert payload["token_type"] == "access"
 
 
 def test_jwt_refresh_token_flow():
     user_id = "user-sec-02"
-    tenant_id = "betim-saude"
+    tenant_id = uuid4()
     roles = ["engineer"]
 
     refresh_token = JWTHandler.generate_refresh_token(user_id=user_id, tenant_id=tenant_id, roles=roles)
@@ -52,7 +52,7 @@ def test_jwt_refresh_token_flow():
 
 
 def test_jwt_blacklist_logout():
-    token = JWTHandler.generate_token(user_id="user-logout", tenant_id="betim", roles=["viewer"])
+    token = JWTHandler.generate_token(user_id="user-logout", tenant_id=uuid4(), roles=["viewer"])
     assert JWTHandler.verify_token(token) is not None
 
     JWTHandler.blacklist_token(token)
@@ -152,7 +152,7 @@ def test_auth_endpoints_rest():
 @pytest.mark.asyncio
 async def test_opa_client_mock_evaluation():
     opa = OPAClient(mock_mode=True)
-    res_cmd = await opa.evaluate_policy(command_name="CreateTenantCommand", tenant="betim", context={})
+    res_cmd = await opa.evaluate_policy(command_name="CreateTenantCommand", tenant=str(uuid4()), context={})
     assert res_cmd is True
 
     res_user = await opa.evaluate(user={"sub": "admin"}, action="POST", resource="tenants")

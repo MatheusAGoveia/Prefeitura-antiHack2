@@ -5,7 +5,7 @@ GovSec Shield — Infrastructure Security Kernel
 
 import logging
 from typing import Any
-from uuid import NAMESPACE_DNS, UUID, uuid5
+from uuid import UUID
 
 from pydantic import BaseModel
 
@@ -38,9 +38,8 @@ class SecurityKernel:
             raise PermissionError("Claim tenant_id ausente no token de autenticação.")
         try:
             return UUID(str(val))
-        except ValueError:
-            # Convierte slugs ou identifiers não-UUID em UUIDs estáveis e determinísticos (v5)
-            return uuid5(NAMESPACE_DNS, str(val))
+        except ValueError as e:
+            raise PermissionError("Claim tenant_id no token de autenticação deve ser um UUID válido.") from e
 
     @staticmethod
     async def authenticate_async(token: str) -> AuthenticatedUser:
