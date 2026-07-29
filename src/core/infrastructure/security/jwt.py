@@ -13,7 +13,7 @@ import jwt
 
 from src.core.infrastructure.config import settings
 from src.core.infrastructure.security.revocation import (
-    ITokenRevocationStore,
+    BaseTokenRevocationStore,
     InMemoryTokenRevocationStore,
     RedisTokenRevocationStore,
 )
@@ -26,10 +26,10 @@ class JWTHandler:
     Gerencia emissão, decodificação e revogação assíncrona de tokens JWT.
     """
 
-    _revocation_store: ITokenRevocationStore | None = None
+    _revocation_store: BaseTokenRevocationStore | None = None
 
     @classmethod
-    def get_revocation_store(cls) -> ITokenRevocationStore:
+    def get_revocation_store(cls) -> BaseTokenRevocationStore:
         if cls._revocation_store is None:
             if settings.GOVSEC_REDIS_URL:
                 cls._revocation_store = RedisTokenRevocationStore(settings.GOVSEC_REDIS_URL)
@@ -38,7 +38,7 @@ class JWTHandler:
         return cls._revocation_store
 
     @classmethod
-    def set_revocation_store(cls, store: ITokenRevocationStore) -> None:
+    def set_revocation_store(cls, store: BaseTokenRevocationStore) -> None:
         cls._revocation_store = store
 
     @staticmethod

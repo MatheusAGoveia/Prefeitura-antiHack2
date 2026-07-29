@@ -7,7 +7,7 @@
 ## 📌 Estado Atual do Projeto
 - **Repositório:** `MatheusAGoveia/Prefeitura-antiHack2`
 - **Branch Ativa:** `feature/core-platform`
-- **Data da Última Atualização:** 2026-07-29T18:38:00Z
+- **Data da Última Atualização:** 2026-07-29T18:41:00Z
 - **Responsável:** IA Assistente (Arquiteto Principal GovSec Shield)
 
 ---
@@ -61,17 +61,14 @@
   - Removida a duplicação da chave `"tenant"` nos novos tokens gerados pela aplicação.
   - Proibida a compatibilidade silenciosa com tokens legados.
 
-### 4. Correção da Migração Segura 0004 e Saneamento de Dados Legados (2026-07-29)
-- [x] **Migração Alembic (`0004_alert_ack_tenant_id_uuid.py`):**
-  - Removido o mapeamento automático do slug `"betim"` para o UUID de dev/test (`00000000-0000-0000-0000-000000000001`).
-  - `LEGACY_TENANT_MAP` mantido como dicionário explícito configurável por ambiente.
-  - Caso existam slugs não mapeados para o UUID oficial do tenant real, a migração falha fechada (`Fail-Closed`) com mensagem explicativa e instrução de remediação.
-  - Proibida a geração de UUID v5 ou aleatório.
-  - `upgrade()` e `downgrade()` simétricos e reversíveis.
-- [x] **Documentação Operacional (SOP-GOVSEC-DB-004):**
-  - Atualizado [`docs/operational/legacy_tenant_cleanup.md`](file:///c:/Users/matheus.damiao/Desktop/AntiHackin/Prefeitura-antiHack2/docs/operational/legacy_tenant_cleanup.md) removendo a instrução de associar `"betim"` ao UUID de dev/test.
-  - Orientado o saneamento manual via busca do UUID oficial do tenant na tabela `tenants` ou registro explícito em `LEGACY_TENANT_MAP`.
-  - Formatado sem espaços em branco no final de linhas.
+### 4. Correção de Import/Contrato da Revogação JWT e Fixtures de Migração (2026-07-29)
+- [x] **Correção de Contrato de Revogação (`src/core/infrastructure/security/jwt.py`):**
+  - Eliminado o import de `ITokenRevocationStore` (inexistente).
+  - Adotada formalmente a classe base abstrata `BaseTokenRevocationStore` como contrato oficial em `jwt.py` (`get_revocation_store`, `set_revocation_store`, `_revocation_store`).
+  - Preservadas as implementações `InMemoryTokenRevocationStore` e `RedisTokenRevocationStore`.
+  - Preservado o comportamento Fail-Closed do Redis em staging/produção (`RedisRevocationUnavailableError`).
+- [x] **Ajuste Fictício na Fixture de Migração (`tests/integration/test_m2_monitoring.py`):**
+  - Atualizado o teste da migração `0004` para utilizar um UUID oficial fictício (`"a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c6d"`), eliminando qualquer associação de tenant real ao UUID reservado de dev/test (`"00000000-0000-0000-0000-000000000001"`).
 
 ---
 
@@ -85,4 +82,4 @@
 | **2026-07-28** | Soft Delete com timestamp | Regulamentações governamentais proíbem exclusão física de registros de auditoria e configurações. |
 | **2026-07-29** | Docker preflight isolado para Alertmanager | Preflight em container dedicado garante PyYAML e amtool sem dependências dinâmicas em runtime. |
 | **2026-07-29** | Identidade Estrita de Tenant via `tenant_id` | Eliminação total de fallback da claim legada `tenant`, exigindo `tenant_id` UUID em todas as requisições JWT. |
-| **2026-07-29** | Migração Fail-Closed sem Defaults Sintéticos | Slugs legados não são mapeados automaticamente para UUID de dev; exigem cadastro do UUID oficial real ou falham a migração. |
+| **2026-07-29** | Contrato `BaseTokenRevocationStore` Unificado | `JWTHandler` alinhado ao contrato concreto `BaseTokenRevocationStore` em `revocation.py`, evitando `ImportError`. |

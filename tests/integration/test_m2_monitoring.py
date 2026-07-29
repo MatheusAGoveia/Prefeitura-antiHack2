@@ -1129,7 +1129,8 @@ async def test_migration_0004_mapped_legacy_slug_and_downgrade():
     from alembic.operations import Operations
     from sqlalchemy import create_engine, text
     migration_mod = importlib.import_module("src.core.infrastructure.db.migrations.versions.0004_alert_ack_tenant_id_uuid")
-    migration_mod.LEGACY_TENANT_MAP["betim"] = "00000000-0000-0000-0000-000000000001"
+    official_betim_uuid = "a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c6d"
+    migration_mod.LEGACY_TENANT_MAP["betim"] = official_betim_uuid
     upgrade = migration_mod.upgrade
     downgrade = migration_mod.downgrade
 
@@ -1146,7 +1147,7 @@ async def test_migration_0004_mapped_legacy_slug_and_downgrade():
 
         res = conn.execute(text("SELECT tenant_id FROM alert_acknowledgements")).fetchone()
         assert res is not None
-        assert str(res[0]) == "00000000-0000-0000-0000-000000000001"
+        assert str(res[0]) == official_betim_uuid
         conn.commit()
 
         ctx = MigrationContext.configure(conn)
@@ -1156,7 +1157,7 @@ async def test_migration_0004_mapped_legacy_slug_and_downgrade():
 
         res_down = conn.execute(text("SELECT tenant_id FROM alert_acknowledgements")).fetchone()
         assert res_down is not None
-        assert str(res_down[0]) == "00000000-0000-0000-0000-000000000001"
+        assert str(res_down[0]) == official_betim_uuid
 
 
 @pytest.mark.asyncio
