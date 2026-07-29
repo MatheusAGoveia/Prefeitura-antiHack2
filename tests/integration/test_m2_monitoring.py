@@ -35,7 +35,7 @@ def client() -> TestClient:
 # 1. Validação de Segurança e Configurações por Ambiente (Section 4.1 & 4.2 & 4.3)
 # -----------------------------------------------------------------------------
 
-def test_settings_environment_validation_success():
+def test_settings_environment_validation_success(tmp_path: pytest.TempPathFactory):
     """Valida que Settings aceita ambientes dev, test, staging e production."""
     s_dev = Settings(GOVSEC_ENV="dev")
     assert s_dev.GOVSEC_ENV == "dev"
@@ -43,11 +43,18 @@ def test_settings_environment_validation_success():
     s_test = Settings(GOVSEC_ENV="test")
     assert s_test.GOVSEC_ENV == "test"
 
+    valid_rendered = tmp_path / "valid.rendered.yml"
+    valid_rendered.write_text("global:\n  resolve_timeout: 5m\nreceivers:\n  - name: prod-receiver\n")
+
     s_prod = Settings(
         GOVSEC_ENV="production",
         GOVSEC_JWT_SECRET="secret-ultra-seguro-com-mais-de-32-caracteres-para-producao-12345",
+        GOVSEC_ALERTMANAGER_CONFIG=str(valid_rendered),
+        GOVSEC_SLACK_WEBHOOK_URL="https://hooks.slack.com/services/T00/B00/X00",
+        GOVSEC_PAGERDUTY_SERVICE_KEY="pd-service-key-12345",
     )
     assert s_prod.GOVSEC_ENV == "production"
+
 
 
 def test_settings_production_fails_with_default_or_short_jwt_secret():
@@ -324,6 +331,8 @@ def test_render_config_fails_in_production_if_test_receiver_present(
     import scripts.render_alertmanager_config as render_mod
 
     monkeypatch.setenv("GOVSEC_ENV", "production")
+    monkeypatch.setenv("GOVSEC_SLACK_WEBHOOK_URL", "https://hooks.slack.com/services/T00/B00/X00")
+    monkeypatch.setenv("GOVSEC_PAGERDUTY_SERVICE_KEY", "pd-service-key-12345")
 
     bad_template = tmp_path / "bad.template"
     bad_template.write_text(
@@ -333,6 +342,7 @@ def test_render_config_fails_in_production_if_test_receiver_present(
 
     with pytest.raises(ValueError, match="proíbe o uso de 'test-receiver' ou endpoints locais"):
         render_mod.render_config()
+
 
 
 def test_pagerduty_variable_name_consistency():
@@ -352,5 +362,74 @@ def test_pagerduty_variable_name_consistency():
         dev_env_example = f.read()
     assert "GOVSEC_PAGERDUTY_SERVICE_KEY=" in dev_env_example
     assert "GOVSEC_PAGERDUTY_ROUTING_KEY" not in dev_env_example
+
+
+def test_production_fails_if_alertmanager_config_points_to_local_yml(monkeypatch: pytest.MonkeyPatch):
+    """Garante que a inicialização em produção falha se GOVSEC_ALERTMANAGER_CONFIG apontar para alertmanager.yml local."""
+    from src.core.infrastructure.config import Settings
+
+    monkeypatch.setenv("GOVSEC_ENV", "production")
+    monkeypatch.setenv("GOVSEC_JWT_SECRET", "super-secret-govsec-key-32-chars-long-prod")
+    monkeypatch.setenv("GOVSEC_ALERTMANAGER_CONFIG", "deploy/alertmanager/alertmanager.yml")
+    monkeypatch.setenv("GOVSEC_SLACK_WEBHOOK_URL", "https://hooks.slack.com/services/T00/B00/X00")
+    monkeypatch.setenv("GOVSEC_PAGERDUTY_SERVICE_KEY", "pd-service-key-12345")
+
+    with pytest.raises(ValueError, match="não pode utilizar o arquivo local 'alertmanager.yml'"):
+        Settings()
+
+
+def test_production_fails_if_rendered_config_file_does_not_exist(monkeypatch: pytest.MonkeyPatch):
+    """Garante que a inicialização em produção falha se o arquivo renderizado não existir."""
+    from src.core.infrastructure.config import Settings
+
+    monkeypatch.setenv("GOVSEC_ENV", "production")
+    monkeypatch.setenv("GOVSEC_JWT_SECRET", "super-secret-govsec-key-32-chars-long-prod")
+    monkeypatch.setenv("GOVSEC_ALERTMANAGER_CONFIG", "deploy/alertmanager/non_existent.rendered.yml")
+    monkeypatch.setenv("GOVSEC_SLACK_WEBHOOK_URL", "https://hooks.slack.com/services/T00/B00/X00")
+    monkeypatch.setenv("GOVSEC_PAGERDUTY_SERVICE_KEY", "pd-service-key-12345")
+
+    with pytest.raises(FileNotFoundError, match="não foi encontrado"):
+        Settings()
+
+
+def test_production_fails_without_slack_or_pagerduty_secrets(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pytest.TempPathFactory
+):
+    """Garante que a inicialização em produção falha sem segredos de Slack ou PagerDuty."""
+    from src.core.infrastructure.config import Settings
+
+    monkeypatch.setenv("GOVSEC_ENV", "production")
+    monkeypatch.setenv("GOVSEC_JWT_SECRET", "super-secret-govsec-key-32-chars-long-prod")
+
+    valid_rendered = tmp_path / "valid.rendered.yml"
+    valid_rendered.write_text("global:\n  resolve_timeout: 5m\nreceivers:\n  - name: prod-receiver\n")
+    monkeypatch.setenv("GOVSEC_ALERTMANAGER_CONFIG", str(valid_rendered))
+
+    # Sem Slack nem PagerDuty
+    monkeypatch.setenv("GOVSEC_SLACK_WEBHOOK_URL", "")
+    monkeypatch.setenv("GOVSEC_PAGERDUTY_SERVICE_KEY", "")
+
+    with pytest.raises(ValueError, match="Slack e PagerDuty devem estar obrigatoriamente configurados"):
+        Settings()
+
+
+def test_production_accepts_only_validated_rendered_config(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pytest.TempPathFactory
+):
+    """Garante que a inicialização em produção é aprovada quando o arquivo renderizado e os segredos são válidos."""
+    from src.core.infrastructure.config import Settings
+
+    monkeypatch.setenv("GOVSEC_ENV", "production")
+    monkeypatch.setenv("GOVSEC_JWT_SECRET", "super-secret-govsec-key-32-chars-long-prod")
+
+    valid_rendered = tmp_path / "alertmanager.rendered.yml"
+    valid_rendered.write_text("global:\n  resolve_timeout: 5m\nreceivers:\n  - name: prod-receiver\n")
+    monkeypatch.setenv("GOVSEC_ALERTMANAGER_CONFIG", str(valid_rendered))
+    monkeypatch.setenv("GOVSEC_SLACK_WEBHOOK_URL", "https://hooks.slack.com/services/T00/B00/X00")
+    monkeypatch.setenv("GOVSEC_PAGERDUTY_SERVICE_KEY", "pd-service-key-12345")
+
+    s = Settings()
+    assert str(valid_rendered) == s.GOVSEC_ALERTMANAGER_CONFIG
+
 
 

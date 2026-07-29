@@ -50,11 +50,18 @@ def render_config() -> str:
     rendered = template.replace("{{SLACK_CONFIG}}", slack_snippet)
     rendered = rendered.replace("{{PAGERDUTY_CONFIG}}", pagerduty_snippet)
 
-    # Validação de Segurança: Bloquear test-receiver e endpoints locais em Staging/Production
-    if env in ("staging", "production") and ("test-receiver" in rendered or "host.docker.internal" in rendered):
-        raise ValueError(
-            f"🚨 [SECURITY ERROR] Ambiente '{env}' proíbe o uso de 'test-receiver' ou endpoints locais no Alertmanager!"
-        )
+    # Validação de Segurança em Staging / Production:
+    if env in ("staging", "production"):
+        if not slack_url or not pagerduty_key:
+            raise ValueError(
+                f"🚨 [SECURITY ERROR] Ambiente '{env}' exige que Slack (GOVSEC_SLACK_WEBHOOK_URL/FILE) "
+                f"e PagerDuty (GOVSEC_PAGERDUTY_SERVICE_KEY/FILE) estejam configurados!"
+            )
+        if "test-receiver" in rendered or "host.docker.internal" in rendered:
+            raise ValueError(
+                f"🚨 [SECURITY ERROR] Ambiente '{env}' proíbe o uso de 'test-receiver' ou endpoints locais no Alertmanager!"
+            )
+
 
 
     with open(OUTPUT_PATH, "w", encoding="utf-8") as f:

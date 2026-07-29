@@ -26,6 +26,7 @@ Este repositório contém a configuração e documentação operacional do **Ale
 1. Configurar as variáveis de ambiente ou arquivos de segredo:
    ```bash
    export GOVSEC_ENV=production
+   export GOVSEC_ALERTMANAGER_CONFIG=deploy/alertmanager/alertmanager.rendered.yml
    export GOVSEC_SLACK_WEBHOOK_FILE=/var/run/secrets/slack_webhook
    export GOVSEC_PAGERDUTY_SERVICE_FILE=/var/run/secrets/pagerduty_key
    ```
@@ -33,7 +34,8 @@ Este repositório contém a configuração e documentação operacional do **Ale
    ```bash
    poetry run python scripts/render_alertmanager_config.py
    ```
-3. O arquivo `deploy/alertmanager/alertmanager.rendered.yml` será gerado com credenciais seguras e mantido fora do controle de versão via `.gitignore`.
+3. O arquivo `deploy/alertmanager/alertmanager.rendered.yml` será gerado com credenciais seguras e mantido fora do controle de versão via `.gitignore`. O startup da aplicação em `staging`/`production` exige `GOVSEC_ALERTMANAGER_CONFIG` apontando para o arquivo renderizado válido e rejeita o uso do arquivo local `alertmanager.yml`.
+
 
 ## Validação Sintática Local
 
