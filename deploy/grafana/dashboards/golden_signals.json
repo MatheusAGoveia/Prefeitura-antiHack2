@@ -1,169 +1,343 @@
 {
+  "__inputs": [
+    {
+      "name": "DS_PROMETHEUS",
+      "label": "Prometheus",
+      "description": "GovSec Prometheus datasource",
+      "type": "datasource",
+      "pluginId": "prometheus",
+      "pluginName": "Prometheus"
+    }
+  ],
+  "__requires": [
+    {
+      "type": "grafana",
+      "id": "grafana",
+      "name": "Grafana",
+      "version": "11.0.0"
+    },
+    {
+      "type": "datasource",
+      "id": "prometheus",
+      "name": "Prometheus",
+      "version": "1.0.0"
+    }
+  ],
   "annotations": {
     "list": []
   },
+  "description": "GovSec Shield — Painel de Observabilidade com Golden Signals + Eventos + Sistema",
   "editable": true,
   "fiscalYearStartMonth": 0,
-  "graphTooltip": 0,
+  "graphTooltip": 1,
   "id": null,
   "links": [],
-  "liveNow": false,
+  "liveNow": true,
   "panels": [
     {
       "collapsed": false,
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 0
-      },
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "id": 10,
+      "title": "🔴 Golden Signals — HTTP",
+      "type": "row"
+    },
+    {
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 1 },
       "id": 1,
-      "title": "1. Latência (Golden Signal: Latency)",
+      "title": "Latência HTTP — p50 / p95 / p99",
       "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "govsec-prometheus" },
       "targets": [
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "editorMode": "code",
+          "datasource": { "type": "prometheus", "uid": "govsec-prometheus" },
           "expr": "histogram_quantile(0.50, sum(rate(http_request_duration_seconds_bucket[5m])) by (le))",
           "legendFormat": "p50 (Mediana)",
-          "range": true,
           "refId": "A"
         },
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "editorMode": "code",
+          "datasource": { "type": "prometheus", "uid": "govsec-prometheus" },
           "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le))",
           "legendFormat": "p95",
-          "range": true,
           "refId": "B"
         },
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "editorMode": "code",
+          "datasource": { "type": "prometheus", "uid": "govsec-prometheus" },
           "expr": "histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket[5m])) by (le))",
           "legendFormat": "p99",
-          "range": true,
           "refId": "C"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "smooth"
-          },
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "lineInterpolation": "smooth", "lineWidth": 2 },
+          "unit": "s"
+        }
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" } }
+    },
+    {
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 1 },
+      "id": 2,
+      "title": "Tráfego — Requisições por Segundo (RPS)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "govsec-prometheus" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "govsec-prometheus" },
+          "expr": "sum(rate(http_requests_total[5m])) by (method, endpoint)",
+          "legendFormat": "{{method}} {{endpoint}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "bars", "lineWidth": 1 },
+          "unit": "reqps"
+        }
+      }
+    },
+    {
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 9 },
+      "id": 3,
+      "title": "Erros HTTP — 4xx e 5xx por Segundo",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "govsec-prometheus" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "govsec-prometheus" },
+          "expr": "sum(rate(http_requests_total{status_code=~\"5..\"}[5m])) by (status_code)",
+          "legendFormat": "5xx — {{status_code}}",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "govsec-prometheus" },
+          "expr": "sum(rate(http_requests_total{status_code=~\"4..\"}[5m])) by (status_code)",
+          "legendFormat": "4xx — {{status_code}}",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "fixedColor": "red", "mode": "fixed" },
+          "custom": { "drawStyle": "line", "lineInterpolation": "smooth", "lineWidth": 2 },
+          "unit": "errps"
+        }
+      }
+    },
+    {
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 9 },
+      "id": 4,
+      "title": "Saturação — Commands CQRS por Segundo",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "govsec-prometheus" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "govsec-prometheus" },
+          "expr": "sum(rate(cqrs_commands_total[5m])) by (command_name, status)",
+          "legendFormat": "{{command_name}} [{{status}}]",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "drawStyle": "line", "lineInterpolation": "smooth" },
+          "unit": "ops"
+        }
+      }
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 17 },
+      "id": 20,
+      "title": "📡 Eventos de Domínio (EDA)",
+      "type": "row"
+    },
+    {
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 18 },
+      "id": 21,
+      "title": "Eventos de Domínio — Volume por Tipo",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "govsec-prometheus" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "govsec-prometheus" },
+          "expr": "sum(rate(domain_events_total[5m])) by (event_type, status)",
+          "legendFormat": "{{event_type}} [{{status}}]",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "drawStyle": "line", "lineInterpolation": "smooth", "lineWidth": 2 },
+          "unit": "ops"
+        }
+      }
+    },
+    {
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 18 },
+      "id": 22,
+      "title": "Latência dos Event Handlers — p95",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "govsec-prometheus" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "govsec-prometheus" },
+          "expr": "histogram_quantile(0.95, sum(rate(domain_event_handler_duration_seconds_bucket[5m])) by (le, event_type))",
+          "legendFormat": "p95 — {{event_type}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "drawStyle": "line", "lineInterpolation": "smooth" },
           "unit": "s"
         }
       }
     },
     {
       "collapsed": false,
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 0
-      },
-      "id": 2,
-      "title": "2. Tráfego (Golden Signal: Traffic - RPS)",
-      "type": "timeseries",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 26 },
+      "id": 30,
+      "title": "🖥️ Métricas de Sistema (psutil)",
+      "type": "row"
+    },
+    {
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 27 },
+      "id": 31,
+      "title": "CPU — % de Uso",
+      "type": "gauge",
+      "datasource": { "type": "prometheus", "uid": "govsec-prometheus" },
       "targets": [
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "editorMode": "code",
-          "expr": "sum(rate(http_requests_total[5m])) by (method, endpoint)",
-          "legendFormat": "{{method}} {{endpoint}}",
-          "range": true,
+          "datasource": { "type": "prometheus", "uid": "govsec-prometheus" },
+          "expr": "system_cpu_usage_percent",
+          "legendFormat": "CPU %",
           "refId": "A"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "smooth"
-          },
-          "unit": "reqps"
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 70 },
+              { "color": "red", "value": 90 }
+            ]
+          }
         }
       }
     },
     {
-      "collapsed": false,
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 8
-      },
-      "id": 3,
-      "title": "3. Erros (Golden Signal: Errors)",
-      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 27 },
+      "id": 32,
+      "title": "Memória — % de Uso",
+      "type": "gauge",
+      "datasource": { "type": "prometheus", "uid": "govsec-prometheus" },
       "targets": [
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "editorMode": "code",
-          "expr": "sum(rate(http_requests_total{status_code=~\"5..|4..\"}[5m])) by (status_code)",
-          "legendFormat": "HTTP {{status_code}}",
-          "range": true,
+          "datasource": { "type": "prometheus", "uid": "govsec-prometheus" },
+          "expr": "(system_memory_used_bytes / system_memory_total_bytes) * 100",
+          "legendFormat": "Memória %",
           "refId": "A"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "smooth"
-          },
-          "unit": "errps"
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 75 },
+              { "color": "red", "value": 90 }
+            ]
+          }
         }
       }
     },
     {
-      "collapsed": false,
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 8
-      },
-      "id": 4,
-      "title": "4. Saturação CQRS (Golden Signal: Saturation)",
-      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 27 },
+      "id": 33,
+      "title": "Disco — % de Uso",
+      "type": "gauge",
+      "datasource": { "type": "prometheus", "uid": "govsec-prometheus" },
       "targets": [
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
-          },
-          "editorMode": "code",
-          "expr": "sum(rate(cqrs_commands_total[5m])) by (command_name, status)",
-          "legendFormat": "Command {{command_name}} ({{status}})",
-          "range": true,
+          "datasource": { "type": "prometheus", "uid": "govsec-prometheus" },
+          "expr": "(system_disk_used_bytes / system_disk_total_bytes) * 100",
+          "legendFormat": "Disco %",
           "refId": "A"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "smooth"
-          },
-          "unit": "ops"
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 70 },
+              { "color": "red", "value": 85 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 35 },
+      "id": 34,
+      "title": "File Descriptors Abertos",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "govsec-prometheus" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "govsec-prometheus" },
+          "expr": "process_open_file_descriptors",
+          "legendFormat": "FDs Abertos",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "drawStyle": "line", "lineWidth": 2 },
+          "unit": "short"
+        }
+      }
+    },
+    {
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 35 },
+      "id": 35,
+      "title": "Memória — Usado vs Total (bytes)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "govsec-prometheus" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "govsec-prometheus" },
+          "expr": "system_memory_used_bytes",
+          "legendFormat": "Memória Usada",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "govsec-prometheus" },
+          "expr": "system_memory_total_bytes",
+          "legendFormat": "Memória Total",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "drawStyle": "line", "lineInterpolation": "smooth", "lineWidth": 2 },
+          "unit": "bytes"
         }
       }
     }
@@ -171,13 +345,11 @@
   "refresh": "5s",
   "schemaVersion": 38,
   "style": "dark",
-  "tags": ["govsec", "observability", "golden-signals"],
-  "time": {
-    "from": "now-15m",
-    "to": "now"
-  },
+  "tags": ["govsec", "observability", "golden-signals", "sprint2"],
+  "time": { "from": "now-15m", "to": "now" },
   "timepicker": {},
   "timezone": "browser",
-  "title": "GovSec Shield — Golden Signals Dashboard",
-  "uid": "govsec-golden-signals"
+  "title": "GovSec Shield — Observability Dashboard",
+  "uid": "govsec-golden-signals",
+  "version": 2
 }

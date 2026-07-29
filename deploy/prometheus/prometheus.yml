@@ -1,9 +1,27 @@
 global:
   scrape_interval: 5s
   evaluation_interval: 5s
+  external_labels:
+    environment: "development"
+    project: "govsec-shield"
 
 scrape_configs:
+  # Auto-monitoramento do Prometheus
+  - job_name: "prometheus"
+    static_configs:
+      - targets: ["localhost:9090"]
+        labels:
+          service: "prometheus"
+
+  # GovSec Shield — Core API
   - job_name: "govsec-core-api"
     metrics_path: "/metrics"
+    scrape_interval: 5s
     static_configs:
-      - targets: ["govsec-core:8000", "localhost:8000", "host.docker.internal:8000"]
+      - targets:
+          # Dentro da rede Docker: usar host.docker.internal para acessar a API na máquina host
+          - "host.docker.internal:8000"
+        labels:
+          service: "govsec-core"
+          version: "1.0.0"
+          environment: "development"
