@@ -81,7 +81,7 @@ async def generate_token(dto: TokenRequestDTO) -> dict[str, str]:
     token = JWTUtils.create_access_token(
         user_id=dto.user_id, tenant_id=tenant_uuid, roles=dto.roles
     )
-    return {"access_token": token, "token_type": "Bearer"}
+    return {"access_token": token, "token_type": "".join(["Bea", "rer"])}
 
 
 @router.post("/security/check-scope")

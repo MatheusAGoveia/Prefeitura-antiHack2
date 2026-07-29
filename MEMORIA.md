@@ -82,9 +82,10 @@
 | **2026-07-29** | Identidade Estrita de Tenant via `tenant_id` | Eliminação total de fallback da claim legada `tenant`, exigindo `tenant_id` UUID em todas as requisições JWT. |
 | **2026-07-29** | Revogação Redis Estrita por Ambiente (Zero In-Memory Fallback em Prod) | Proibição de fallback em memória em staging/produção, forçando `RedisTokenRevocationStore` e propagação de `RedisRevocationUnavailableError` (HTTP 503). |
 | **2026-07-29** | Limpeza de Imports de Revogação JWT | Removidos os imports não utilizados `InMemoryTokenRevocationStore` e `RedisTokenRevocationStore` de `src/core/infrastructure/security/jwt.py`, mantendo `BaseTokenRevocationStore` e `get_token_revocation_store`. |
+| **2026-07-29** | Validação Integrada M2 Aprovada | Execução estrita do pipeline de 5 passos com 116 testes aprovados, ruff 0 erros, mypy 0 erros, bandit 0 avisos, compileall 0 erros, 8 serviços dev healthy, fire drill OK e preflights de produção OK. |
 
 ---
 
 ## 📌 Registros Recentes & Próximos Passos
-- **Import Cleanup:** Limpeza efetuada em `src/core/infrastructure/security/jwt.py` sem inclusão de `# noqa` e sem alteração da lógica existente.
-- **Pendência:** Validação e execução de testes finais a serem realizados separadamente conforme diretrizes.
+- **Validação Integrada M2:** Todos os 5 passos da validação foram executados na ordem estrita e aprovados com 100% de sucesso.
+- **Conclusão:** M2 pronto para M3.

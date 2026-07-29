@@ -13,6 +13,7 @@ from src.core.infrastructure.policies.opa_client import OPAClient
 from src.core.infrastructure.security.jwt import JWTHandler
 from src.core.infrastructure.security.kernel import SecurityKernel
 from src.core.infrastructure.security.rbac import UserRole, has_permission
+from src.core.infrastructure.security.revocation import InMemoryTokenRevocationStore
 
 
 # -----------------------------------------------------------------------------
@@ -52,6 +53,7 @@ def test_jwt_refresh_token_flow():
 
 
 def test_jwt_blacklist_logout():
+    JWTHandler.set_revocation_store(InMemoryTokenRevocationStore())
     token = JWTHandler.generate_token(user_id="user-logout", tenant_id=uuid4(), roles=["viewer"])
     assert JWTHandler.verify_token(token) is not None
 
@@ -119,6 +121,7 @@ def test_security_kernel_flow():
 # 4. Testes dos Endpoints REST (/api/v1/auth/login, /refresh, /logout)
 # -----------------------------------------------------------------------------
 def test_auth_endpoints_rest():
+    JWTHandler.set_revocation_store(InMemoryTokenRevocationStore())
     client = TestClient(app)
 
     # 1. Login

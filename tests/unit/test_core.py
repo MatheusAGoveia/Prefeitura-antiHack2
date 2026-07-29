@@ -117,7 +117,7 @@ async def test_ingest_log_handler():
 
 def test_jwt_and_security_kernel_flow():
     tenant_uuid = uuid4()
-    token = JWTUtils.create_access_token(user_id="usr-123", tenant=tenant_uuid, roles=["system_admin"])
+    token = JWTUtils.create_access_token(user_id="usr-123", tenant_id=tenant_uuid, roles=["system_admin"])
     user = SecurityKernel.authenticate(token)
     assert user.user_id == "usr-123"
     assert user.tenant_id == tenant_uuid
@@ -129,7 +129,7 @@ def test_jwt_and_security_kernel_flow():
 
 
 def test_security_kernel_unauthorized():
-    token = JWTUtils.create_access_token(user_id="usr-456", tenant=uuid4(), roles=["viewer"])
+    token = JWTUtils.create_access_token(user_id="usr-456", tenant_id=uuid4(), roles=["viewer"])
     user = SecurityKernel.authenticate(token)
     with pytest.raises(PermissionError, match="Acesso negado"):
         SecurityKernel.authorize(user, UserRole.SYSTEM_ADMIN)
