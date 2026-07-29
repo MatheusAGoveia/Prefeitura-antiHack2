@@ -83,9 +83,10 @@
 | **2026-07-29** | Revogação Redis Estrita por Ambiente (Zero In-Memory Fallback em Prod) | Proibição de fallback em memória em staging/produção, forçando `RedisTokenRevocationStore` e propagação de `RedisRevocationUnavailableError` (HTTP 503). |
 | **2026-07-29** | Limpeza de Imports de Revogação JWT | Removidos os imports não utilizados `InMemoryTokenRevocationStore` e `RedisTokenRevocationStore` de `src/core/infrastructure/security/jwt.py`, mantendo `BaseTokenRevocationStore` e `get_token_revocation_store`. |
 | **2026-07-29** | Validação Integrada M2 Aprovada | Execução estrita do pipeline de 5 passos com 116 testes aprovados, ruff 0 erros, mypy 0 erros, bandit 0 avisos, compileall 0 erros, 8 serviços dev healthy, fire drill OK e preflights de produção OK. |
+| **2026-07-29** | Remoção de Ofuscação & Isolação de Estado em Testes | Removidas todas as concatenações artificiais de strings. Adicionada fixture pytest `in_memory_revocation_store` com `try/finally` para isolar e restaurar o estado global de `JWTHandler._revocation_store`. |
 
 ---
 
 ## 📌 Registros Recentes & Próximos Passos
-- **Validação Integrada M2:** Todos os 5 passos da validação foram executados na ordem estrita e aprovados com 100% de sucesso.
-- **Conclusão:** M2 pronto para M3.
+- **Limpeza de Código & Isolação de Testes:** Todas as strings ofuscadas foram substituídas por literais explícitos. O estado global do manipulador JWT é devidamente isolado e restaurado via fixture do pytest.
+- **Validação Integrada M2:** Todos os 5 passos da validação foram executados na ordem estrita e aprovados com 100% de sucesso (116/116 testes passando).

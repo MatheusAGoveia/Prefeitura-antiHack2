@@ -52,8 +52,17 @@ def test_jwt_refresh_token_flow():
     assert payload["token_type"] == "access"
 
 
-def test_jwt_blacklist_logout():
+@pytest.fixture
+def in_memory_revocation_store():
+    previous_store = JWTHandler._revocation_store
     JWTHandler.set_revocation_store(InMemoryTokenRevocationStore())
+    try:
+        yield
+    finally:
+        JWTHandler._revocation_store = previous_store
+
+
+def test_jwt_blacklist_logout(in_memory_revocation_store):
     token = JWTHandler.generate_token(user_id="user-logout", tenant_id=uuid4(), roles=["viewer"])
     assert JWTHandler.verify_token(token) is not None
 
@@ -120,8 +129,7 @@ def test_security_kernel_flow():
 # -----------------------------------------------------------------------------
 # 4. Testes dos Endpoints REST (/api/v1/auth/login, /refresh, /logout)
 # -----------------------------------------------------------------------------
-def test_auth_endpoints_rest():
-    JWTHandler.set_revocation_store(InMemoryTokenRevocationStore())
+def test_auth_endpoints_rest(in_memory_revocation_store):
     client = TestClient(app)
 
     # 1. Login

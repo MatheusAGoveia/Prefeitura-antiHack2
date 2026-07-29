@@ -23,7 +23,6 @@ router = APIRouter(prefix="/api/v1/auth", tags=["Authentication"])
 
 DEV_TEST_TENANT_UUID_STR = "00000000-0000-0000-0000-000000000001"
 DEV_TEST_TENANT_UUID = UUID(DEV_TEST_TENANT_UUID_STR)
-BEARER_TOKEN_TYPE = "".join(["Bea", "rer"])
 
 
 class LoginDTO(BaseModel):
@@ -156,7 +155,7 @@ async def login(dto: LoginDTO) -> LoginResponseDTO:
     return LoginResponseDTO(
         access_token=access_token,
         refresh_token=refresh_token,
-        token_type=BEARER_TOKEN_TYPE,
+        token_type="Bearer",
         expires_in=28800,
     )
 
@@ -195,7 +194,7 @@ async def dev_token(dto: DevTokenDTO) -> LoginResponseDTO:
     return LoginResponseDTO(
         access_token=access_token,
         refresh_token=refresh_token,
-        token_type=BEARER_TOKEN_TYPE,
+        token_type="Bearer",
         expires_in=28800,
     )
 
@@ -208,7 +207,7 @@ async def refresh(dto: RefreshTokenDTO) -> RefreshResponseDTO:
     """
     try:
         new_access_token = await JWTHandler.refresh_token_async(dto.refresh_token)
-        return RefreshResponseDTO(access_token=new_access_token, token_type=BEARER_TOKEN_TYPE, expires_in=28800)
+        return RefreshResponseDTO(access_token=new_access_token, token_type="Bearer", expires_in=28800)
     except (RuntimeError, RedisRevocationUnavailableError) as err:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

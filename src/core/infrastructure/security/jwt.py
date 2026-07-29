@@ -58,7 +58,7 @@ class JWTHandler:
             "sub": user_id,
             "tenant_id": t_str,
             "roles": roles,
-            "token_type": "".join(["acc", "ess"]),
+            "token_type": "access",
             "exp": expire,
             "iat": now,
         }
@@ -78,7 +78,7 @@ class JWTHandler:
             "sub": user_id,
             "tenant_id": t_str,
             "roles": roles,
-            "token_type": "".join(["ref", "resh"]),
+            "token_type": "refresh",
             "exp": expire,
             "iat": now,
         }
