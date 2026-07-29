@@ -16,6 +16,7 @@ from src.core.infrastructure.security.revocation import (
     BaseTokenRevocationStore,
     InMemoryTokenRevocationStore,
     RedisTokenRevocationStore,
+    get_token_revocation_store,
 )
 
 logger = logging.getLogger("govsec.security.jwt")
@@ -31,10 +32,7 @@ class JWTHandler:
     @classmethod
     def get_revocation_store(cls) -> BaseTokenRevocationStore:
         if cls._revocation_store is None:
-            if settings.GOVSEC_REDIS_URL:
-                cls._revocation_store = RedisTokenRevocationStore(settings.GOVSEC_REDIS_URL)
-            else:
-                cls._revocation_store = InMemoryTokenRevocationStore()
+            cls._revocation_store = get_token_revocation_store()
         return cls._revocation_store
 
     @classmethod

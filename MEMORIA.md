@@ -7,7 +7,7 @@
 ## 📌 Estado Atual do Projeto
 - **Repositório:** `MatheusAGoveia/Prefeitura-antiHack2`
 - **Branch Ativa:** `feature/core-platform`
-- **Data da Última Atualização:** 2026-07-29T18:41:00Z
+- **Data da Última Atualização:** 2026-07-29T18:44:00Z
 - **Responsável:** IA Assistente (Arquiteto Principal GovSec Shield)
 
 ---
@@ -61,14 +61,12 @@
   - Removida a duplicação da chave `"tenant"` nos novos tokens gerados pela aplicação.
   - Proibida a compatibilidade silenciosa com tokens legados.
 
-### 4. Correção de Import/Contrato da Revogação JWT e Fixtures de Migração (2026-07-29)
-- [x] **Correção de Contrato de Revogação (`src/core/infrastructure/security/jwt.py`):**
-  - Eliminado o import de `ITokenRevocationStore` (inexistente).
-  - Adotada formalmente a classe base abstrata `BaseTokenRevocationStore` como contrato oficial em `jwt.py` (`get_revocation_store`, `set_revocation_store`, `_revocation_store`).
-  - Preservadas as implementações `InMemoryTokenRevocationStore` e `RedisTokenRevocationStore`.
-  - Preservado o comportamento Fail-Closed do Redis em staging/produção (`RedisRevocationUnavailableError`).
-- [x] **Ajuste Fictício na Fixture de Migração (`tests/integration/test_m2_monitoring.py`):**
-  - Atualizado o teste da migração `0004` para utilizar um UUID oficial fictício (`"a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c6d"`), eliminando qualquer associação de tenant real ao UUID reservado de dev/test (`"00000000-0000-0000-0000-000000000001"`).
+### 4. Seleção de Revogação Redis por Ambiente & Fail-Closed (2026-07-29)
+- [x] **Seleção Estrita por Ambiente (`src/core/infrastructure/security/jwt.py` & `revocation.py`):**
+  - `JWTHandler.get_revocation_store()` delega para a factory `get_token_revocation_store()`.
+  - Em `staging` e `production`, o sistema seleciona **obrigatoriamente** `RedisTokenRevocationStore`, independente de `GOVSEC_REDIS_URL` estar preenchida ou vazia. Fallback em memória (`InMemoryTokenRevocationStore`) é **estritamente proibido** fora de `dev`/`test`.
+  - Em caso de ausência de URL ou indisponibilidade de conexão com o Redis em staging/produção, a operação falha fechada lançando `RedisRevocationUnavailableError`.
+  - Middlewares REST e dependências capturam a exceção e retornam HTTP `503 Service Unavailable` sem vazar credenciais, tokens, URLs ou stack traces.
 
 ---
 
@@ -82,4 +80,4 @@
 | **2026-07-28** | Soft Delete com timestamp | Regulamentações governamentais proíbem exclusão física de registros de auditoria e configurações. |
 | **2026-07-29** | Docker preflight isolado para Alertmanager | Preflight em container dedicado garante PyYAML e amtool sem dependências dinâmicas em runtime. |
 | **2026-07-29** | Identidade Estrita de Tenant via `tenant_id` | Eliminação total de fallback da claim legada `tenant`, exigindo `tenant_id` UUID em todas as requisições JWT. |
-| **2026-07-29** | Contrato `BaseTokenRevocationStore` Unificado | `JWTHandler` alinhado ao contrato concreto `BaseTokenRevocationStore` em `revocation.py`, evitando `ImportError`. |
+| **2026-07-29** | Revogação Redis Estrita por Ambiente (Zero In-Memory Fallback em Prod) | Proibição de fallback em memória em staging/produção, forçando `RedisTokenRevocationStore` e propagação de `RedisRevocationUnavailableError` (HTTP 503). |

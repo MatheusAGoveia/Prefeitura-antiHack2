@@ -83,6 +83,12 @@ class RedisTokenRevocationStore(BaseTokenRevocationStore):
             import redis.asyncio as aioredis
 
             url = self._get_redis_url()
+            if not url:
+                if settings.GOVSEC_ENV in ("staging", "production"):
+                    raise RedisRevocationUnavailableError(
+                        f"🚨 [FAIL-CLOSED] URL do Redis ausente em ambiente '{settings.GOVSEC_ENV}'."
+                    )
+                return None
             return aioredis.from_url(  # type: ignore[no-untyped-call]
                 url,
                 decode_responses=True,
@@ -102,6 +108,12 @@ class RedisTokenRevocationStore(BaseTokenRevocationStore):
             import redis
 
             url = self._get_redis_url()
+            if not url:
+                if settings.GOVSEC_ENV in ("staging", "production"):
+                    raise RedisRevocationUnavailableError(
+                        f"🚨 [FAIL-CLOSED] URL do Redis ausente em ambiente '{settings.GOVSEC_ENV}'."
+                    )
+                return None
             return redis.Redis.from_url(
                 url,
                 decode_responses=True,
@@ -140,7 +152,7 @@ class RedisTokenRevocationStore(BaseTokenRevocationStore):
         except Exception as e:
             logger.error("REDIS_REVOKE_ERROR | key=%s error=%s", key, e)
             if settings.GOVSEC_ENV in ("staging", "production"):
-                raise RuntimeError(
+                raise RedisRevocationUnavailableError(
                     f"🚨 [FAIL-CLOSED] Falha ao gravar revogação no Redis em '{settings.GOVSEC_ENV}': {e}"
                 ) from e
 
@@ -161,7 +173,7 @@ class RedisTokenRevocationStore(BaseTokenRevocationStore):
         except Exception as e:
             logger.error("REDIS_CHECK_ERROR | key=%s error=%s", key, e)
             if settings.GOVSEC_ENV in ("staging", "production"):
-                raise RuntimeError(
+                raise RedisRevocationUnavailableError(
                     f"🚨 [FAIL-CLOSED] Falha ao verificar revogação no Redis em '{settings.GOVSEC_ENV}': {e}"
                 ) from e
             return False
@@ -170,7 +182,7 @@ class RedisTokenRevocationStore(BaseTokenRevocationStore):
         client = await self._get_async_client()
         if client is None:
             if settings.GOVSEC_ENV in ("staging", "production"):
-                raise RuntimeError(
+                raise RedisRevocationUnavailableError(
                     f"🚨 [FAIL-CLOSED] Redis de revogação indisponível em '{settings.GOVSEC_ENV}'."
                 )
             return
@@ -191,7 +203,7 @@ class RedisTokenRevocationStore(BaseTokenRevocationStore):
         except Exception as e:
             logger.error("REDIS_REVOKE_ERROR | key=%s error=%s", key, e)
             if settings.GOVSEC_ENV in ("staging", "production"):
-                raise RuntimeError(
+                raise RedisRevocationUnavailableError(
                     f"🚨 [FAIL-CLOSED] Falha ao gravar revogação no Redis em '{settings.GOVSEC_ENV}': {e}"
                 ) from e
 
@@ -199,7 +211,7 @@ class RedisTokenRevocationStore(BaseTokenRevocationStore):
         client = await self._get_async_client()
         if client is None:
             if settings.GOVSEC_ENV in ("staging", "production"):
-                raise RuntimeError(
+                raise RedisRevocationUnavailableError(
                     f"🚨 [FAIL-CLOSED] Redis de revogação indisponível em '{settings.GOVSEC_ENV}'."
                 )
             return False
@@ -228,10 +240,14 @@ def get_token_revocation_store() -> BaseTokenRevocationStore:
     global _in_memory_store_instance, _redis_store_instance
     if settings.GOVSEC_ENV in ("staging", "production"):
         if _redis_store_instance is None:
-            _redis_store_instance = RedisTokenRevocationStore()
+            _redis_store_instance = RedisTokenRevocationStore(settings.GOVSEC_REDIS_URL)
+        return _redis_store_instance
+
+    if settings.GOVSEC_REDIS_URL:
+        if _redis_store_instance is None:
+            _redis_store_instance = RedisTokenRevocationStore(settings.GOVSEC_REDIS_URL)
         return _redis_store_instance
 
     if _in_memory_store_instance is None:
         _in_memory_store_instance = InMemoryTokenRevocationStore()
     return _in_memory_store_instance
-
