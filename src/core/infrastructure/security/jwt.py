@@ -14,8 +14,6 @@ import jwt
 from src.core.infrastructure.config import settings
 from src.core.infrastructure.security.revocation import (
     BaseTokenRevocationStore,
-    InMemoryTokenRevocationStore,
-    RedisTokenRevocationStore,
     get_token_revocation_store,
 )
 
