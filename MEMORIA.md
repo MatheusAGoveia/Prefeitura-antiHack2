@@ -7,7 +7,7 @@
 ## 📌 Estado Atual do Projeto
 - **Repositório:** `MatheusAGoveia/Prefeitura-antiHack2`
 - **Branch Ativa:** `feature/core-platform`
-- **Data da Última Atualização:** 2026-07-29T18:25:00Z
+- **Data da Última Atualização:** 2026-07-29T18:34:00Z
 - **Responsável:** IA Assistente (Arquiteto Principal GovSec Shield)
 
 ---
@@ -64,10 +64,18 @@
 - [x] **Repositórios:**
   - `PostgresAlertAcknowledgementRepository` e `InMemoryAlertAcknowledgementRepository` utilizam validação estrita de UUID no `_parse_uuid`.
   - Paginação no repositório aplica o filtro de tenant por UUID no banco/memória **antes** do `offset` e `limit`.
+
+### 4. Migração Segura de `alert_acknowledgements.tenant_id` para UUID (2026-07-29)
+- [x] **Migração Alembic (`0004_alert_ack_tenant_id_uuid.py`):**
+  - Estratégia Híbrida de Mapeamento Explícito + Fail-Fast (Interrupção de segurança em dados não mapeados).
+  - Converte slugs legados versionados (ex: `"betim"`, `"dev"`) para o UUID canônico `00000000-0000-0000-0000-000000000001`.
+  - Aborta a migração lançando `ValueError` com mensagem explícita caso existam registros não-UUID desmapeados.
+  - Suporte a `upgrade()` e `downgrade()` totalmente simétricos e seguros em PostgreSQL e SQLite batch mode.
+- [x] **Documentação Operacional (SOP-GOVSEC-DB-004):**
+  - Criado o documento [`docs/operational/legacy_tenant_cleanup.md`](file:///c:/Users/matheus.damiao/Desktop/AntiHackin/Prefeitura-antiHack2/docs/operational/legacy_tenant_cleanup.md) detalhando as consultas SQL de inspeção e remediação manual de dados legados desmapeados.
 - [x] **Suíte de Testes & Validação:**
-  - Adicionados 8 testes comportamentais obrigatórios cobrindo JWT com UUID válido, rejeição de slug/não-UUID, login dev com UUID estável, OIDC em staging/produção, rejeição de tenant inválido em logs/alerts, isolamento multi-tenant por UUID e paginação com filtro prévio.
-  - Suíte total de 112 testes passando (100% de sucesso).
-  - Linters `ruff`, `mypy`, `bandit`, `compileall` e `git diff --check` sem erros ou flags de supressão.
+  - Adicionados testes de migração e idempotência: migração de tabela com UUIDs válidos, falha segura ao encontrar slug não mapeado, conversão de slug mapeado com downgrade funcional, persistência e consulta por UUID, e isolamento de idempotência por tenant UUID.
+  - Suíte total de **116 testes executados e aprovados (100% de sucesso)**.
 
 ---
 
@@ -81,15 +89,18 @@
 | **2026-07-28** | Soft Delete com timestamp | Regulamentações governamentais proíbem exclusão física de registros de auditoria e configurações. |
 | **2026-07-29** | Docker preflight isolado para Alertmanager | Preflight em container dedicado garante PyYAML e amtool sem dependências dinâmicas em runtime. |
 | **2026-07-29** | Identidade Estrita de Tenant via UUID Canônico | Eliminação total de fallback de slug para UUID v5 em autenticação/autorização, assegurando isolamento multi-tenant determinístico. |
+| **2026-07-29** | Migração Híbrida Fail-Fast + Mapeamento Explícito | Saneamento auditável de slugs legados para UUID canônico sem geração de UUID v5 ou aleatório, com interrupção de segurança em dados desconhecidos. |
 
 ---
 
 ## 📈 Histórico de Validações e Testes
 
-- **2026-07-29 (Zero Fallback Slug Refactoring):**
-  - `poetry run pytest --override-ini="addopts=" -v`: **112 passed** (0 failures).
+- **2026-07-29 (Migração Segura alert_acknowledgements.tenant_id -> UUID):**
+  - `poetry run pytest --override-ini="addopts=" -v`: **116 passed** (0 failures).
   - `poetry run ruff check src tests scripts`: **0 issues**.
   - `poetry run mypy src`: **Success (107 source files)**.
   - `poetry run bandit -r src -s B105,B106`: **0 issues**.
   - `poetry run python -m compileall -q src scripts`: **0 errors**.
   - `git diff --check`: **0 errors**.
+  - `docker compose config`: **OK**.
+  - `docker compose ps`: **Todos os 5 serviços Up & Healthy**.

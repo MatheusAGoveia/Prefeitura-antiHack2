@@ -1096,3 +1096,129 @@ async def test_pagination_applies_filter_before_offset_and_limit():
     assert len(res) == 1
     assert res[0].id == t2.id
 
+
+@pytest.mark.asyncio
+async def test_migration_0004_unmapped_invalid_tenant_id_fails_safely():
+    """Garante que a migração 0004 falha de forma segura e explícita quando houver tenant_id não-UUID não mapeado."""
+    import importlib
+
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+    from sqlalchemy import create_engine, text
+    migration_mod = importlib.import_module("src.core.infrastructure.db.migrations.versions.0004_alert_ack_tenant_id_uuid")
+    upgrade = migration_mod.upgrade
+
+    engine = create_engine("sqlite:///:memory:")
+    with engine.connect() as conn:
+        conn.execute(text("CREATE TABLE alert_acknowledgements (id VARCHAR(36), alert_id VARCHAR(128), fingerprint VARCHAR(128), reason VARCHAR(512), acknowledged_by VARCHAR(128), tenant_id VARCHAR(64), timestamp DATETIME)"))
+        conn.execute(text("INSERT INTO alert_acknowledgements VALUES ('1', 'a1', 'fp1', 'r1', 'u1', 'invalid-slug-unmapped', CURRENT_TIMESTAMP)"))
+        conn.commit()
+
+        ctx = MigrationContext.configure(conn)
+        op_ctx = Operations(ctx)
+        with pytest.raises(ValueError, match="Migração 0004 interrompida"):
+            upgrade(op_ctx)
+
+
+@pytest.mark.asyncio
+async def test_migration_0004_mapped_legacy_slug_and_downgrade():
+    """Garante que a migração 0004 converte slugs mapeados ('betim') para UUID canônico e permite downgrade."""
+    import importlib
+
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+    from sqlalchemy import create_engine, text
+    migration_mod = importlib.import_module("src.core.infrastructure.db.migrations.versions.0004_alert_ack_tenant_id_uuid")
+    upgrade = migration_mod.upgrade
+    downgrade = migration_mod.downgrade
+
+    engine = create_engine("sqlite:///:memory:")
+    with engine.connect() as conn:
+        conn.execute(text("CREATE TABLE alert_acknowledgements (id VARCHAR(36), alert_id VARCHAR(128), fingerprint VARCHAR(128), reason VARCHAR(512), acknowledged_by VARCHAR(128), tenant_id VARCHAR(64), timestamp DATETIME)"))
+        conn.execute(text("INSERT INTO alert_acknowledgements VALUES ('1', 'a1', 'fp1', 'r1', 'u1', 'betim', CURRENT_TIMESTAMP)"))
+        conn.commit()
+
+        ctx = MigrationContext.configure(conn)
+        op_ctx = Operations(ctx)
+        upgrade(op_ctx)
+        conn.commit()
+
+        res = conn.execute(text("SELECT tenant_id FROM alert_acknowledgements")).fetchone()
+        assert res is not None
+        assert str(res[0]) == "00000000-0000-0000-0000-000000000001"
+        conn.commit()
+
+        ctx = MigrationContext.configure(conn)
+        op_ctx = Operations(ctx)
+        downgrade(op_ctx)
+        conn.commit()
+
+        res_down = conn.execute(text("SELECT tenant_id FROM alert_acknowledgements")).fetchone()
+        assert res_down is not None
+        assert str(res_down[0]) == "00000000-0000-0000-0000-000000000001"
+
+
+@pytest.mark.asyncio
+async def test_acknowledgement_persists_and_queries_using_uuid():
+    """Garante que acknowledgement persiste e consulta utilizando UUID estritamente."""
+    from src.core.domain.entities import AlertAcknowledgement
+    from src.core.infrastructure.db.repositories import InMemoryAlertAcknowledgementRepository
+
+    repo = InMemoryAlertAcknowledgementRepository()
+    tenant_uuid = uuid.uuid4()
+
+    ack = AlertAcknowledgement(
+        alert_id="ServiceDown-01",
+        fingerprint="fp-uuid-test-123",
+        reason="Servidor reiniciado",
+        acknowledged_by="operador-1",
+        tenant_id=tenant_uuid,
+    )
+    saved = await repo.save(ack)
+    assert saved.tenant_id == tenant_uuid
+
+    retrieved = await repo.get_by_fingerprint("fp-uuid-test-123", tenant_uuid)
+    assert retrieved is not None
+    assert retrieved.tenant_id == tenant_uuid
+
+
+@pytest.mark.asyncio
+async def test_acknowledgement_idempotency_isolated_per_tenant_uuid():
+    """Garante que a idempotência por fingerprint permanece isolada por tenant UUID."""
+    from src.core.domain.entities import AlertAcknowledgement
+    from src.core.infrastructure.db.repositories import InMemoryAlertAcknowledgementRepository
+
+    repo = InMemoryAlertAcknowledgementRepository()
+    tenant_a_uuid = uuid.uuid4()
+    tenant_b_uuid = uuid.uuid4()
+    fingerprint = "shared-fingerprint-999"
+
+    ack_a = AlertAcknowledgement(
+        alert_id="ServiceDown-01",
+        fingerprint=fingerprint,
+        reason="Ack no Tenant A",
+        acknowledged_by="analyst-a",
+        tenant_id=tenant_a_uuid,
+    )
+    ack_b = AlertAcknowledgement(
+        alert_id="ServiceDown-01",
+        fingerprint=fingerprint,
+        reason="Ack no Tenant B",
+        acknowledged_by="analyst-b",
+        tenant_id=tenant_b_uuid,
+    )
+
+    saved_a = await repo.save(ack_a)
+    saved_b = await repo.save(ack_b)
+
+    # Ambos foram aceitos de forma independente porque pertencem a tenants diferentes
+    assert saved_a.id != saved_b.id
+    assert saved_a.tenant_id == tenant_a_uuid
+    assert saved_b.tenant_id == tenant_b_uuid
+
+    retrieved_a = await repo.get_by_fingerprint(fingerprint, tenant_a_uuid)
+    retrieved_b = await repo.get_by_fingerprint(fingerprint, tenant_b_uuid)
+
+    assert retrieved_a is not None and retrieved_a.acknowledged_by == "analyst-a"
+    assert retrieved_b is not None and retrieved_b.acknowledged_by == "analyst-b"
+
