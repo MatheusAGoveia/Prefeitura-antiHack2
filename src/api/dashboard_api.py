@@ -4,7 +4,6 @@ GovSec Shield — Dev Dashboard API
 """
 
 import re
-import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -40,28 +39,11 @@ class MemoriaDashboardResponse(BaseModel):
 
 
 def _get_git_info() -> GitInfo:
-    try:
-        branch = subprocess.check_output(
-            ["git", "rev-parse", "--abbrev-ref", "HEAD"], text=True
-        ).strip()
-        commit_hash = subprocess.check_output(
-            ["git", "rev-parse", "--short", "HEAD"], text=True
-        ).strip()
-        commit_msg = subprocess.check_output(
-            ["git", "log", "-1", "--pretty=format:%s"], text=True
-        ).strip()
-        commit_author = subprocess.check_output(
-            ["git", "log", "-1", "--pretty=format:%an"], text=True
-        ).strip()
-        commit_date = subprocess.check_output(
-            ["git", "log", "-1", "--pretty=format:%cd", "--date=iso-strict"], text=True
-        ).strip()
-    except Exception:
-        branch = "feature/core-platform"
-        commit_hash = "unknown"
-        commit_msg = "Initial commit"
-        commit_author = "GovSec Team"
-        commit_date = datetime.now(timezone.utc).isoformat()
+    branch = os.getenv("GOVSEC_GIT_BRANCH", "main")
+    commit_hash = os.getenv("GOVSEC_GIT_COMMIT", "a1b2c3d")
+    commit_msg = os.getenv("GOVSEC_GIT_MSG", "GovSec Shield Release")
+    commit_author = os.getenv("GOVSEC_GIT_AUTHOR", "GovSec Shield Core Team")
+    commit_date = os.getenv("GOVSEC_GIT_DATE", datetime.now(timezone.utc).isoformat())
 
     return GitInfo(
         branch=branch,

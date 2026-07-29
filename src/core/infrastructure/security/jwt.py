@@ -32,15 +32,16 @@ class JWTHandler:
 
     @staticmethod
     def generate_token(
-        user_id: str, tenant_id: str, roles: list[str], expires_in: int = 28800
+        user_id: str, tenant_id: str | uuid.UUID, roles: list[str], expires_in: int = 28800
     ) -> str:
         now = datetime.now(timezone.utc)
         expire = now + timedelta(seconds=expires_in)
+        t_str = str(tenant_id)
         to_encode = {
             "jti": str(uuid.uuid4()),
             "sub": user_id,
-            "tenant_id": tenant_id,
-            "tenant": tenant_id,
+            "tenant_id": t_str,
+            "tenant": t_str,
             "roles": roles,
             "token_type": "access",
             "exp": expire,
@@ -52,15 +53,16 @@ class JWTHandler:
 
     @staticmethod
     def generate_refresh_token(
-        user_id: str, tenant_id: str, roles: list[str], expires_in: int = 604800
+        user_id: str, tenant_id: str | uuid.UUID, roles: list[str], expires_in: int = 604800
     ) -> str:
         now = datetime.now(timezone.utc)
         expire = now + timedelta(seconds=expires_in)
+        t_str = str(tenant_id)
         to_encode = {
             "jti": str(uuid.uuid4()),
             "sub": user_id,
-            "tenant_id": tenant_id,
-            "tenant": tenant_id,
+            "tenant_id": t_str,
+            "tenant": t_str,
             "roles": roles,
             "token_type": "refresh",
             "exp": expire,

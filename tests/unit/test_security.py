@@ -3,6 +3,8 @@ Suíte de Testes Unitários de Segurança & Autenticação (Sprint 0.2)
 GovSec Shield — Security Tests
 """
 
+from uuid import uuid4
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -95,11 +97,13 @@ def test_rbac_permissions_matrix():
 # 3. Testes do SecurityKernel (Authenticate, Authorize & Audit)
 # -----------------------------------------------------------------------------
 def test_security_kernel_flow():
-    token = JWTHandler.generate_token(user_id="sec-kernel-user", tenant_id="betim", roles=["security_admin"])
+    tenant_uuid = uuid4()
+    token = JWTHandler.generate_token(user_id="sec-kernel-user", tenant_id=tenant_uuid, roles=["security_admin"])
     user = SecurityKernel.authenticate(token)
 
     assert user.user_id == "sec-kernel-user"
-    assert user.tenant == "betim"
+    assert user.tenant_id == tenant_uuid
+    assert user.tenant == str(tenant_uuid)
 
     # Authorize por role
     assert SecurityKernel.authorize(user, UserRole.SECURITY_ADMIN) is True

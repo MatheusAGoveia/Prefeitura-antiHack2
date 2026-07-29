@@ -66,7 +66,7 @@ class AlertAcknowledgementModel(Base):
     fingerprint: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     reason: Mapped[str] = mapped_column(String(512), nullable=False)
     acknowledged_by: Mapped[str] = mapped_column(String(128), nullable=False)
-    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    tenant_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, index=True)
     timestamp: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False, index=True
     )

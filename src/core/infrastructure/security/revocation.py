@@ -9,6 +9,7 @@ from abc import ABC, abstractmethod
 from datetime import datetime, timezone
 from typing import Any
 
+from src.core.domain.exceptions import RedisRevocationUnavailableError
 from src.core.infrastructure.config import settings
 
 logger = logging.getLogger("govsec.security.revocation")
@@ -82,7 +83,7 @@ class RedisTokenRevocationStore(BaseTokenRevocationStore):
             import redis.asyncio as aioredis
 
             url = self._get_redis_url()
-            return aioredis.from_url(
+            return aioredis.from_url(  # type: ignore[no-untyped-call]
                 url,
                 decode_responses=True,
                 socket_timeout=2.0,
@@ -91,8 +92,8 @@ class RedisTokenRevocationStore(BaseTokenRevocationStore):
         except Exception as e:
             logger.error("REDIS_CONNECTION_FAILED | error=%s", e)
             if settings.GOVSEC_ENV in ("staging", "production"):
-                raise RuntimeError(
-                    f"🚨 [FAIL-CLOSED] Erro ao conectar ao Redis de revogação em ambiente '{settings.GOVSEC_ENV}': {e}"
+                raise RedisRevocationUnavailableError(
+                    f"🚨 [FAIL-CLOSED] Erro ao conectar ao Redis de revogação em ambiente '{settings.GOVSEC_ENV}'."
                 ) from e
             return None
 
@@ -110,8 +111,8 @@ class RedisTokenRevocationStore(BaseTokenRevocationStore):
         except Exception as e:
             logger.error("REDIS_CONNECTION_FAILED | error=%s", e)
             if settings.GOVSEC_ENV in ("staging", "production"):
-                raise RuntimeError(
-                    f"🚨 [FAIL-CLOSED] Erro ao conectar ao Redis de revogação em ambiente '{settings.GOVSEC_ENV}': {e}"
+                raise RedisRevocationUnavailableError(
+                    f"🚨 [FAIL-CLOSED] Erro ao conectar ao Redis de revogação em ambiente '{settings.GOVSEC_ENV}'."
                 ) from e
             return None
 
@@ -119,7 +120,7 @@ class RedisTokenRevocationStore(BaseTokenRevocationStore):
         client = self._get_sync_client()
         if client is None:
             if settings.GOVSEC_ENV in ("staging", "production"):
-                raise RuntimeError(
+                raise RedisRevocationUnavailableError(
                     f"🚨 [FAIL-CLOSED] Redis de revogação indisponível em '{settings.GOVSEC_ENV}'."
                 )
             return
@@ -147,7 +148,7 @@ class RedisTokenRevocationStore(BaseTokenRevocationStore):
         client = self._get_sync_client()
         if client is None:
             if settings.GOVSEC_ENV in ("staging", "production"):
-                raise RuntimeError(
+                raise RedisRevocationUnavailableError(
                     f"🚨 [FAIL-CLOSED] Redis de revogação indisponível em '{settings.GOVSEC_ENV}'."
                 )
             return False
@@ -212,8 +213,8 @@ class RedisTokenRevocationStore(BaseTokenRevocationStore):
         except Exception as e:
             logger.error("REDIS_CHECK_ERROR | key=%s error=%s", key, e)
             if settings.GOVSEC_ENV in ("staging", "production"):
-                raise RuntimeError(
-                    f"🚨 [FAIL-CLOSED] Falha ao verificar revogação no Redis em '{settings.GOVSEC_ENV}': {e}"
+                raise RedisRevocationUnavailableError(
+                    f"🚨 [FAIL-CLOSED] Falha ao verificar revogação no Redis em '{settings.GOVSEC_ENV}'."
                 ) from e
             return False
 

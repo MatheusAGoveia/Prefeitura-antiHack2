@@ -146,7 +146,13 @@ class AcknowledgeAlertHandler:
         fingerprint = command.payload["fingerprint"]
         reason = command.payload["reason"]
         acknowledged_by = command.payload["acknowledged_by"]
-        tenant_id = command.payload.get("tenant_id", "betim")
+        raw_tenant = command.payload.get("tenant_id")
+        if isinstance(raw_tenant, UUID):
+            tenant_id = raw_tenant
+        elif raw_tenant:
+            tenant_id = UUID(str(raw_tenant))
+        else:
+            tenant_id = UUID("00000000-0000-0000-0000-000000000001")
 
         # Idempotência: verificar se já existe acknowledgement com este fingerprint e tenant
         existing = await self.ack_repo.get_by_fingerprint(fingerprint, tenant_id)

@@ -14,7 +14,7 @@ class CommandMetadata(BaseModel):
     command_id: UUID = Field(default_factory=uuid4)
     command_name: str
     version: str = "1.0.0"
-    tenant: str | None = None
+    tenant: str | UUID | None = None
     correlation_id: str = Field(default_factory=lambda: str(uuid4()))
     idempotency_key: str | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
@@ -80,7 +80,7 @@ class AcknowledgeAlertCommand(Command):
         fingerprint: str,
         reason: str,
         acknowledged_by: str,
-        tenant_id: str = "betim",
+        tenant_id: UUID | str = "betim",
         **kwargs: Any,
     ):
         meta = CommandMetadata(command_name="AcknowledgeAlertCommand", tenant=tenant_id)

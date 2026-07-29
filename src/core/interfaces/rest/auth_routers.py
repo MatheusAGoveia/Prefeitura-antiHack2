@@ -1,4 +1,5 @@
 from typing import TYPE_CHECKING
+from uuid import UUID
 
 from fastapi import APIRouter, Header, HTTPException, status
 from pydantic import BaseModel, Field
@@ -6,6 +7,7 @@ from pydantic import BaseModel, Field
 from src.core.domain.exceptions import (
     AuthenticationProviderUnavailableError,
     InvalidCredentialsError,
+    RedisRevocationUnavailableError,
 )
 from src.core.infrastructure.config import settings
 from src.core.infrastructure.security.jwt import JWTHandler
@@ -91,15 +93,48 @@ async def login(dto: LoginDTO) -> LoginResponseDTO:
                 status_code=status.HTTP_401_UNAUTHORIZED, detail=str(e)
             ) from e
 
-        # Utilizar claims do provider OIDC ao invés de derivação local
-        user_id = claims.get("sub", dto.email.split("@")[0])
-        roles = claims.get("roles", ["viewer"])
-        tenant_id = claims.get("tenant_id", dto.tenant_id or "betim")
+        # Validação estrita de claims OIDC em staging/produção (Sem fallbacks para payload ou defaults)
+        user_id = claims.get("sub")
+        raw_tenant_id = claims.get("tenant_id")
+        roles = claims.get("roles")
+
+        if not user_id or not isinstance(user_id, str):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Autenticação falhou: Claim 'sub' ausente ou inválido no provedor OIDC.",
+            )
+
+        if not raw_tenant_id:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Autenticação falhou: Claim 'tenant_id' ausente no provedor OIDC.",
+            )
+
+        try:
+            tenant_id = UUID(str(raw_tenant_id))
+        except ValueError as e:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Autenticação falhou: Claim 'tenant_id' retornado pelo provedor OIDC não é um UUID válido.",
+            ) from e
+
+        if not roles or not isinstance(roles, list) or len(roles) == 0:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Autenticação falhou: Claim 'roles' ausente ou vazio no provedor OIDC.",
+            )
     else:
-        # Ambiente dev/test: derivação local de roles a partir do email
+        # Ambiente dev/test: derivação local para desenvolvimento
         user_id = dto.email.split("@")[0]
         roles = _resolve_roles_for_user(dto.email)
-        tenant_id = dto.tenant_id or "betim"
+        raw_t = dto.tenant_id
+        if raw_t:
+            try:
+                tenant_id = UUID(raw_t)
+            except ValueError:
+                tenant_id = UUID("00000000-0000-0000-0000-000000000001")
+        else:
+            tenant_id = UUID("00000000-0000-0000-0000-000000000001")
 
     access_token = JWTHandler.generate_token(user_id=user_id, tenant_id=tenant_id, roles=roles)
     refresh_token = JWTHandler.generate_refresh_token(user_id=user_id, tenant_id=tenant_id, roles=roles)
@@ -139,9 +174,14 @@ async def dev_token(dto: DevTokenDTO) -> LoginResponseDTO:
             detail=f"Role '{dto.role}' inválida. Escolha entre {allowed_roles}.",
         )
 
+    try:
+        dev_tenant_uuid = UUID(dto.tenant_id)
+    except ValueError:
+        dev_tenant_uuid = UUID("00000000-0000-0000-0000-000000000001")
+
     roles = [dto.role]
-    access_token = JWTHandler.generate_token(user_id=dto.user_id, tenant_id=dto.tenant_id, roles=roles)
-    refresh_token = JWTHandler.generate_refresh_token(user_id=dto.user_id, tenant_id=dto.tenant_id, roles=roles)
+    access_token = JWTHandler.generate_token(user_id=dto.user_id, tenant_id=dev_tenant_uuid, roles=roles)
+    refresh_token = JWTHandler.generate_refresh_token(user_id=dto.user_id, tenant_id=dev_tenant_uuid, roles=roles)
 
     return LoginResponseDTO(
         access_token=access_token,
@@ -160,11 +200,11 @@ async def refresh(dto: RefreshTokenDTO) -> RefreshResponseDTO:
     try:
         new_access_token = await JWTHandler.refresh_token_async(dto.refresh_token)
         return RefreshResponseDTO(access_token=new_access_token, token_type="Bearer", expires_in=28800)
-    except RuntimeError as e:
+    except (RuntimeError, RedisRevocationUnavailableError) as err:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"Serviço de revogação temporariamente indisponível: {e}",
-        ) from e
+            detail="Serviço de revogação temporariamente indisponível.",
+        ) from err
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(e)) from e
 
@@ -184,11 +224,11 @@ async def logout(authorization: str = Header(..., alias="Authorization")) -> Log
     token = authorization.split(" ")[1]
     try:
         await JWTHandler.blacklist_token_async(token)
-    except RuntimeError as e:
+    except (RuntimeError, RedisRevocationUnavailableError) as err:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"Serviço de revogação temporariamente indisponível: {e}",
-        ) from e
+            detail="Serviço de revogação temporariamente indisponível.",
+        ) from err
 
     return LogoutResponseDTO()
 

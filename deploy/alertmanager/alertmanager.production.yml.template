@@ -20,7 +20,7 @@ route:
 
     - match:
         severity: info
-      receiver: "dev-null"
+      receiver: "slack-warnings"
       continue: false
 
 inhibit_rules:
@@ -38,5 +38,3 @@ receivers:
 
   - name: "slack-warnings"
     {{SLACK_CONFIG}}
-
-  - name: "dev-null"

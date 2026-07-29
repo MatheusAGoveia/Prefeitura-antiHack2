@@ -48,8 +48,8 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
     try:
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("Falha ao verificar/criar tabelas no startup: %s", e)
 
     # Startup: iniciar coleta periódica de métricas de sistema (CPU, RAM, Disco)
     metrics_task = asyncio.create_task(
@@ -120,4 +120,5 @@ async def get_dashboard() -> HTMLResponse | str:
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run("src.api.main:app", host="0.0.0.0", port=8000, reload=True)
+    host = os.getenv("GOVSEC_HOST", "127.0.0.1")
+    uvicorn.run("src.api.main:app", host=host, port=8000, reload=True)

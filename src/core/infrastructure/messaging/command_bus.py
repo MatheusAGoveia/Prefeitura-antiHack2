@@ -107,7 +107,7 @@ class CommandBus:
             # 2. OPA Policy Engine Check (INV-005)
             allowed = await self.opa_client.evaluate_policy(
                 command_name=command_name,
-                tenant=tenant,
+                tenant=str(tenant),
                 context=command.metadata.model_dump(mode="json"),
             )
 

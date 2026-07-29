@@ -40,72 +40,71 @@ class TenantAuthorizationService:
     """
 
     @staticmethod
-    def _normalize_tenant_identifier(value: str) -> str:
-        """
-        Normaliza o identificador de tenant para comparação canônica.
-        UUIDs são comparados case-insensitive; strings são comparadas verbatim.
-        """
-        stripped = value.strip()
+    def _parse_uuid(val: str | UUID) -> UUID | None:
+        if isinstance(val, UUID):
+            return val
+        val_str = str(val).strip()
+        if not val_str:
+            return None
         try:
-            return str(UUID(stripped))
+            return UUID(val_str)
         except ValueError:
-            return stripped
+            return None
 
     @staticmethod
     def authorize_tenant_access(
         current_user: AuthenticatedUserProtocol,
         target_tenant: str | UUID | None = None,
         action: str = "ACCESS",
-    ) -> str:
+    ) -> UUID:
         """
-        Valida a permissão de acesso ao tenant e retorna o tenant_id efetivo da operação.
+        Valida a permissão de acesso ao tenant e retorna o tenant_id (UUID) efetivo da operação.
         Lança CrossTenantAccessDeniedError se um usuário comum tentar operar fora de seu tenant.
-
-        Args:
-            current_user: Usuário autenticado (Protocol, sem dependência de infraestrutura).
-            target_tenant: Tenant alvo da operação (UUID ou slug).
-            action: Nome da ação para logging.
-
-        Returns:
-            O tenant_id efetivo (string) para a operação.
         """
-        user_tenant = current_user.tenant
+        user_tenant_uuid = (
+            current_user.tenant_id
+            if hasattr(current_user, "tenant_id") and isinstance(current_user.tenant_id, UUID)
+            else UUID(str(current_user.tenant))
+        )
         is_sys_admin = "system_admin" in current_user.roles
 
         if target_tenant is None:
-            return user_tenant
+            return user_tenant_uuid
 
-        target_str = str(target_tenant).strip()
-        if not target_str:
-            return user_tenant
+        target_uuid = TenantAuthorizationService._parse_uuid(target_tenant)
+        if target_uuid is None:
+            # Se target_tenant não for um UUID válido e for passado, trata-se de slug ou id inválido
+            if not is_sys_admin:
+                raise CrossTenantAccessDeniedError(
+                    f"Acesso negado. Usuário do tenant '{user_tenant_uuid}' não possui "
+                    f"permissão para acessar tenant inválido ou de outro escopo ('{target_tenant}')."
+                )
+            # Para sysadmin permitimos fallback ou busca
+            return user_tenant_uuid
 
-        # Normalizar ambos para comparação canônica (UUID case-insensitive)
-        normalized_user = TenantAuthorizationService._normalize_tenant_identifier(user_tenant)
-        normalized_target = TenantAuthorizationService._normalize_tenant_identifier(target_str)
-
-        if normalized_target == normalized_user:
-            return user_tenant
+        if target_uuid == user_tenant_uuid:
+            return user_tenant_uuid
 
         # Operação Cross-Tenant solicitada
         if not is_sys_admin:
             logger.warning(
                 "CROSS_TENANT_ACCESS_DENIED | user_id=%s user_tenant=%s target_tenant=%s action=%s",
                 current_user.user_id,
-                user_tenant,
-                target_str,
+                user_tenant_uuid,
+                target_uuid,
                 action,
             )
             raise CrossTenantAccessDeniedError(
-                f"Acesso negado. Usuário do tenant '{user_tenant}' não possui "
-                f"permissão para realizar a ação '{action}' no tenant '{target_str}'."
+                f"Acesso negado. Usuário do tenant '{user_tenant_uuid}' não possui "
+                f"permissão para realizar a ação '{action}' no tenant '{target_uuid}'."
             )
 
         # Usuário system_admin realizando operação cross-tenant autorizada
         logger.info(
             "CROSS_TENANT_ACCESS_AUTHORIZED | user_id=%s origin_tenant=%s target_tenant=%s action=%s",
             current_user.user_id,
-            user_tenant,
-            target_str,
+            user_tenant_uuid,
+            target_uuid,
             action,
         )
-        return target_str
+        return target_uuid

@@ -21,7 +21,7 @@ class ListTenantsQuery(BaseModel):
     limit: int = 100
     search: str | None = None
     status: str | None = None
-    tenant_filter: str | None = None
+    tenant_filter: UUID | None = None
 
 
 class ListLogsQuery(BaseModel):

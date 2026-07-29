@@ -145,9 +145,9 @@ def collect_db_pool_metrics() -> None:
         from src.core.infrastructure.db.unit_of_work import engine
 
         pool = engine.pool
-        size = pool.size()
-        checkedout = pool.checkedout()
-        overflow = pool.overflow()
+        size = pool.size()  # type: ignore[attr-defined]
+        checkedout = pool.checkedout()  # type: ignore[attr-defined]
+        overflow = pool.overflow()  # type: ignore[attr-defined]
         available = max(0, (size + overflow) - checkedout)
 
         GOVSEC_DB_POOL_SIZE.set(size)

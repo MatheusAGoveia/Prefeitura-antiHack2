@@ -135,9 +135,9 @@ async def list_tenants(
         SecurityKernel.authorize(current_user, UserRole.VIEWER)
         is_sys_admin = "system_admin" in current_user.roles
 
-        # Filtro de tenant aplicado na camada de repositório (antes do LIMIT/OFFSET)
+        # Filtro de tenant por UUID aplicado na camada de repositório (antes do LIMIT/OFFSET)
         # para evitar vazamento de contagem e páginas falsamente vazias
-        tenant_filter = None if is_sys_admin else current_user.tenant
+        tenant_filter = None if is_sys_admin else current_user.tenant_id
 
         tenants = await query_handler.list(
             ListTenantsQuery(
@@ -253,15 +253,25 @@ async def ingest_log(
 async def list_logs(
     skip: int = Query(0, ge=0, description="Offset de paginação"),
     limit: int = Query(100, ge=1, le=500, description="Limite por página"),
-    tenant_id: UUID | str | None = Query(None, description="Filtro por UUID/slug do Tenant"),
+    tenant_id: str | None = Query(None, description="Filtro por UUID do Tenant"),
     source: str | None = Query(None, description="Filtro por nome da fonte ingestora"),
     query_handler: LogQueryHandler = Depends(get_log_query_handler),
     current_user: AuthenticatedUser = Depends(get_current_user),
 ) -> list[LogResponseDTO]:
     try:
         SecurityKernel.authorize(current_user, UserRole.VIEWER)
+        target_uuid: UUID | None = None
+        if tenant_id:
+            try:
+                target_uuid = UUID(tenant_id)
+            except ValueError as e:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Parâmetro tenant_id '{tenant_id}' não é um UUID válido.",
+                ) from e
+
         effective_tenant = TenantAuthorizationService.authorize_tenant_access(
-            current_user, target_tenant=tenant_id, action="LIST_LOGS"
+            current_user, target_tenant=target_uuid, action="LIST_LOGS"
         )
         query = ListLogsQuery(skip=skip, limit=limit, tenant_id=effective_tenant, source=source)
         return await query_handler.list(query)

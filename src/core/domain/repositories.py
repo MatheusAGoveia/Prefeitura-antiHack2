@@ -36,9 +36,9 @@ class TenantRepository(ABC):
         limit: int = 100,
         search: str | None = None,
         status: str | None = None,
-        tenant_filter: str | None = None,
+        tenant_filter: UUID | None = None,
     ) -> list[Tenant]:
-        """Lista tenants com paginação e filtros. tenant_filter restringe por slug, nome ou UUID."""
+        """Lista tenants com paginação e filtros. tenant_filter restringe por UUID de tenant."""
         pass
 
     @abstractmethod
@@ -81,14 +81,14 @@ class AlertAcknowledgementRepository(ABC):
 
     @abstractmethod
     async def get_by_fingerprint(
-        self, fingerprint: str, tenant_id: str
+        self, fingerprint: str, tenant_id: UUID
     ) -> AlertAcknowledgement | None:
         """Obtém acknowledgement existente por fingerprint e tenant para idempotência."""
         pass
 
     @abstractmethod
     async def list(
-        self, tenant_id: str | None = None, skip: int = 0, limit: int = 100
+        self, tenant_id: UUID | None = None, skip: int = 0, limit: int = 100
     ) -> list[AlertAcknowledgement]:
         """Lista acknowledgements persistidos."""
         pass

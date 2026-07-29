@@ -27,3 +27,9 @@ class CrossTenantAccessDeniedError(DomainError):
 
     pass
 
+
+class RedisRevocationUnavailableError(DomainError, RuntimeError):
+    """Lançada quando o serviço de revogação/Redis está indisponível."""
+
+    pass
+

@@ -16,7 +16,7 @@ import logging
 import os
 from typing import Any
 
-import psutil
+import psutil  # type: ignore[import-untyped]
 from prometheus_client import REGISTRY, Gauge
 
 logger = logging.getLogger("govsec.observability.system_metrics")

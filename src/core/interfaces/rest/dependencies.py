@@ -14,6 +14,7 @@ from src.core.application.handlers import (
     UpdateTenantHandler,
 )
 from src.core.application.queries import LogQueryHandler, TenantQueryHandler
+from src.core.domain.exceptions import RedisRevocationUnavailableError
 from src.core.infrastructure.config import settings
 from src.core.infrastructure.db.repositories import (
     InMemoryAlertAcknowledgementRepository,
@@ -88,6 +89,11 @@ async def get_current_user(
     token = authorization.split(" ")[1]
     try:
         return await SecurityKernel.authenticate_async(token)
+    except RedisRevocationUnavailableError as e:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Serviço de validação de revogação temporariamente indisponível.",
+        ) from e
     except PermissionError as e:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(e)) from e
 

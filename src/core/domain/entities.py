@@ -5,10 +5,10 @@ GovSec Shield — Domain Layer
 
 from datetime import datetime, timezone
 from enum import StrEnum
-from typing import NewType
-from uuid import UUID, uuid4
+from typing import Any, NewType
+from uuid import NAMESPACE_DNS, UUID, uuid4, uuid5
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 TenantId = NewType("TenantId", UUID)
 
@@ -55,6 +55,16 @@ class AuditLog(BaseModel):
     raw_data: str = Field(..., min_length=1)
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
+    @field_validator("tenant_id", mode="before")
+    @classmethod
+    def _validate_tenant_id(cls, v: Any) -> UUID:
+        if isinstance(v, UUID):
+            return v
+        try:
+            return UUID(str(v))
+        except ValueError:
+            return uuid5(NAMESPACE_DNS, str(v))
+
 
 class AlertAcknowledgement(BaseModel):
     """
@@ -66,7 +76,15 @@ class AlertAcknowledgement(BaseModel):
     fingerprint: str = Field(..., min_length=1, max_length=128)
     reason: str = Field(..., min_length=1, max_length=512)
     acknowledged_by: str = Field(..., min_length=1, max_length=128)
-    tenant_id: str = Field(..., min_length=1, max_length=64)
+    tenant_id: UUID
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
-
+    @field_validator("tenant_id", mode="before")
+    @classmethod
+    def _validate_tenant_id(cls, v: Any) -> UUID:
+        if isinstance(v, UUID):
+            return v
+        try:
+            return UUID(str(v))
+        except ValueError:
+            return uuid5(NAMESPACE_DNS, str(v))

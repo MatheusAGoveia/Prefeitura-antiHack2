@@ -9,6 +9,7 @@ from fastapi import Request, Response, status
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
+from src.core.domain.exceptions import RedisRevocationUnavailableError
 from src.core.infrastructure.security.kernel import SecurityKernel
 
 PUBLIC_PATH_PREFIXES = (
@@ -50,8 +51,12 @@ class AuthenticationMiddleware(BaseHTTPMiddleware):
         try:
             user = await SecurityKernel.authenticate_async(token)
             request.state.user = user
+        except RedisRevocationUnavailableError:
+            return JSONResponse(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                content={"detail": "Serviço de validação de revogação temporariamente indisponível."},
+            )
         except PermissionError as e:
-
             return JSONResponse(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 content={"detail": str(e)},

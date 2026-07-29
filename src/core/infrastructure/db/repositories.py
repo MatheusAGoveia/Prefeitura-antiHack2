@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from uuid import UUID
+from uuid import NAMESPACE_DNS, UUID, uuid5
 
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -71,18 +71,12 @@ class PostgresTenantRepository(TenantRepository):
         limit: int = 100,
         search: str | None = None,
         status: str | None = None,
-        tenant_filter: str | None = None,
+        tenant_filter: UUID | None = None,
     ) -> list[Tenant]:
         stmt = select(TenantModel)
         if tenant_filter:
-            # Filtro de tenant por UUID, slug ou nome (isolamento multi-tenant na query)
-            stmt = stmt.where(
-                or_(
-                    TenantModel.slug == tenant_filter,
-                    TenantModel.name == tenant_filter,
-                    TenantModel.id == tenant_filter if len(tenant_filter) == 36 else False,
-                )
-            )
+            # Filtro de tenant por UUID canônico no banco de dados (antes do LIMIT/OFFSET)
+            stmt = stmt.where(TenantModel.id == tenant_filter)
         if search:
             search_pattern = f"%{search}%"
             stmt = stmt.where(
@@ -217,23 +211,36 @@ class PostgresAlertAcknowledgementRepository(AlertAcknowledgementRepository):
         return self._to_entity(model)
 
 
+    @staticmethod
+    def _parse_uuid(val: UUID | str | None) -> UUID | None:
+        if val is None:
+            return None
+        if isinstance(val, UUID):
+            return val
+        try:
+            return UUID(str(val))
+        except ValueError:
+            return uuid5(NAMESPACE_DNS, str(val))
+
     async def get_by_fingerprint(
-        self, fingerprint: str, tenant_id: str
+        self, fingerprint: str, tenant_id: UUID | str
     ) -> AlertAcknowledgement | None:
+        t_uuid = self._parse_uuid(tenant_id)
         stmt = select(AlertAcknowledgementModel).where(
             AlertAcknowledgementModel.fingerprint == fingerprint,
-            AlertAcknowledgementModel.tenant_id == tenant_id,
+            AlertAcknowledgementModel.tenant_id == t_uuid,
         )
         result = await self.session.execute(stmt)
         model = result.scalar_one_or_none()
         return self._to_entity(model) if model else None
 
     async def list(
-        self, tenant_id: str | None = None, skip: int = 0, limit: int = 100
+        self, tenant_id: UUID | str | None = None, skip: int = 0, limit: int = 100
     ) -> list[AlertAcknowledgement]:
+        t_uuid = self._parse_uuid(tenant_id)
         stmt = select(AlertAcknowledgementModel)
-        if tenant_id:
-            stmt = stmt.where(AlertAcknowledgementModel.tenant_id == tenant_id)
+        if t_uuid:
+            stmt = stmt.where(AlertAcknowledgementModel.tenant_id == t_uuid)
         stmt = stmt.order_by(AlertAcknowledgementModel.timestamp.desc()).offset(skip).limit(limit)
         result = await self.session.execute(stmt)
         models = result.scalars().all()
@@ -248,6 +255,17 @@ class InMemoryAlertAcknowledgementRepository(AlertAcknowledgementRepository):
     def __init__(self) -> None:
         self._acks: list[AlertAcknowledgement] = []
 
+    @staticmethod
+    def _parse_uuid(val: UUID | str | None) -> UUID | None:
+        if val is None:
+            return None
+        if isinstance(val, UUID):
+            return val
+        try:
+            return UUID(str(val))
+        except ValueError:
+            return uuid5(NAMESPACE_DNS, str(val))
+
     async def save(self, ack: AlertAcknowledgement) -> AlertAcknowledgement:
         for existing in self._acks:
             if existing.fingerprint == ack.fingerprint and existing.tenant_id == ack.tenant_id:
@@ -256,19 +274,21 @@ class InMemoryAlertAcknowledgementRepository(AlertAcknowledgementRepository):
         return ack
 
     async def get_by_fingerprint(
-        self, fingerprint: str, tenant_id: str
+        self, fingerprint: str, tenant_id: UUID | str
     ) -> AlertAcknowledgement | None:
+        t_uuid = self._parse_uuid(tenant_id)
         for ack in self._acks:
-            if ack.fingerprint == fingerprint and ack.tenant_id == tenant_id:
+            if ack.fingerprint == fingerprint and ack.tenant_id == t_uuid:
                 return ack
         return None
 
     async def list(
-        self, tenant_id: str | None = None, skip: int = 0, limit: int = 100
+        self, tenant_id: UUID | str | None = None, skip: int = 0, limit: int = 100
     ) -> list[AlertAcknowledgement]:
+        t_uuid = self._parse_uuid(tenant_id)
         filtered = self._acks
-        if tenant_id:
-            filtered = [ack for ack in filtered if ack.tenant_id == tenant_id]
+        if t_uuid:
+            filtered = [ack for ack in filtered if ack.tenant_id == t_uuid]
         return filtered[skip : skip + limit]
 
 
@@ -297,14 +317,11 @@ class InMemoryTenantRepository(TenantRepository):
         limit: int = 100,
         search: str | None = None,
         status: str | None = None,
-        tenant_filter: str | None = None,
+        tenant_filter: UUID | None = None,
     ) -> list[Tenant]:
         results = list(self._tenants.values())
         if tenant_filter:
-            results = [
-                t for t in results
-                if str(t.id) == tenant_filter or t.slug == tenant_filter or t.name == tenant_filter
-            ]
+            results = [t for t in results if t.id == tenant_filter]
         if search:
             s = search.lower()
             results = [t for t in results if s in t.name.lower() or s in t.slug.lower()]
@@ -315,7 +332,7 @@ class InMemoryTenantRepository(TenantRepository):
     async def delete(self, tenant_id: UUID) -> bool:
         tenant = self._tenants.get(tenant_id)
         if tenant:
-            tenant.status = TenantStatus.INACTIVE if hasattr(TenantStatus, "INACTIVE") else "INACTIVE"
+            tenant.status = TenantStatus.INACTIVE
             return True
         return False
 

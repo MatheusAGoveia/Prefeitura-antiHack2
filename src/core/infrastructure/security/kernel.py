@@ -5,6 +5,7 @@ GovSec Shield — Infrastructure Security Kernel
 
 import logging
 from typing import Any
+from uuid import NAMESPACE_DNS, UUID, uuid5
 
 from pydantic import BaseModel
 
@@ -16,8 +17,12 @@ logger = logging.getLogger("govsec.security.kernel")
 
 class AuthenticatedUser(BaseModel):
     user_id: str
-    tenant: str
+    tenant_id: UUID
     roles: list[str]
+
+    @property
+    def tenant(self) -> str:
+        return str(self.tenant_id)
 
 
 class SecurityKernel:
@@ -26,16 +31,29 @@ class SecurityKernel:
     """
 
     @staticmethod
+    def _parse_tenant_id(val: Any) -> UUID:
+        if isinstance(val, UUID):
+            return val
+        if not val:
+            raise PermissionError("Claim tenant_id ausente no token de autenticação.")
+        try:
+            return UUID(str(val))
+        except ValueError:
+            # Convierte slugs ou identifiers não-UUID em UUIDs estáveis e determinísticos (v5)
+            return uuid5(NAMESPACE_DNS, str(val))
+
+    @staticmethod
     async def authenticate_async(token: str) -> AuthenticatedUser:
         payload = await JWTHandler.verify_token_async(token)
         if not payload:
             raise PermissionError("Token de autenticação inválido, expirado ou revogado.")
 
         user_id = payload.get("sub", "")
-        tenant = payload.get("tenant_id") or payload.get("tenant", "")
+        raw_tenant = payload.get("tenant_id") or payload.get("tenant")
+        tenant_id = SecurityKernel._parse_tenant_id(raw_tenant)
         roles = payload.get("roles", [])
 
-        return AuthenticatedUser(user_id=user_id, tenant=tenant, roles=roles)
+        return AuthenticatedUser(user_id=user_id, tenant_id=tenant_id, roles=roles)
 
     @staticmethod
     def authenticate(token: str) -> AuthenticatedUser:
@@ -44,11 +62,11 @@ class SecurityKernel:
             raise PermissionError("Token de autenticação inválido, expirado ou revogado.")
 
         user_id = payload.get("sub", "")
-        tenant = payload.get("tenant_id") or payload.get("tenant", "")
+        raw_tenant = payload.get("tenant_id") or payload.get("tenant")
+        tenant_id = SecurityKernel._parse_tenant_id(raw_tenant)
         roles = payload.get("roles", [])
 
-        return AuthenticatedUser(user_id=user_id, tenant=tenant, roles=roles)
-
+        return AuthenticatedUser(user_id=user_id, tenant_id=tenant_id, roles=roles)
 
     @staticmethod
     def authorize(
@@ -86,10 +104,10 @@ class SecurityKernel:
 
         if isinstance(user, AuthenticatedUser):
             user_id = user.user_id
-            tenant_id = user.tenant
+            tenant_id = str(user.tenant_id)
         elif isinstance(user, dict):
             user_id = user.get("user_id") or user.get("sub", "anonymous")
-            tenant_id = user.get("tenant_id") or user.get("tenant", "system")
+            tenant_id = str(user.get("tenant_id") or user.get("tenant", "system"))
 
         status_str = "SUCCESS" if success else "DENIED"
         logger.info(
@@ -100,4 +118,3 @@ class SecurityKernel:
             tenant_id,
             status_str,
         )
-

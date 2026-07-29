@@ -1,0 +1,11 @@
+FROM python:3.12-slim
+
+WORKDIR /app
+
+# Instalação prévia e estática das dependências de preflight
+RUN pip install --no-cache-dir pyyaml==6.0.2
+
+# Cópia dos scripts de validação
+COPY scripts/ /app/scripts/
+
+ENTRYPOINT ["python", "scripts/validate_alertmanager_deploy.py"]

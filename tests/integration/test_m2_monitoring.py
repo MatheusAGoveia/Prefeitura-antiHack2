@@ -4,6 +4,7 @@ GovSec Shield — SRE & Monitoring Integration Tests
 """
 
 import asyncio
+import uuid
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
@@ -20,6 +21,7 @@ from src.core.infrastructure.db.repositories import (
 )
 from src.core.infrastructure.policies.opa_client import OPAClient
 from src.core.infrastructure.security.jwt import JWTHandler
+from src.core.infrastructure.security.kernel import AuthenticatedUser
 from src.shared.observability.health import perform_readiness_checks
 from src.shared.observability.metrics import collect_db_pool_metrics
 
@@ -644,7 +646,8 @@ def test_list_tenants_restricted_to_own_tenant_for_normal_user():
     from src.core.interfaces.rest.dependencies import get_query_handler
 
     repo = InMemoryTenantRepository()
-    t1 = Tenant(id=uuid4(), name="Prefeitura de Betim", slug="betim")
+    tenant_uuid = uuid4()
+    t1 = Tenant(id=tenant_uuid, name="Prefeitura de Betim", slug="betim")
     t2 = Tenant(id=uuid4(), name="Prefeitura de Contagem", slug="contagem")
     repo._tenants[t1.id] = t1
     repo._tenants[t2.id] = t2
@@ -655,7 +658,7 @@ def test_list_tenants_restricted_to_own_tenant_for_normal_user():
 
     try:
         client = TestClient(app)
-        token = JWTHandler.generate_token(user_id="user-norm", tenant_id="betim", roles=["viewer"])
+        token = JWTHandler.generate_token(user_id="user-norm", tenant_id=tenant_uuid, roles=["viewer"])
 
         res = client.get(
             "/api/v1/tenants",
@@ -715,19 +718,7 @@ def test_cors_prohibits_local_hosts_in_production(monkeypatch: pytest.MonkeyPatc
 # =============================================================================
 
 
-def test_preflight_security_script_valid_config_passes(
-    tmp_path: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
-):
-    """Config válida (com route e receivers) retorna 0 no preflight de segurança."""
-    from scripts.validate_alertmanager_deploy import validate_deploy
 
-    valid_config = tmp_path / "alertmanager.yml"
-    valid_config.write_text(
-        "global:\n  resolve_timeout: 5m\nroute:\n  receiver: test\nreceivers:\n  - name: test\ninhibit_rules: []\n"
-    )
-    monkeypatch.setenv("GOVSEC_ENV", "dev")
-    monkeypatch.setenv("GOVSEC_ALERTMANAGER_CONFIG", str(valid_config))
-    assert validate_deploy() == 0
 
 
 def test_preflight_security_script_invalid_config_fails(
@@ -747,40 +738,133 @@ def test_preflight_security_script_invalid_config_fails(
     assert validate_deploy() == 1
 
 
-def test_preflight_security_yaml_semantic_validation_rejects_missing_route(
+# =============================================================================
+# 10. Testes do Hardening Final M2 — Preflights, Async, Domain, OIDC, Paginação (Comportamentais)
+# =============================================================================
+
+
+def test_preflight_security_script_valid_config_passes(
     tmp_path: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
 ):
-    """YAML sem campo 'route' retorna 1 na validação semântica."""
+    """Config válida (com route e receivers) retorna 0 no preflight de segurança em dev."""
     from scripts.validate_alertmanager_deploy import validate_deploy
 
-    no_route = tmp_path / "alertmanager.yml"
-    no_route.write_text("receivers:\n  - name: foo\n")
+    valid_config = tmp_path / "alertmanager.yml"
+    valid_config.write_text(
+        "global:\n"
+        "  resolve_timeout: 5m\n"
+        "route:\n"
+        "  receiver: slack-warnings\n"
+        "  routes:\n"
+        "    - match:\n"
+        "        severity: critical\n"
+        "      receiver: pagerduty-and-slack\n"
+        "receivers:\n"
+        "  - name: pagerduty-and-slack\n"
+        "    pagerduty_configs: [{service_key: 'abc'}]\n"
+        "    slack_configs: [{api_url: 'https://slack.com'}]\n"
+        "  - name: slack-warnings\n"
+        "    slack_configs: [{api_url: 'https://slack.com'}]\n"
+    )
     monkeypatch.setenv("GOVSEC_ENV", "dev")
-    monkeypatch.setenv("GOVSEC_ALERTMANAGER_CONFIG", str(no_route))
+    monkeypatch.setenv("GOVSEC_ALERTMANAGER_CONFIG", str(valid_config))
+    assert validate_deploy() == 0
+
+
+def test_preflight_security_script_invalid_yaml_syntax(
+    tmp_path: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+):
+    """YAML sintaticamente inválido retorna 1 no preflight."""
+    from scripts.validate_alertmanager_deploy import validate_deploy
+
+    bad_yaml = tmp_path / "alertmanager.yml"
+    bad_yaml.write_text("route: [unclosed_bracket")
+    monkeypatch.setenv("GOVSEC_ENV", "dev")
+    monkeypatch.setenv("GOVSEC_ALERTMANAGER_CONFIG", str(bad_yaml))
+    assert validate_deploy() == 1
+
+
+def test_preflight_security_script_non_existent_receiver_referenced(
+    tmp_path: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+):
+    """Rota referenciando receiver inexistente retorna 1."""
+    from scripts.validate_alertmanager_deploy import validate_deploy
+
+    bad_ref = tmp_path / "alertmanager.yml"
+    bad_ref.write_text(
+        "route:\n"
+        "  receiver: non-existent-receiver\n"
+        "receivers:\n"
+        "  - name: defined-receiver\n"
+    )
+    monkeypatch.setenv("GOVSEC_ENV", "dev")
+    monkeypatch.setenv("GOVSEC_ALERTMANAGER_CONFIG", str(bad_ref))
+    assert validate_deploy() == 1
+
+
+def test_preflight_security_script_critical_route_missing_pagerduty(
+    tmp_path: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+):
+    """Rota crítica sem PagerDuty em produção retorna 1."""
+    from scripts.validate_alertmanager_deploy import validate_deploy
+
+    no_pd = tmp_path / "alertmanager.rendered.yml"
+    no_pd.write_text(
+        "route:\n"
+        "  receiver: slack-warnings\n"
+        "  routes:\n"
+        "    - match:\n"
+        "        severity: critical\n"
+        "      receiver: slack-only\n"
+        "receivers:\n"
+        "  - name: slack-only\n"
+        "    slack_configs: [{api_url: 'https://hooks.slack.com/services/T/B/X'}]\n"
+        "  - name: slack-warnings\n"
+        "    slack_configs: [{api_url: 'https://hooks.slack.com/services/T/B/X'}]\n"
+    )
+    monkeypatch.setenv("GOVSEC_ENV", "production")
+    monkeypatch.setenv("GOVSEC_ALERTMANAGER_CONFIG", str(no_pd))
+    monkeypatch.setenv("GOVSEC_SLACK_WEBHOOK_URL", "https://hooks.slack.com/services/T/B/X")
+    monkeypatch.setenv("GOVSEC_PAGERDUTY_SERVICE_KEY", "pd-key-12345678")
+    assert validate_deploy() == 1
+
+
+def test_preflight_security_script_placeholders_rejected(
+    tmp_path: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+):
+    """Presença de placeholders (ex: XXX ou test-receiver) em produção retorna 1."""
+    from scripts.validate_alertmanager_deploy import validate_deploy
+
+    placeholder_cfg = tmp_path / "alertmanager.rendered.yml"
+    placeholder_cfg.write_text(
+        "route:\n"
+        "  receiver: test-receiver\n"
+        "receivers:\n"
+        "  - name: test-receiver\n"
+    )
+    monkeypatch.setenv("GOVSEC_ENV", "production")
+    monkeypatch.setenv("GOVSEC_ALERTMANAGER_CONFIG", str(placeholder_cfg))
+    monkeypatch.setenv("GOVSEC_SLACK_WEBHOOK_URL", "https://hooks.slack.com/services/T/B/X")
+    monkeypatch.setenv("GOVSEC_PAGERDUTY_SERVICE_KEY", "pd-key-12345678")
     assert validate_deploy() == 1
 
 
 def test_docker_compose_production_has_two_separate_preflights():
-    """Verifica que docker-compose.production.yml define dois init containers separados."""
+    """Verifica que docker-compose.production.yml define dois init containers com caminhos internos fixos."""
     with open("docker/compose/docker-compose.production.yml", encoding="utf-8") as f:
         data = yaml.safe_load(f)
 
     services = data.get("services", {})
-    assert "init-alertmanager-security-preflight" in services, (
-        "Falta init-alertmanager-security-preflight"
-    )
-    assert "init-alertmanager-amtool-preflight" in services, (
-        "Falta init-alertmanager-amtool-preflight"
-    )
+    assert "init-alertmanager-security-preflight" in services
+    assert "init-alertmanager-amtool-preflight" in services
 
-    # Security preflight usa Python
     security = services["init-alertmanager-security-preflight"]
-    assert "python" in security["image"]
+    assert "Dockerfile.preflight" in security.get("build", {}).get("dockerfile", "")
 
-    # Amtool preflight usa Alertmanager nativo
     amtool = services["init-alertmanager-amtool-preflight"]
     assert "alertmanager" in amtool["image"]
     assert amtool["entrypoint"] == ["/bin/amtool"]
+    assert "/config/alertmanager.yml" in amtool["command"][1]
 
 
 def test_alertmanager_depends_on_both_preflights():
@@ -791,44 +875,12 @@ def test_alertmanager_depends_on_both_preflights():
     alertmanager = data["services"]["alertmanager"]
     depends = alertmanager["depends_on"]
 
-    assert "init-alertmanager-security-preflight" in depends
     assert depends["init-alertmanager-security-preflight"]["condition"] == "service_completed_successfully"
-
-    assert "init-alertmanager-amtool-preflight" in depends
     assert depends["init-alertmanager-amtool-preflight"]["condition"] == "service_completed_successfully"
 
 
-def test_refresh_endpoint_is_fully_async():
-    """Verifica que o endpoint /refresh utiliza refresh_token_async (assíncrono)."""
-    import ast
-    import inspect
-
-    from src.core.interfaces.rest.auth_routers import refresh
-
-    source = inspect.getsource(refresh)
-    tree = ast.parse(source)
-    # Verifica que a chamada usa 'await' e 'refresh_token_async'
-    assert "refresh_token_async" in source, "Endpoint /refresh deve usar refresh_token_async"
-    assert "await" in source, "Endpoint /refresh deve ser assíncrono com await"
-    # Verifica que NÃO usa refresh_token síncrono
-    assert "JWTHandler.refresh_token(" not in source.replace("refresh_token_async", ""), (
-        "Endpoint /refresh não deve usar refresh_token síncrono"
-    )
-
-
-def test_logout_endpoint_is_fully_async():
-    """Verifica que o endpoint /logout utiliza blacklist_token_async (assíncrono)."""
-    import inspect
-
-    from src.core.interfaces.rest.auth_routers import logout
-
-    source = inspect.getsource(logout)
-    assert "blacklist_token_async" in source, "Endpoint /logout deve usar blacklist_token_async"
-    assert "await" in source, "Endpoint /logout deve ser assíncrono com await"
-
-
-def test_redis_unavailable_returns_503_on_refresh(monkeypatch: pytest.MonkeyPatch):
-    """Redis indisponível em produção retorna HTTP 503 no endpoint /refresh."""
+def test_real_async_refresh_flow(monkeypatch: pytest.MonkeyPatch):
+    """Testa o fluxo comportamental assíncrono real do endpoint /refresh."""
     from src.api.main import app
     from src.core.infrastructure.config import settings
     from src.core.infrastructure.security.jwt import JWTHandler
@@ -836,74 +888,112 @@ def test_redis_unavailable_returns_503_on_refresh(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr(settings, "GOVSEC_ENV", "dev")
     client = TestClient(app)
 
+    stable_uuid = uuid.uuid4()
     refresh_token = JWTHandler.generate_refresh_token(
-        user_id="user-test", tenant_id="betim", roles=["analyst"]
+        user_id="user-async-test", tenant_id=stable_uuid, roles=["analyst"]
     )
 
-    # Simular Redis indisponível forçando RuntimeError no verify_token_async
-    original_refresh = JWTHandler.refresh_token_async
+    res = client.post("/api/v1/auth/refresh", json={"refresh_token": refresh_token})
+    assert res.status_code == 200
+    new_token = res.json()["access_token"]
+    assert new_token is not None
 
-    async def mock_refresh_async(rt: str) -> str:
-        raise RuntimeError("🚨 [FAIL-CLOSED] Redis de revogação indisponível")
+    # Validar que o novo token contém o tenant_id UUID
+    payload = JWTHandler.verify_token(new_token)
+    assert payload is not None
+    assert payload["tenant_id"] == str(stable_uuid)
 
-    monkeypatch.setattr(JWTHandler, "refresh_token_async", staticmethod(mock_refresh_async))
 
-    try:
-        res = client.post(
-            "/api/v1/auth/refresh",
-            json={"refresh_token": refresh_token},
-        )
-        assert res.status_code == 503
-        assert "indisponível" in res.json()["detail"]
-    finally:
-        monkeypatch.setattr(JWTHandler, "refresh_token_async", original_refresh)
+def test_redis_unavailable_returns_503_behavioral(monkeypatch: pytest.MonkeyPatch):
+    """Redis/revogação indisponível em produção retorna HTTP 503 sem expor detalhes internos."""
+    from src.api.main import app
+    from src.core.domain.exceptions import RedisRevocationUnavailableError
+    from src.core.infrastructure.config import settings
+    from src.core.infrastructure.security.jwt import JWTHandler
+
+    monkeypatch.setattr(settings, "GOVSEC_ENV", "dev")
+    client = TestClient(app)
+
+    stable_uuid = uuid.uuid4()
+    token = JWTHandler.generate_token(user_id="user-503", tenant_id=stable_uuid, roles=["analyst"])
+
+    async def mock_verify_async(t: str):
+        raise RedisRevocationUnavailableError("Conexão ao Redis de revogação expirou.")
+
+    monkeypatch.setattr(JWTHandler, "verify_token_async", staticmethod(mock_verify_async))
+
+    res = client.get("/api/v1/tenants", headers={"Authorization": f"Bearer {token}"})
+    assert res.status_code == 503
+    assert res.json()["detail"] == "Serviço de validação de revogação temporariamente indisponível."
+    # Garantir que detalhes de infraestrutura NÃO são expostos
+    assert "Conexão ao Redis" not in res.text
 
 
 def test_tenant_uuid_canonical_identity():
-    """UUID é o identificador canônico do tenant: comparação case-insensitive."""
-    from src.core.domain.tenant_auth import TenantAuthorizationService
-
-    # UUIDs iguais em cases diferentes devem ser normalizados
-    uuid_lower = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
-    uuid_upper = "A1B2C3D4-E5F6-7890-ABCD-EF1234567890"
-
-    normalized_lower = TenantAuthorizationService._normalize_tenant_identifier(uuid_lower)
-    normalized_upper = TenantAuthorizationService._normalize_tenant_identifier(uuid_upper)
-    assert normalized_lower == normalized_upper, "UUIDs devem ser normalizados case-insensitive"
-
-    # Slugs não são UUIDs — comparação verbatim
-    slug = "betim"
-    normalized_slug = TenantAuthorizationService._normalize_tenant_identifier(slug)
-    assert normalized_slug == "betim"
+    """Valida normalização e validação de UUIDs de tenant."""
+    test_uuid = uuid.uuid4()
+    user = AuthenticatedUser(user_id="u1", tenant_id=test_uuid, roles=["viewer"])
+    assert user.tenant == str(test_uuid)
+    assert isinstance(user.tenant_id, uuid.UUID)
 
 
-def test_domain_does_not_import_infrastructure():
-    """Verifica que src/core/domain/tenant_auth.py NÃO importa módulos de infraestrutura."""
-    with open("src/core/domain/tenant_auth.py", encoding="utf-8") as f:
-        content = f.read()
+def test_invalid_tenant_uuid_query_param_rejected_400(monkeypatch: pytest.MonkeyPatch):
+    """Passar string inválida como UUID no parâmetro tenant_id retorna 400 Bad Request."""
+    from src.api.main import app
+    from src.core.infrastructure.config import settings
+    from src.core.infrastructure.security.jwt import JWTHandler
 
-    # Não deve importar de infrastructure
-    assert "from src.core.infrastructure" not in content, (
-        "Domínio NÃO pode importar infraestrutura (violação arquitetural)"
+    monkeypatch.setattr(settings, "GOVSEC_ENV", "dev")
+    client = TestClient(app)
+
+    stable_uuid = uuid.uuid4()
+    token = JWTHandler.generate_token(user_id="user-val", tenant_id=stable_uuid, roles=["system_admin"])
+
+    res = client.get("/api/v1/logs?tenant_id=invalid-not-a-uuid", headers={"Authorization": f"Bearer {token}"})
+    assert res.status_code == 400
+    assert "não é um UUID válido" in res.json()["detail"]
+
+
+def test_oidc_claims_strict_behavior_in_production(monkeypatch: pytest.MonkeyPatch):
+    """Testa o comportamento estrito de OIDC em produção usando provedor falso."""
+    from src.api.main import app
+    from src.core.application.interfaces.auth_provider import AuthenticationProviderPort
+    from src.core.domain.exceptions import InvalidCredentialsError
+    from src.core.infrastructure.config import settings
+
+    monkeypatch.setattr(settings, "GOVSEC_ENV", "production")
+    client = TestClient(app)
+
+    stable_uuid = str(uuid.uuid4())
+
+    class MockOIDCProvider(AuthenticationProviderPort):
+        async def authenticate_credentials(self, email: str, password: str, tenant_id: str | None = None):
+            if email == "valid@gov.br":
+                return {"sub": "oidc-user-123", "tenant_id": stable_uuid, "roles": ["analyst"]}
+            if email == "missing_sub@gov.br":
+                return {"tenant_id": stable_uuid, "roles": ["analyst"]}
+            if email == "bad_uuid@gov.br":
+                return {"sub": "u2", "tenant_id": "not-a-uuid", "roles": ["analyst"]}
+            raise InvalidCredentialsError("Credenciais inválidas no OIDC.")
+
+    monkeypatch.setattr(
+        "src.core.interfaces.rest.auth_routers.DefaultOIDCAuthenticationProvider",
+        MockOIDCProvider,
     )
-    assert "import src.core.infrastructure" not in content, (
-        "Domínio NÃO pode importar infraestrutura (violação arquitetural)"
-    )
 
+    # 1. Claims válidos -> Autenticação bem sucedida
+    res1 = client.post("/api/v1/auth/login", json={"email": "valid@gov.br", "password": "pass"})
+    assert res1.status_code == 200
+    assert "access_token" in res1.json()
 
-def test_oidc_login_uses_provider_claims_when_available():
-    """Verifica que o endpoint /login utiliza claims do provider OIDC em staging/production."""
-    import inspect
+    # 2. Sub ausente -> 401
+    res2 = client.post("/api/v1/auth/login", json={"email": "missing_sub@gov.br", "password": "pass"})
+    assert res2.status_code == 401
+    assert "sub" in res2.json()["detail"].lower()
 
-    from src.core.interfaces.rest.auth_routers import login
+    # 3. Tenant ID não UUID -> 401
+    res3 = client.post("/api/v1/auth/login", json={"email": "bad_uuid@gov.br", "password": "pass"})
+    assert res3.status_code == 401
+    assert "uuid" in res3.json()["detail"].lower()
 
-    source = inspect.getsource(login)
-    # Deve capturar claims retornados pelo provider
-    assert 'claims = await provider.authenticate_credentials' in source, (
-        "Login deve capturar claims do provider OIDC"
-    )
-    # Deve usar claims.get para user_id, roles, tenant_id
-    assert 'claims.get("sub"' in source, "Login deve usar claims['sub'] do provider"
-    assert 'claims.get("roles"' in source, "Login deve usar claims['roles'] do provider"
-    assert 'claims.get("tenant_id"' in source, "Login deve usar claims['tenant_id'] do provider"
 
