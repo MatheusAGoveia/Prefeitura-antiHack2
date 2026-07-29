@@ -51,3 +51,59 @@ async def test_postgres_tenant_repository_flow(async_session: AsyncSession):
 
     all_tenants = await repo.list()
     assert len(all_tenants) == 1
+
+
+@pytest.mark.asyncio
+async def test_postgres_log_repository_real_persistence(async_session: AsyncSession):
+    from uuid import uuid4
+
+    from src.core.domain.entities import AuditLog
+    from src.core.infrastructure.db.repositories import PostgresLogRepository
+
+    log_repo = PostgresLogRepository(async_session)
+    tenant_id = uuid4()
+
+    audit_log = AuditLog(
+        tenant_id=tenant_id,
+        source="firewall-wazuh",
+        raw_data="SSH Brute Force Attempt detected on port 22",
+    )
+
+    saved_log = await log_repo.save(audit_log)
+    await async_session.commit()
+
+    assert saved_log.id == audit_log.id
+    assert saved_log.source == "firewall-wazuh"
+
+    logs = await log_repo.list(skip=0, limit=10, tenant_id=tenant_id)
+    assert len(logs) == 1
+    assert logs[0].id == audit_log.id
+    assert logs[0].raw_data == "SSH Brute Force Attempt detected on port 22"
+
+
+@pytest.mark.asyncio
+async def test_postgres_alert_acknowledgement_repository_real_persistence(async_session: AsyncSession):
+    from src.core.domain.entities import AlertAcknowledgement
+    from src.core.infrastructure.db.repositories import PostgresAlertAcknowledgementRepository
+
+    ack_repo = PostgresAlertAcknowledgementRepository(async_session)
+
+    ack = AlertAcknowledgement(
+        alert_id="ServiceDown-01",
+        fingerprint="fp-real-pg-test-9999",
+        reason="Servidor reiniciado graciosamente pela equipe SRE",
+        acknowledged_by="operador-sre",
+        tenant_id="betim",
+    )
+
+    saved_ack = await ack_repo.save(ack)
+    await async_session.commit()
+
+    assert saved_ack.fingerprint == "fp-real-pg-test-9999"
+
+    retrieved = await ack_repo.get_by_fingerprint("fp-real-pg-test-9999", "betim")
+    assert retrieved is not None
+    assert retrieved.alert_id == "ServiceDown-01"
+    assert retrieved.reason == "Servidor reiniciado graciosamente pela equipe SRE"
+    assert retrieved.acknowledged_by == "operador-sre"
+

@@ -14,6 +14,7 @@ from src.core.application.handlers import (
     UpdateTenantHandler,
 )
 from src.core.application.queries import LogQueryHandler, TenantQueryHandler
+from src.core.infrastructure.config import settings
 from src.core.infrastructure.db.repositories import (
     InMemoryAlertAcknowledgementRepository,
     InMemoryLogRepository,
@@ -24,9 +25,17 @@ from src.core.infrastructure.messaging.event_bus import EventBus
 from src.core.infrastructure.security.kernel import AuthenticatedUser, SecurityKernel
 
 # Instâncias singleton globais de barramento para a aplicação
-event_bus_instance = EventBus(use_kafka=False)
+_use_kafka = settings.GOVSEC_USE_KAFKA
+if settings.GOVSEC_ENV in ("staging", "production") and not _use_kafka:
+    raise ValueError(
+        f"Em ambiente '{settings.GOVSEC_ENV}', GOVSEC_USE_KAFKA=True é obrigatório. "
+        "A aplicação não pode operar em fallback de memória em produção."
+    )
+
+event_bus_instance = EventBus(use_kafka=_use_kafka)
 log_repository_fallback = InMemoryLogRepository()
 ack_repository_fallback = InMemoryAlertAcknowledgementRepository()
+
 
 
 # Inicialização de handlers com suporte a UoW PostgreSQL

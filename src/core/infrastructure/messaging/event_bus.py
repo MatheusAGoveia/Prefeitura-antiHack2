@@ -40,10 +40,16 @@ class EventBus(IEventPublisher):
                 await self._producer.start()
                 logger.info("Kafka AIOProducer iniciado com sucesso.")
             except Exception as e:
+                if settings.GOVSEC_ENV in ("staging", "production"):
+                    raise RuntimeError(
+                        f"Falha ao conectar ao Kafka em ambiente '{settings.GOVSEC_ENV}': {e}. "
+                        "Fallback in-memory é estritamente proibido em produção."
+                    ) from e
                 logger.warning(
                     f"Falha ao conectar ao Redpanda/Kafka ({e}). Alternando para EventBus In-Memory."
                 )
                 self.use_kafka = False
+
 
     async def stop(self) -> None:
         if self._producer:

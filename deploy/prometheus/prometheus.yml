@@ -35,3 +35,11 @@ scrape_configs:
           service: "govsec-core"
           version: "1.0.0"
           environment: "development"
+
+  # Alertmanager
+  - job_name: "alertmanager"
+    static_configs:
+      - targets: ["alertmanager:9093"]
+        labels:
+          service: "alertmanager"
+

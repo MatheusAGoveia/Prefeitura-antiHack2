@@ -140,7 +140,7 @@ groups:
           dashboard_url: "http://localhost:3001/d/golden-signals"
 
       - alert: AlertDeliveryFailures
-        expr: rate(govsec_alert_delivery_failures_total[5m]) > 0
+        expr: rate(alertmanager_notifications_failed_total[5m]) > 0
         for: 2m
         labels:
           severity: warning
@@ -151,6 +151,7 @@ groups:
           description: "Alertmanager falhou ao disparar notificações para os receivers configurados (Slack/PagerDuty)."
           runbook_url: "docs/runbooks/alertmanager-down.md"
           dashboard_url: "http://localhost:3001/d/golden-signals"
+
 
       - alert: PersistentLogIngestionFailure
         expr: increase(govsec_logs_ingested_total[1h]) == 0 and up{job="govsec-core-api"} == 1

@@ -28,12 +28,13 @@ fi
 echo "[2/5] Validando sintaxe das regras de alerta e rotas do Alertmanager..."
 if command -v docker &> /dev/null && docker ps &> /dev/null; then
     echo "  -> Executando promtool check rules..."
-    docker run --rm -v "$(pwd)/deploy/prometheus:/etc/prometheus" prom/prometheus:v2.53.0 promtool check rules /etc/prometheus/alerts.yml
+    docker run --rm --entrypoint /bin/promtool -v "$(pwd)/deploy/prometheus:/etc/prometheus" prom/prometheus:v2.53.0 check rules /etc/prometheus/alerts.yml
     echo "  ✅ promtool: Regras de alerta válidas."
 
     echo "  -> Executando amtool check-config..."
-    docker run --rm -v "$(pwd)/deploy/alertmanager:/etc/alertmanager" prom/alertmanager:v0.27.0 amtool check-config /etc/alertmanager/alertmanager.yml
+    docker run --rm --entrypoint /bin/amtool -v "$(pwd)/deploy/alertmanager:/etc/alertmanager" prom/alertmanager:v0.27.0 check-config /etc/alertmanager/alertmanager.yml
     echo "  ✅ amtool: Configuração do Alertmanager válida."
+
 else
     echo "  ℹ️ Docker daemon não detectado localmente. Executando validação YAML via Python..."
     poetry run python -c "
