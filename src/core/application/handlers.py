@@ -8,16 +8,21 @@ from datetime import datetime, timezone
 from uuid import UUID
 
 from src.core.application.commands import (
+    AcknowledgeAlertCommand,
     CreateTenantCommand,
     DeleteTenantCommand,
     IngestLogCommand,
     UpdateTenantCommand,
 )
-from src.core.application.dto import TenantResponseDTO
+from src.core.application.dto import AlertAcknowledgementResponseDTO, TenantResponseDTO
 from src.core.application.interfaces import IEventPublisher
-from src.core.domain.entities import AuditLog, Tenant, TenantStatus
-from src.core.domain.events import LogIngestedEvent, TenantCreatedEvent
-from src.core.domain.repositories import LogRepository, TenantRepository
+from src.core.domain.entities import AlertAcknowledgement, AuditLog, Tenant, TenantStatus
+from src.core.domain.events import AlertAcknowledgedEvent, LogIngestedEvent, TenantCreatedEvent
+from src.core.domain.repositories import (
+    AlertAcknowledgementRepository,
+    LogRepository,
+    TenantRepository,
+)
 
 
 class CreateTenantHandler:
@@ -125,4 +130,63 @@ class IngestLogHandler:
         )
 
         await self.event_publisher.publish(event)
+
+
+class AcknowledgeAlertHandler:
+    def __init__(
+        self,
+        ack_repo: AlertAcknowledgementRepository,
+        event_publisher: IEventPublisher,
+    ):
+        self.ack_repo = ack_repo
+        self.event_publisher = event_publisher
+
+    async def handle(self, command: AcknowledgeAlertCommand) -> AlertAcknowledgementResponseDTO:
+        alert_id = command.payload["alert_id"]
+        fingerprint = command.payload["fingerprint"]
+        reason = command.payload["reason"]
+        acknowledged_by = command.payload["acknowledged_by"]
+        tenant_id = command.payload.get("tenant_id", "betim")
+
+        # Idempotência: verificar se já existe acknowledgement com este fingerprint e tenant
+        existing = await self.ack_repo.get_by_fingerprint(fingerprint, tenant_id)
+        if existing:
+            return AlertAcknowledgementResponseDTO(
+                id=existing.id,
+                alert_id=existing.alert_id,
+                fingerprint=existing.fingerprint,
+                reason=existing.reason,
+                acknowledged_by=existing.acknowledged_by,
+                tenant_id=existing.tenant_id,
+                timestamp=existing.timestamp,
+            )
+
+        ack_entity = AlertAcknowledgement(
+            alert_id=alert_id,
+            fingerprint=fingerprint,
+            reason=reason,
+            acknowledged_by=acknowledged_by,
+            tenant_id=tenant_id,
+        )
+
+        saved = await self.ack_repo.save(ack_entity)
+
+        event = AlertAcknowledgedEvent(
+            alert_id=saved.alert_id,
+            fingerprint=saved.fingerprint,
+            reason=saved.reason,
+            acknowledged_by=saved.acknowledged_by,
+        )
+        await self.event_publisher.publish(event)
+
+        return AlertAcknowledgementResponseDTO(
+            id=saved.id,
+            alert_id=saved.alert_id,
+            fingerprint=saved.fingerprint,
+            reason=saved.reason,
+            acknowledged_by=saved.acknowledged_by,
+            tenant_id=saved.tenant_id,
+            timestamp=saved.timestamp,
+        )
+
 

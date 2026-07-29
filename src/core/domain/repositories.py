@@ -6,7 +6,7 @@ GovSec Shield — Domain Repositories
 from abc import ABC, abstractmethod
 from uuid import UUID
 
-from src.core.domain.entities import AuditLog, Tenant
+from src.core.domain.entities import AlertAcknowledgement, AuditLog, Tenant
 
 
 class TenantRepository(ABC):
@@ -66,4 +66,30 @@ class LogRepository(ABC):
     ) -> list[AuditLog]:
         """Lista logs com paginação e filtros por tenant ou fonte."""
         pass
+
+
+class AlertAcknowledgementRepository(ABC):
+    """
+    Interface do Repositório de Acknowledgements de Alertas.
+    """
+
+    @abstractmethod
+    async def save(self, ack: AlertAcknowledgement) -> AlertAcknowledgement:
+        """Persiste um acknowledgement no repositório."""
+        pass
+
+    @abstractmethod
+    async def get_by_fingerprint(
+        self, fingerprint: str, tenant_id: str
+    ) -> AlertAcknowledgement | None:
+        """Obtém acknowledgement existente por fingerprint e tenant para idempotência."""
+        pass
+
+    @abstractmethod
+    async def list(
+        self, tenant_id: str | None = None, skip: int = 0, limit: int = 100
+    ) -> list[AlertAcknowledgement]:
+        """Lista acknowledgements persistidos."""
+        pass
+
 

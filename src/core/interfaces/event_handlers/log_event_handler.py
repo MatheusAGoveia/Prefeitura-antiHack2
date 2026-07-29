@@ -8,7 +8,10 @@ import time
 from typing import Any
 
 from src.core.domain.events import LogIngestedEvent
-from src.shared.observability.metrics import DOMAIN_EVENT_HANDLER_DURATION_SECONDS, DOMAIN_EVENTS_TOTAL
+from src.shared.observability.metrics import (
+    DOMAIN_EVENT_HANDLER_DURATION_SECONDS,
+    DOMAIN_EVENTS_TOTAL,
+)
 from src.shared.observability.tracing import trace_span
 
 logger = logging.getLogger("govsec.event_handlers.log")

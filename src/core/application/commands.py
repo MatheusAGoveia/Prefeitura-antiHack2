@@ -72,3 +72,25 @@ class IngestLogCommand(Command):
         }
         super().__init__(metadata=meta, payload=payload)
 
+
+class AcknowledgeAlertCommand(Command):
+    def __init__(
+        self,
+        alert_id: str,
+        fingerprint: str,
+        reason: str,
+        acknowledged_by: str,
+        tenant_id: str = "betim",
+        **kwargs: Any,
+    ):
+        meta = CommandMetadata(command_name="AcknowledgeAlertCommand", tenant=tenant_id)
+        payload = {
+            "alert_id": alert_id,
+            "fingerprint": fingerprint,
+            "reason": reason,
+            "acknowledged_by": acknowledged_by,
+            "tenant_id": tenant_id,
+        }
+        super().__init__(metadata=meta, payload=payload)
+
+

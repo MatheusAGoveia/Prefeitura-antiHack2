@@ -46,3 +46,23 @@ class LogResponseDTO(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
+
+class AcknowledgeAlertDTO(BaseModel):
+    alert_id: str = Field(..., min_length=1, max_length=128, examples=["ServiceDown-Betim-01"])
+    fingerprint: str = Field(..., min_length=1, max_length=128, examples=["a1b2c3d4e5f6"])
+    reason: str = Field(..., min_length=5, max_length=512, examples=["Incidente verificado e servidor em reinício manual."])
+    tenant_id: str = Field(default="betim", min_length=1, max_length=64)
+
+
+class AlertAcknowledgementResponseDTO(BaseModel):
+    id: UUID
+    alert_id: str
+    fingerprint: str
+    reason: str
+    acknowledged_by: str
+    tenant_id: str
+    timestamp: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+

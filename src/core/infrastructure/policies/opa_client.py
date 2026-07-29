@@ -14,11 +14,16 @@ logger = logging.getLogger(__name__)
 
 
 class OPAClient:
-    """Cliente para avaliação de políticas OPA com fallback mock."""
+    """Cliente para avaliação de políticas OPA com fallback mock apenas em dev."""
 
-    def __init__(self, opa_url: str = settings.GOVSEC_OPA_URL, mock_mode: bool = True):
-        self.opa_url = opa_url
-        self.mock_mode = mock_mode
+    def __init__(self, opa_url: str | None = None, mock_mode: bool | None = None):
+        self.opa_url = opa_url or settings.GOVSEC_OPA_URL
+        # Em staging e production, mock_mode é ESTRITAMENTE proibido
+        if settings.GOVSEC_ENV != "dev":
+            self.mock_mode = False
+        else:
+            self.mock_mode = True if mock_mode is None else mock_mode
+
 
     async def evaluate_policy(
         self, command_name: str, tenant: str, context: dict[str, Any]

@@ -4,8 +4,8 @@ GovSec Shield — API App
 """
 
 import asyncio
-from contextlib import asynccontextmanager
 from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -15,6 +15,8 @@ from fastapi.responses import HTMLResponse
 from src.api.dashboard_api import router as dashboard_router
 from src.api.middleware.auth import AuthenticationMiddleware
 from src.api.middleware.recovery import RecoveryMiddleware
+from src.core.infrastructure.db.models import Base
+from src.core.infrastructure.db.unit_of_work import engine
 from src.core.interfaces.rest.auth_routers import router as auth_router
 from src.core.interfaces.rest.routers import router as core_router
 from src.shared.observability import (
@@ -41,6 +43,13 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
     Gerencia o ciclo de vida da aplicação FastAPI.
     Inicia e encerra graciosamente o coletor de métricas de sistema.
     """
+    # Garantir criação de tabelas se necessário
+    try:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+    except Exception:
+        pass
+
     # Startup: iniciar coleta periódica de métricas de sistema (CPU, RAM, Disco)
     metrics_task = asyncio.create_task(
         start_system_metrics_collector(interval_seconds=15),
@@ -51,10 +60,10 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
     finally:
         # Shutdown: cancelar o task de coleta de forma limpa
         metrics_task.cancel()
-        try:
+        with suppress(asyncio.CancelledError):
             await metrics_task
-        except asyncio.CancelledError:
-            pass
+
+
 
 
 app = FastAPI(

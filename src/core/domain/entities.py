@@ -55,3 +55,18 @@ class AuditLog(BaseModel):
     raw_data: str = Field(..., min_length=1)
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
+
+class AlertAcknowledgement(BaseModel):
+    """
+    Entidade de Acknowledgement Humano de Alerta.
+    """
+
+    id: UUID = Field(default_factory=uuid4)
+    alert_id: str = Field(..., min_length=1, max_length=128)
+    fingerprint: str = Field(..., min_length=1, max_length=128)
+    reason: str = Field(..., min_length=1, max_length=512)
+    acknowledged_by: str = Field(..., min_length=1, max_length=128)
+    tenant_id: str = Field(..., min_length=1, max_length=64)
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+

@@ -4,9 +4,13 @@ from uuid import UUID
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.core.domain.entities import AuditLog, Tenant, TenantStatus
-from src.core.domain.repositories import LogRepository, TenantRepository
-from src.core.infrastructure.db.models import TenantModel
+from src.core.domain.entities import AlertAcknowledgement, AuditLog, Tenant, TenantStatus
+from src.core.domain.repositories import (
+    AlertAcknowledgementRepository,
+    LogRepository,
+    TenantRepository,
+)
+from src.core.infrastructure.db.models import AlertAcknowledgementModel, AuditLogModel, TenantModel
 
 
 class PostgresTenantRepository(TenantRepository):
@@ -98,6 +102,53 @@ class PostgresTenantRepository(TenantRepository):
         return True
 
 
+class PostgresLogRepository(LogRepository):
+    """
+    Repositório de Logs de Auditoria com Persistência em PostgreSQL.
+    """
+
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    def _to_entity(self, model: AuditLogModel) -> AuditLog:
+        return AuditLog(
+            id=model.id,
+            tenant_id=model.tenant_id,
+            source=model.source,
+            raw_data=model.raw_data,
+            timestamp=model.timestamp,
+        )
+
+    async def save(self, log: AuditLog) -> AuditLog:
+        model = AuditLogModel(
+            id=log.id,
+            tenant_id=log.tenant_id,
+            source=log.source,
+            raw_data=log.raw_data,
+            timestamp=log.timestamp,
+        )
+        self.session.add(model)
+        await self.session.flush()
+        return self._to_entity(model)
+
+    async def list(
+        self,
+        skip: int = 0,
+        limit: int = 100,
+        tenant_id: UUID | None = None,
+        source: str | None = None,
+    ) -> list[AuditLog]:
+        stmt = select(AuditLogModel)
+        if tenant_id:
+            stmt = stmt.where(AuditLogModel.tenant_id == tenant_id)
+        if source:
+            stmt = stmt.where(AuditLogModel.source.ilike(f"%{source}%"))
+
+        stmt = stmt.order_by(AuditLogModel.timestamp.desc()).offset(skip).limit(limit)
+        result = await self.session.execute(stmt)
+        models = result.scalars().all()
+        return [self._to_entity(m) for m in models]
+
 
 class InMemoryLogRepository(LogRepository):
     def __init__(self) -> None:
@@ -120,4 +171,94 @@ class InMemoryLogRepository(LogRepository):
         if source:
             filtered = [log for log in filtered if source.lower() in log.source.lower()]
         return filtered[skip : skip + limit]
+
+
+class PostgresAlertAcknowledgementRepository(AlertAcknowledgementRepository):
+    """
+    Repositório de Acknowledgements de Alertas com Persistência em PostgreSQL.
+    """
+
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    def _to_entity(self, model: AlertAcknowledgementModel) -> AlertAcknowledgement:
+        return AlertAcknowledgement(
+            id=model.id,
+            alert_id=model.alert_id,
+            fingerprint=model.fingerprint,
+            reason=model.reason,
+            acknowledged_by=model.acknowledged_by,
+            tenant_id=model.tenant_id,
+            timestamp=model.timestamp,
+        )
+
+    async def save(self, ack: AlertAcknowledgement) -> AlertAcknowledgement:
+        model = AlertAcknowledgementModel(
+            id=ack.id,
+            alert_id=ack.alert_id,
+            fingerprint=ack.fingerprint,
+            reason=ack.reason,
+            acknowledged_by=ack.acknowledged_by,
+            tenant_id=ack.tenant_id,
+            timestamp=ack.timestamp,
+        )
+        self.session.add(model)
+        await self.session.flush()
+        return self._to_entity(model)
+
+
+    async def get_by_fingerprint(
+        self, fingerprint: str, tenant_id: str
+    ) -> AlertAcknowledgement | None:
+        stmt = select(AlertAcknowledgementModel).where(
+            AlertAcknowledgementModel.fingerprint == fingerprint,
+            AlertAcknowledgementModel.tenant_id == tenant_id,
+        )
+        result = await self.session.execute(stmt)
+        model = result.scalar_one_or_none()
+        return self._to_entity(model) if model else None
+
+    async def list(
+        self, tenant_id: str | None = None, skip: int = 0, limit: int = 100
+    ) -> list[AlertAcknowledgement]:
+        stmt = select(AlertAcknowledgementModel)
+        if tenant_id:
+            stmt = stmt.where(AlertAcknowledgementModel.tenant_id == tenant_id)
+        stmt = stmt.order_by(AlertAcknowledgementModel.timestamp.desc()).offset(skip).limit(limit)
+        result = await self.session.execute(stmt)
+        models = result.scalars().all()
+        return [self._to_entity(m) for m in models]
+
+
+class InMemoryAlertAcknowledgementRepository(AlertAcknowledgementRepository):
+    """
+    Repositório In-Memory para Acknowledgements de Alertas.
+    """
+
+    def __init__(self) -> None:
+        self._acks: list[AlertAcknowledgement] = []
+
+    async def save(self, ack: AlertAcknowledgement) -> AlertAcknowledgement:
+        for existing in self._acks:
+            if existing.fingerprint == ack.fingerprint and existing.tenant_id == ack.tenant_id:
+                return existing
+        self._acks.insert(0, ack)
+        return ack
+
+    async def get_by_fingerprint(
+        self, fingerprint: str, tenant_id: str
+    ) -> AlertAcknowledgement | None:
+        for ack in self._acks:
+            if ack.fingerprint == fingerprint and ack.tenant_id == tenant_id:
+                return ack
+        return None
+
+    async def list(
+        self, tenant_id: str | None = None, skip: int = 0, limit: int = 100
+    ) -> list[AlertAcknowledgement]:
+        filtered = self._acks
+        if tenant_id:
+            filtered = [ack for ack in filtered if ack.tenant_id == tenant_id]
+        return filtered[skip : skip + limit]
+
 

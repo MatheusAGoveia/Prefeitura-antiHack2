@@ -340,16 +340,135 @@
           "unit": "bytes"
         }
       }
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 43 },
+      "id": 40,
+      "title": "🚨 Alertas & Operação SRE (Capability M2)",
+      "type": "row"
+    },
+    {
+      "gridPos": { "h": 8, "w": 6, "x": 0, "y": 44 },
+      "id": 41,
+      "title": "Alertas Firing (Ativos)",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "govsec-prometheus" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "govsec-prometheus" },
+          "expr": "count(ALERTS{alertstate=\"firing\"}) or vector(0)",
+          "legendFormat": "Alertas Ativos",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "gridPos": { "h": 8, "w": 6, "x": 6, "y": 44 },
+      "id": 42,
+      "title": "DB Pool Disponível",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "govsec-prometheus" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "govsec-prometheus" },
+          "expr": "govsec_db_pool_available_connections",
+          "legendFormat": "Conexões Livres",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 2 },
+              { "color": "green", "value": 3 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 44 },
+      "id": 43,
+      "title": "Ingestão de Logs (15m)",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "govsec-prometheus" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "govsec-prometheus" },
+          "expr": "increase(govsec_logs_ingested_total[15m])",
+          "legendFormat": "Logs 15m",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "yellow", "value": null },
+              { "color": "green", "value": 1 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 44 },
+      "id": 44,
+      "title": "Status OPA / Kafka Fallback",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "govsec-prometheus" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "govsec-prometheus" },
+          "expr": "govsec_opa_available",
+          "legendFormat": "OPA Available",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "govsec-prometheus" },
+          "expr": "govsec_event_bus_fallback_active",
+          "legendFormat": "Kafka Fallback Active",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        }
+      }
     }
   ],
   "refresh": "5s",
   "schemaVersion": 38,
   "style": "dark",
-  "tags": ["govsec", "observability", "golden-signals", "sprint2"],
+  "tags": ["govsec", "observability", "golden-signals", "sprint2", "capability-m2"],
   "time": { "from": "now-15m", "to": "now" },
   "timepicker": {},
   "timezone": "browser",
   "title": "GovSec Shield — Observability Dashboard",
   "uid": "govsec-golden-signals",
-  "version": 2
+  "version": 3
 }
+

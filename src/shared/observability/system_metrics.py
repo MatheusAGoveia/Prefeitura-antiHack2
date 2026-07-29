@@ -120,10 +120,7 @@ class SystemMetricsCollector:
         try:
             proc = psutil.Process(os.getpid())
             # `num_fds` não está disponível no Windows — fallback seguro
-            if hasattr(proc, "num_fds"):
-                fd_count = proc.num_fds()
-            else:
-                fd_count = len(proc.open_files())
+            fd_count = proc.num_fds() if hasattr(proc, "num_fds") else len(proc.open_files())
             PROCESS_OPEN_FILE_DESCRIPTORS.set(fd_count)
             metrics["open_file_descriptors"] = fd_count
         except Exception as exc:

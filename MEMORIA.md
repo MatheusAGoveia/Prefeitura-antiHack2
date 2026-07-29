@@ -7,7 +7,7 @@
 ## 📌 Estado Atual do Projeto
 - **Repositório:** `MatheusAGoveia/Prefeitura-antiHack2`
 - **Branch Ativa:** `feature/core-platform`
-- **Data da Última Atualização:** 2026-07-28T19:48:00Z
+- **Data da Última Atualização:** 2026-07-29T14:55:00Z
 - **Responsável:** IA Assistente (Arquiteto Principal GovSec Shield)
 
 ---
@@ -162,6 +162,34 @@
   - Todos os 3 datasources provisionados no Grafana: Prometheus, Loki, Tempo.
   - Métricas `http_requests_total` e `up` com dados reais da API.
 
+### 13. Fechamento Capability M2 — Monitoramento, Alertas & Operação SRE (2026-07-29)
+- [x] **Segurança e Validação de Ambiente:**
+  - Configuração estrita em `src/core/infrastructure/config.py` validando `GOVSEC_ENV` (`dev`, `test`, `staging`, `production`), rejeitando segredos padrão ou curtos em `staging`/`production`.
+  - Endpoint `POST /api/v1/auth/dev-token` restrito exclusivamente a `GOVSEC_ENV == "dev"`.
+  - `OPAClient` com `mock_mode` forçado para `False` fora do ambiente de desenvolvimento.
+- [x] **Persistência Operacional PostgreSQL:**
+  - ORM Models `AuditLogModel` (`audit_logs`) e `AlertAcknowledgementModel` (`alert_acknowledgements`).
+  - Migrações Alembic reversíveis `0002_create_audit_logs.py` e `0003_create_alert_acknowledgements.py`.
+  - Repositórios `PostgresLogRepository` e `PostgresAlertAcknowledgementRepository` expostos via `UnitOfWork`.
+- [x] **CQRS AcknowledgeAlertCommand & Eventos:**
+  - Entidade `AlertAcknowledgement`, evento `AlertAcknowledgedEvent`, comando `AcknowledgeAlertCommand`, DTOs e handler `AcknowledgeAlertHandler` com idempotência e log de auditoria.
+  - Endpoint REST `POST /api/v1/alerts/acknowledge` autorizando role `analyst` e auditando no `SecurityKernel`.
+- [x] **Métricas Prometheus & Probes de Health:**
+  - Gauges DB Pool (`govsec_db_pool_available_connections`, `govsec_db_pool_checked_out`), Gauges de infraestrutura (`govsec_event_bus_fallback_active`, `govsec_opa_available`) e contadores operacionais.
+  - Probe de Readiness `/ready` degradando graciosa e determinantemente (503 Service Unavailable) se Kafka estiver em fallback ou OPA indisponível fora de dev.
+- [x] **Stack Alertmanager & Regras Prometheus:**
+  - Container `alertmanager` (v0.27.0) na porta 9093 adicionado ao Docker Compose.
+  - `deploy/alertmanager/alertmanager.yml` com roteamento por severidade (`pagerduty-and-slack`, `slack-warnings`, `dev-null`) e inibição automática de alertas secundários quando `ServiceDown` está ativo.
+  - `deploy/prometheus/alerts.yml` com as 6 regras mínimas da especificação + 6 regras internas do pipeline de observabilidade.
+- [x] **Runbooks Operacionais SRE:**
+  - 7 Runbooks markdown criados em `docs/runbooks/` (`service-down.md`, `high-latency.md`, `high-error-rate.md`, `db-connection-pool-exhausted.md`, `high-memory-usage.md`, `no-logs-ingested.md`, `alertmanager-down.md`) contendo as 11 seções padronizadas.
+- [x] **Painéis Grafana M2:**
+  - Dashboard `golden_signals.json` atualizado com a linha "🚨 Alertas & Operação SRE (Capability M2)" contendo status em tempo real de alertas ativos, pool de conexões DB, ingestão de logs e estado dos conectores.
+- [x] **Fire Drill e Testes de Integração Automatizados:**
+  - `scripts/test_alerts.py` (e `test-alerts.sh`) para validação sintática de YAML e envio de alerta sintético.
+  - [`tests/integration/test_m2_monitoring.py`](file:///c:/Users/matheus.damiao/Desktop/AntiHackin/Prefeitura-antiHack2/tests/integration/test_m2_monitoring.py) testando todas as regras e fluxos de M2.
+  - **Resultado: 67/67 testes aprovados na suíte completa (100% de sucesso).**
+
 ---
 
 ## 🏗️ Decisões Arquiteturais Tomadas
@@ -175,11 +203,13 @@
 8. **Soft Delete de Tenants:** O comando de deleção preserva a integridade referencial alterando o status do tenant para `INACTIVE`, permitindo auditoria histórica.
 9. **Observabilidade W3C & OpenTelemetry Native:** O Tracing propaga contexto W3C e vincula spans aos logs estruturados em JSON para correlação direta no Grafana (Loki/Tempo/Prometheus).
 10. **Three Pillars of Observability:** Stack completa com Prometheus (métricas), Loki (logs) e Tempo (traces), com correlação bidirecional entre os três via Grafana datasource provisioning.
+11. **Human-in-the-Loop Alert Acknowledgement (M2 Scope):** Alertas notificam operadores humanos sem acionar automações técnicas (mitigação/bloqueio automático é exclusivo de M3+). Acknowledgements são registrados como Commands auditáveis no PostgreSQL e geram eventos `AlertAcknowledgedEvent`.
 
 ---
 
 ## 📋 Próximos Passos (Pendentes)
 - [ ] Abrir Pull Request da branch `feature/core-platform` para `main` e realizar merge.
+- [ ] Iniciar planejamento da Capability M3 (Mitigação, Playbooks de Segurança e Integração SIEM/SOAR).
 - [ ] Implementar o módulo de **Asset Discovery & Port Scanning** (`src/asset/`) utilizando o `BaseScanner` e `ScopeSafety` criados.
 - [ ] Criar adaptadores da camada **Connectors (ACL)** para ingestão de alertas de terceiros (Wazuh, Zabbix).
 - [ ] Implementar o **Risk Engine** (`src/risk/`) com cálculo determinístico de scores CVSS/EPSS via gRPC.
@@ -187,52 +217,63 @@
 ---
 
 ## 🧪 Resultados dos Testes
-- **Data de Execução:** 2026-07-28T19:42:00Z
+- **Data de Execução:** 2026-07-29T14:54:56Z
 - **Comando:** `poetry run pytest --override-ini="addopts=" -v`
-- **Resultado:** **56 passed** em 2.06s (100% de aprovação na suíte completa).
+- **Resultado:** **67 passed** em 7.35s (100% de aprovação na suíte completa).
   - `tests/unit/`: 22 testes
   - `tests/integration/test_observability.py`: 6 testes
   - `tests/integration/test_event_bus.py`: 5 testes
   - `tests/integration/test_db_integration.py`: 1 teste
-  - `tests/integration/test_sprint2_completion.py`: 22 testes (**NOVO**)
+  - `tests/integration/test_sprint2_completion.py`: 22 testes
+  - `tests/integration/test_m2_monitoring.py`: 11 testes (**NOVO M2**)
 
 ---
 
 ## 📁 Lista de Arquivos Criados/Modificados
-- `src/shared/observability/__init__.py`
-- `src/shared/observability/tracing.py`
-- `src/shared/observability/metrics.py`
-- `src/shared/observability/logging.py`
-- `src/shared/observability/health.py`
-- `src/shared/observability/sanitizer.py` **[NOVO]**
-- `src/shared/observability/system_metrics.py` **[NOVO]**
-- `src/api/main.py`
-- `src/api/middleware/auth.py`
-- `src/api/middleware/recovery.py` **[NOVO]**
-- `src/core/infrastructure/messaging/command_bus.py`
-- `src/core/application/queries.py`
-- `src/core/interfaces/event_handlers/tenant_event_handler.py`
-- `src/core/interfaces/event_handlers/log_event_handler.py`
-- `deploy/grafana/dashboards/golden_signals.json`
-- `deploy/prometheus/prometheus.yml`
-- `tests/integration/test_observability.py`
-- `tests/integration/test_sprint2_completion.py` **[NOVO]**
-- `docker/compose/docker-compose.yml` **[MODIFICADO — Prometheus + Grafana]**
-- `deploy/prometheus/prometheus.yml` **[MODIFICADO — expandido]**
-- `deploy/grafana/dashboards/golden_signals.json` **[MODIFICADO — expandido]**
-- `deploy/grafana/provisioning/datasources/prometheus.yml` **[MODIFICADO — Loki + Tempo datasources]**
-- `deploy/grafana/provisioning/dashboards/govsec.yml` **[NOVO]**
-- `deploy/loki/loki-config.yml` **[NOVO]**
-- `deploy/tempo/tempo-config.yml` **[NOVO]**
-- `docker/compose/docker-compose.yml` **[MODIFICADO — Loki + Tempo + remote-write]**
-- `.env` **[MODIFICADO — OTEL_EXPORTER_OTLP_ENDPOINT]**
-- `MEMORIA.md`
+- `src/core/infrastructure/config.py` **[MODIFICADO]**
+- `.env.example` **[NOVO]**
+- `configs/dev/.env.example` **[MODIFICADO]**
+- `src/core/infrastructure/policies/opa_client.py` **[MODIFICADO]**
+- `src/core/interfaces/rest/auth_routers.py` **[MODIFICADO]**
+- `src/core/infrastructure/db/models.py` **[MODIFICADO]**
+- `src/core/infrastructure/db/repositories.py` **[MODIFICADO]**
+- `src/core/infrastructure/db/migrations/versions/0002_create_audit_logs.py` **[NOVO]**
+- `src/core/infrastructure/db/migrations/versions/0003_create_alert_acknowledgements.py` **[NOVO]**
+- `src/core/infrastructure/db/unit_of_work.py` **[MODIFICADO]**
+- `src/core/domain/entities.py` **[MODIFICADO]**
+- `src/core/domain/repositories.py` **[MODIFICADO]**
+- `src/core/domain/events.py` **[MODIFICADO]**
+- `src/core/application/commands.py` **[MODIFICADO]**
+- `src/core/application/dto.py` **[MODIFICADO]**
+- `src/core/application/handlers.py` **[MODIFICADO]**
+- `src/core/interfaces/rest/dependencies.py` **[MODIFICADO]**
+- `src/core/interfaces/rest/routers.py` **[MODIFICADO]**
+- `src/shared/observability/metrics.py` **[MODIFICADO]**
+- `src/shared/observability/health.py` **[MODIFICADO]**
+- `docker/compose/docker-compose.yml` **[MODIFICADO — Alertmanager]**
+- `deploy/alertmanager/alertmanager.yml` **[NOVO]**
+- `deploy/alertmanager/README.md` **[NOVO]**
+- `deploy/prometheus/prometheus.yml` **[MODIFICADO — Alertmanager target]**
+- `deploy/prometheus/alerts.yml` **[NOVO]**
+- `docs/runbooks/service-down.md` **[NOVO]**
+- `docs/runbooks/high-latency.md` **[NOVO]**
+- `docs/runbooks/high-error-rate.md` **[NOVO]**
+- `docs/runbooks/db-connection-pool-exhausted.md` **[NOVO]**
+- `docs/runbooks/high-memory-usage.md` **[NOVO]**
+- `docs/runbooks/no-logs-ingested.md` **[NOVO]**
+- `docs/runbooks/alertmanager-down.md` **[NOVO]**
+- `deploy/grafana/dashboards/golden_signals.json` **[MODIFICADO — Painéis M2]**
+- `scripts/test-alerts.sh` **[NOVO]**
+- `scripts/test_alerts.py` **[NOVO]**
+- `tests/integration/test_m2_monitoring.py` **[NOVO]**
+- `MEMORIA.md` **[MODIFICADO]**
 
 ---
 
 ## 📝 Histórico de Atualizações Recentes
 - **2026-07-28T18:10:00Z (IA Assistente):** Executada varredura e refatoração completa do projeto.
-- **2026-07-28T19:18:00Z (IA Assistente):** Concluída a implementação completa do módulo de Observabilidade & SRE (OpenTelemetry FastAPI Instrumentation, W3C Trace propagation, Prometheus Metrics Middleware, Structured JSON Logging Loki Compliant, CQRS Command & Query Tracing Spans, Health Checks /healthz e /ready, Dashboard Grafana Golden Signals e Suíte de Testes de Integração). 34/34 testes aprovados com 100% de sucesso.
-- **2026-07-28T19:42:00Z (IA Assistente):** Sprint 2 finalizada com 100% de cobertura. Implementados: (1) Spans OTel em TenantEventHandler e LogEventHandler; (2) Métricas Prometheus `DOMAIN_EVENTS_TOTAL` e `DOMAIN_EVENT_HANDLER_DURATION_SECONDS`; (3) `DataMasker` com mascaramento de JWT, CPF, PAN, e-mail e senhas integrado ao `GovSecJSONFormatter`; (4) `SystemMetricsCollector` com psutil (CPU, RAM, Disco, FDs) integrado ao `lifespan` FastAPI; (5) `RecoveryMiddleware` como outermost middleware com logging estruturado do traceback; (6) 22 novos testes. Total: **56/56 testes aprovados** em 2.06s.
-- **2026-07-28T19:48:00Z (IA Assistente):** Stack de monitoramento Prometheus + Grafana adicionada ao Docker Compose. Provisionamento automático de datasource (UID `govsec-prometheus`) e dashboards via `deploy/grafana/provisioning/`. Dashboard expandido com 15 painéis cobrindo Golden Signals HTTP, Eventos de Domínio e Métricas de Sistema psutil.
-- **2026-07-29T13:12:00Z (IA Assistente):** Stack completa de observabilidade implementada: Loki (v3.1.0) para logs, Tempo (v2.5.0) para traces, OTLP gRPC exporter ativado, datasources Grafana expandidos com correlação bidirecional Métricas↔Logs↔Traces. Todos os 4 containers healthy, 3 datasources provisionados, 2 Prometheus targets UP, métricas reais sendo coletadas.
+- **2026-07-28T19:18:00Z (IA Assistente):** Concluída a implementação completa do módulo de Observabilidade & SRE.
+- **2026-07-28T19:42:00Z (IA Assistente):** Sprint 2 finalizada com 100% de cobertura.
+- **2026-07-28T19:48:00Z (IA Assistente):** Stack de monitoramento Prometheus + Grafana adicionada ao Docker Compose.
+- **2026-07-29T13:12:00Z (IA Assistente):** Stack completa de observabilidade implementada (Loki + Tempo).
+- **2026-07-29T14:55:00Z (IA Assistente):** Fechamento completo da Capability M2 (Monitoramento, Alertas e Operação SRE). Implementados: (1) Validação rigorosa de ambiente em `config.py` e bloqueio de dev-tokens fora de dev; (2) Fail-Closed no OPA e probe `/ready` degradando com 503 se Kafka/OPA falharem fora de dev; (3) Persistência de `audit_logs` e `alert_acknowledgements` no PostgreSQL via UoW com migrações Alembic; (4) CQRS `AcknowledgeAlertCommand`, `AlertAcknowledgedEvent` e endpoint `/api/v1/alerts/acknowledge` autorizando `analyst`; (5) Gauges de pool DB e status de infraestrutura expostos no Prometheus; (6) Serviço Alertmanager no Docker Compose, `alertmanager.yml` com rotas e inibições; (7) `alerts.yml` com 6 alertas mínimos + 6 alertas internos de pipeline; (8) 7 Runbooks Markdown detalhados em `docs/runbooks/`; (9) Painéis SRE no Grafana `golden_signals.json`; (10) Fire drill script e suíte de testes de integração em `test_m2_monitoring.py`. **67/67 testes aprovados com 100% de sucesso**.

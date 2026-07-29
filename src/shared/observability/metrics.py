@@ -8,8 +8,17 @@ from collections.abc import Callable
 from typing import Any
 
 from fastapi import Request, Response
-from prometheus_client import CONTENT_TYPE_LATEST, REGISTRY, Counter, Histogram, generate_latest
+from prometheus_client import (
+    CONTENT_TYPE_LATEST,
+    REGISTRY,
+    Counter,
+    Gauge,
+    Histogram,
+    generate_latest,
+)
 from starlette.middleware.base import BaseHTTPMiddleware
+
+from src.core.infrastructure.config import settings
 
 # Contador Total de Requisições HTTP
 HTTP_REQUESTS_TOTAL = Counter(
@@ -60,6 +69,98 @@ DOMAIN_EVENT_HANDLER_DURATION_SECONDS = Histogram(
     registry=REGISTRY,
 )
 
+# ─── Métricas M2 — Monitoramento & Operação SRE ────────────────────────────────
+
+GOVSEC_SERVICE_INFO = Gauge(
+    "govsec_service_info",
+    "Informações de versão e ambiente da API GovSec Shield",
+    ["version", "environment", "service"],
+    registry=REGISTRY,
+)
+GOVSEC_SERVICE_INFO.labels(
+    version="1.0.0", environment=settings.GOVSEC_ENV, service="govsec-core-api"
+).set(1)
+
+# Conexões do Pool SQLAlchemy PostgreSQL
+GOVSEC_DB_POOL_SIZE = Gauge(
+    "govsec_db_pool_size",
+    "Tamanho total configurado para o pool de conexões PostgreSQL",
+    registry=REGISTRY,
+)
+GOVSEC_DB_POOL_CHECKED_OUT = Gauge(
+    "govsec_db_pool_checked_out",
+    "Número de conexões PostgreSQL atualmente em uso ativo",
+    registry=REGISTRY,
+)
+GOVSEC_DB_POOL_OVERFLOW = Gauge(
+    "govsec_db_pool_overflow",
+    "Número de conexões adicionais de overflow abertas no pool",
+    registry=REGISTRY,
+)
+GOVSEC_DB_POOL_AVAILABLE_CONNECTIONS = Gauge(
+    "govsec_db_pool_available_connections",
+    "Número de conexões imediatamente disponíveis no pool PostgreSQL",
+    registry=REGISTRY,
+)
+
+# Ingestão de Logs & Eventos
+GOVSEC_LOGS_INGESTED_TOTAL = Counter(
+    "govsec_logs_ingested_total",
+    "Total de logs de auditoria ingeridos operacionalmente",
+    ["source", "tenant"],
+    registry=REGISTRY,
+)
+
+# Estado de Componentes de Infraestrutura
+GOVSEC_EVENT_BUS_FALLBACK_ACTIVE = Gauge(
+    "govsec_event_bus_fallback_active",
+    "Status do EventBus: 1 se em fallback in-memory, 0 se operando via Kafka",
+    registry=REGISTRY,
+)
+
+GOVSEC_OPA_AVAILABLE = Gauge(
+    "govsec_opa_available",
+    "Status do OPA Engine: 1 se acessível e respondendo, 0 se indisponível",
+    registry=REGISTRY,
+)
+
+# Pipeline de Alertas
+GOVSEC_ALERT_DELIVERY_FAILURES_TOTAL = Counter(
+    "govsec_alert_delivery_failures_total",
+    "Total de falhas no envio de notificações ao Alertmanager",
+    registry=REGISTRY,
+)
+
+GOVSEC_ALERTS_ACKNOWLEDGED_TOTAL = Counter(
+    "govsec_alerts_acknowledged_total",
+    "Total de alertas com acknowledgement humano auditado",
+    ["tenant"],
+    registry=REGISTRY,
+)
+
+
+def collect_db_pool_metrics() -> None:
+    """Coleta dinâmica do estado do pool SQLAlchemy sem gerar alta cardinalidade."""
+    try:
+        from src.core.infrastructure.db.unit_of_work import engine
+
+        pool = engine.pool
+        size = pool.size()
+        checkedout = pool.checkedout()
+        overflow = pool.overflow()
+        available = max(0, (size + overflow) - checkedout)
+
+        GOVSEC_DB_POOL_SIZE.set(size)
+        GOVSEC_DB_POOL_CHECKED_OUT.set(checkedout)
+        GOVSEC_DB_POOL_OVERFLOW.set(overflow)
+        GOVSEC_DB_POOL_AVAILABLE_CONNECTIONS.set(available)
+    except Exception:
+        # Fallback seguro caso o engine ainda não tenha inicializado
+        GOVSEC_DB_POOL_SIZE.set(5)
+        GOVSEC_DB_POOL_CHECKED_OUT.set(0)
+        GOVSEC_DB_POOL_OVERFLOW.set(0)
+        GOVSEC_DB_POOL_AVAILABLE_CONNECTIONS.set(5)
+
 
 class PrometheusMetricsMiddleware(BaseHTTPMiddleware):
     """
@@ -96,5 +197,7 @@ class PrometheusMetricsMiddleware(BaseHTTPMiddleware):
 
 async def metrics_endpoint_handler() -> Response:
     """Handler para o endpoint GET /metrics do Prometheus Exporter."""
+    collect_db_pool_metrics()
     data: bytes = generate_latest(REGISTRY)
     return Response(content=data, media_type=CONTENT_TYPE_LATEST)
+

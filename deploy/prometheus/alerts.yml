@@ -1,0 +1,166 @@
+groups:
+  - name: govsec_platform_alerts
+    rules:
+      # 8.1 ServiceDown — critical
+      - alert: ServiceDown
+        expr: up{job="govsec-core-api"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: govsec-core-api
+          team: sre
+        annotations:
+          summary: "API Principal GovSec Shield Indisponível"
+          description: "O serviço 'govsec-core-api' não está respondendo às requisições do Prometheus há mais de 1 minuto."
+          runbook_url: "docs/runbooks/service-down.md"
+          dashboard_url: "http://localhost:3001/d/golden-signals"
+
+      # 8.2 HighLatency — warning
+      - alert: HighLatency
+        expr: histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{endpoint!~"/metrics|/healthz|/ready"}[5m])) by (le)) > 1.0
+        for: 5m
+        labels:
+          severity: warning
+          service: govsec-core-api
+          team: sre
+        annotations:
+          summary: "Alta Latência p95 na API GovSec Shield (> 1s)"
+          description: "O percentil p95 da latência das requisições HTTP da API ultrapassou 1 segundo nos últimos 5 minutos."
+          runbook_url: "docs/runbooks/high-latency.md"
+          dashboard_url: "http://localhost:3001/d/golden-signals"
+
+      # 8.3 HighErrorRate — critical
+      - alert: HighErrorRate
+        expr: (sum(rate(http_requests_total{status_code=~"5.."}[5m])) / (sum(rate(http_requests_total[5m])) + 0.0001)) * 100 > 5 and sum(rate(http_requests_total[5m])) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+          service: govsec-core-api
+          team: sre
+        annotations:
+          summary: "Taxa de Erros HTTP 5xx Elevada (> 5%)"
+          description: "Mais de 5% das requisições HTTP processadas pela API resultaram em erro 5xx nos últimos 5 minutos."
+          runbook_url: "docs/runbooks/high-error-rate.md"
+          dashboard_url: "http://localhost:3001/d/golden-signals"
+
+      # 8.4 DBConnectionPoolExhausted — critical
+      - alert: DBConnectionPoolExhausted
+        expr: govsec_db_pool_available_connections < 2
+        for: 2m
+        labels:
+          severity: critical
+          service: govsec-core-api
+          team: database
+        annotations:
+          summary: "Pool de Conexões do Banco de Dados PostgreSQL Esgotado"
+          description: "Restam menos de 2 conexões disponíveis no pool de banco de dados por mais de 2 minutos."
+          runbook_url: "docs/runbooks/db-connection-pool-exhausted.md"
+          dashboard_url: "http://localhost:3001/d/golden-signals"
+
+      # 8.5 HighMemoryUsage — warning
+      - alert: HighMemoryUsage
+        expr: system_memory_used_bytes > 2684354560
+        for: 5m
+        labels:
+          severity: warning
+          service: govsec-core-api
+          team: infra
+        annotations:
+          summary: "Alto Uso de Memória no Sistema (> 2.5 GB)"
+          description: "O uso de memória RAM no host ultrapassou 2.5 GB durante 5 minutos contínuos."
+          runbook_url: "docs/runbooks/high-memory-usage.md"
+          dashboard_url: "http://localhost:3001/d/golden-signals"
+
+      # 8.6 NoLogsIngested — warning
+      - alert: NoLogsIngested
+        expr: increase(govsec_logs_ingested_total[15m]) == 0 and up{job="govsec-core-api"} == 1
+        for: 15m
+        labels:
+          severity: warning
+          service: govsec-core-api
+          team: soc
+        annotations:
+          summary: "Ausência de Logs Ingeridos nos Últimos 15 Minutos"
+          description: "Nenhum log de auditoria foi ingerido no pipeline nos últimos 15 minutos enquanto a API se mantinha saudável."
+          runbook_url: "docs/runbooks/no-logs-ingested.md"
+          dashboard_url: "http://localhost:3001/d/golden-signals"
+
+  - name: govsec_internal_pipeline_alerts
+    rules:
+      - alert: PrometheusTargetDown
+        expr: up == 0
+        for: 2m
+        labels:
+          severity: warning
+          service: observability-pipeline
+          team: sre
+        annotations:
+          summary: "Alvo do Prometheus Indisponível"
+          description: "Um alvo registrado no Prometheus Exporter falhou no scrape de métricas."
+          runbook_url: "docs/runbooks/alertmanager-down.md"
+          dashboard_url: "http://localhost:3001/d/golden-signals"
+
+      - alert: AlertmanagerDown
+        expr: up{job="alertmanager"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: alertmanager
+          team: sre
+        annotations:
+          summary: "Serviço Alertmanager Indisponível"
+          description: "O contêiner do Alertmanager está inativo ou inacessível pelo Prometheus."
+          runbook_url: "docs/runbooks/alertmanager-down.md"
+          dashboard_url: "http://localhost:3001/d/golden-signals"
+
+      - alert: KafkaUnavailable
+        expr: govsec_event_bus_fallback_active == 1
+        for: 3m
+        labels:
+          severity: warning
+          service: event-bus
+          team: infra
+        annotations:
+          summary: "Broker Redpanda/Kafka Indisponível (Em Fallback In-Memory)"
+          description: "O Barramento de Eventos da plataforma alternou para fallback em memória devido à indisponibilidade do Kafka."
+          runbook_url: "docs/runbooks/service-down.md"
+          dashboard_url: "http://localhost:3001/d/golden-signals"
+
+      - alert: OPAPolicyEngineUnavailable
+        expr: govsec_opa_available == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: opa-engine
+          team: security
+        annotations:
+          summary: "Motor de Políticas OPA Indisponível"
+          description: "O serviço Open Policy Agent (OPA) está inacessível. Avaliações de política falharão fechadas."
+          runbook_url: "docs/runbooks/service-down.md"
+          dashboard_url: "http://localhost:3001/d/golden-signals"
+
+      - alert: AlertDeliveryFailures
+        expr: rate(govsec_alert_delivery_failures_total[5m]) > 0
+        for: 2m
+        labels:
+          severity: warning
+          service: alertmanager
+          team: sre
+        annotations:
+          summary: "Falhas na Entrega de Alertas pelo Alertmanager"
+          description: "Alertmanager falhou ao disparar notificações para os receivers configurados (Slack/PagerDuty)."
+          runbook_url: "docs/runbooks/alertmanager-down.md"
+          dashboard_url: "http://localhost:3001/d/golden-signals"
+
+      - alert: PersistentLogIngestionFailure
+        expr: increase(govsec_logs_ingested_total[1h]) == 0 and up{job="govsec-core-api"} == 1
+        for: 30m
+        labels:
+          severity: critical
+          service: govsec-core-api
+          team: soc
+        annotations:
+          summary: "Falha Persistente Ingestão de Logs (> 1 hora)"
+          description: "Paralisação estendida de ingestão de logs de auditoria por mais de 1 hora."
+          runbook_url: "docs/runbooks/no-logs-ingested.md"
+          dashboard_url: "http://localhost:3001/d/golden-signals"

@@ -5,7 +5,17 @@ global:
     environment: "development"
     project: "govsec-shield"
 
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - alertmanager:9093
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
 scrape_configs:
+
   # Auto-monitoramento do Prometheus
   - job_name: "prometheus"
     static_configs:

@@ -146,10 +146,30 @@ services:
       timeout: 5s
       retries: 5
 
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    container_name: govsec-alertmanager
+    restart: unless-stopped
+    ports:
+      - "9093:9093"
+    volumes:
+      - ../../deploy/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager_data:/alertmanager
+    command:
+      - "--config.file=/etc/alertmanager/alertmanager.yml"
+      - "--storage.path=/alertmanager"
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:9093/-/ready"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
 volumes:
   postgres_data:
   prometheus_data:
   grafana_data:
   loki_data:
   tempo_data:
+  alertmanager_data:
+
 

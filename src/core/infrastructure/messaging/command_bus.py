@@ -175,6 +175,8 @@ class CommandBus:
                             extra={"correlation_id": command_id, "tenant": tenant},
                         )
 
+
+
                 # Exaustão de tentativas -> Enviar para Dead Letter Queue (DLQ)
                 CQRS_COMMANDS_TOTAL.labels(
                     command_name=command_name, tenant=tenant, status="failure"

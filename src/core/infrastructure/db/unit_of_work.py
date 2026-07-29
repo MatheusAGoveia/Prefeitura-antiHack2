@@ -9,7 +9,11 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from src.core.infrastructure.config import settings
-from src.core.infrastructure.db.repositories import PostgresTenantRepository
+from src.core.infrastructure.db.repositories import (
+    PostgresAlertAcknowledgementRepository,
+    PostgresLogRepository,
+    PostgresTenantRepository,
+)
 
 engine = create_async_engine(settings.GOVSEC_DB_URL, echo=False)
 
@@ -20,14 +24,20 @@ async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
     async with AsyncSessionLocal() as session:
         try:
             yield session
+        except Exception:
+            await session.rollback()
+            raise
         finally:
             await session.close()
+
 
 
 class UnitOfWork:
     def __init__(self, session: AsyncSession):
         self.session = session
         self.tenants = PostgresTenantRepository(session)
+        self.logs = PostgresLogRepository(session)
+        self.alert_acks = PostgresAlertAcknowledgementRepository(session)
 
     async def __aenter__(self) -> "UnitOfWork":
         return self
@@ -47,3 +57,4 @@ class UnitOfWork:
 
     async def rollback(self) -> None:
         await self.session.rollback()
+

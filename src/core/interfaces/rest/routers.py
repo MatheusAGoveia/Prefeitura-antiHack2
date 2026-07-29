@@ -10,12 +10,15 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 from src.core.application.commands import (
+    AcknowledgeAlertCommand,
     CreateTenantCommand,
     DeleteTenantCommand,
     IngestLogCommand,
     UpdateTenantCommand,
 )
 from src.core.application.dto import (
+    AcknowledgeAlertDTO,
+    AlertAcknowledgementResponseDTO,
     CreateTenantDTO,
     IngestLogDTO,
     LogResponseDTO,
@@ -84,9 +87,9 @@ async def create_tenant(
     command_bus: CommandBus = Depends(get_command_bus),
     current_user: AuthenticatedUser = Depends(get_current_user),
 ) -> TenantResponseDTO:
-    SecurityKernel.authorize(current_user, UserRole.SYSTEM_ADMIN)
-    command = CreateTenantCommand(name=dto.name, slug=dto.slug)
     try:
+        SecurityKernel.authorize(current_user, UserRole.SYSTEM_ADMIN)
+        command = CreateTenantCommand(name=dto.name, slug=dto.slug)
         result = await command_bus.send(command)
         return result  # type: ignore[no-any-return]
     except ValueError as e:
@@ -107,9 +110,12 @@ async def list_tenants(
     query_handler: TenantQueryHandler = Depends(get_query_handler),
     current_user: AuthenticatedUser = Depends(get_current_user),
 ) -> list[TenantResponseDTO]:
-    SecurityKernel.authorize(current_user, UserRole.VIEWER)
-    query = ListTenantsQuery(skip=skip, limit=limit, search=search, status=status_filter)
-    return await query_handler.list(query)
+    try:
+        SecurityKernel.authorize(current_user, UserRole.VIEWER)
+        query = ListTenantsQuery(skip=skip, limit=limit, search=search, status=status_filter)
+        return await query_handler.list(query)
+    except PermissionError as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e)) from e
 
 
 # -----------------------------------------------------------------------------
@@ -121,15 +127,18 @@ async def get_tenant_by_id(
     query_handler: TenantQueryHandler = Depends(get_query_handler),
     current_user: AuthenticatedUser = Depends(get_current_user),
 ) -> TenantResponseDTO:
-    SecurityKernel.authorize(current_user, UserRole.VIEWER)
-    query = GetTenantByIdQuery(tenant_id=tenant_id)
-    tenant = await query_handler.get_by_id(query)
-    if not tenant:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Tenant com ID '{tenant_id}' não foi encontrado",
-        )
-    return tenant
+    try:
+        SecurityKernel.authorize(current_user, UserRole.VIEWER)
+        query = GetTenantByIdQuery(tenant_id=tenant_id)
+        tenant = await query_handler.get_by_id(query)
+        if not tenant:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Tenant com ID '{tenant_id}' não foi encontrado",
+            )
+        return tenant
+    except PermissionError as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e)) from e
 
 
 # -----------------------------------------------------------------------------
@@ -142,9 +151,9 @@ async def update_tenant(
     command_bus: CommandBus = Depends(get_command_bus),
     current_user: AuthenticatedUser = Depends(get_current_user),
 ) -> TenantResponseDTO:
-    SecurityKernel.authorize(current_user, UserRole.SYSTEM_ADMIN)
-    command = UpdateTenantCommand(tenant_id=tenant_id, name=dto.name, status=dto.status)
     try:
+        SecurityKernel.authorize(current_user, UserRole.SYSTEM_ADMIN)
+        command = UpdateTenantCommand(tenant_id=tenant_id, name=dto.name, status=dto.status)
         result = await command_bus.send(command)
         return result  # type: ignore[no-any-return]
     except ValueError as e:
@@ -162,9 +171,9 @@ async def delete_tenant(
     command_bus: CommandBus = Depends(get_command_bus),
     current_user: AuthenticatedUser = Depends(get_current_user),
 ) -> None:
-    SecurityKernel.authorize(current_user, UserRole.SYSTEM_ADMIN)
-    command = DeleteTenantCommand(tenant_id=tenant_id)
     try:
+        SecurityKernel.authorize(current_user, UserRole.SYSTEM_ADMIN)
+        command = DeleteTenantCommand(tenant_id=tenant_id)
         await command_bus.send(command)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e)) from e
@@ -181,11 +190,11 @@ async def ingest_log(
     command_bus: CommandBus = Depends(get_command_bus),
     current_user: AuthenticatedUser = Depends(get_current_user),
 ) -> dict[str, str]:
-    SecurityKernel.authorize(current_user, UserRole.ANALYST)
-    command = IngestLogCommand(
-        source=dto.source, raw_data=dto.raw_data, tenant_id=dto.tenant_id, timestamp=dto.timestamp
-    )
     try:
+        SecurityKernel.authorize(current_user, UserRole.ANALYST)
+        command = IngestLogCommand(
+            source=dto.source, raw_data=dto.raw_data, tenant_id=dto.tenant_id, timestamp=dto.timestamp
+        )
         await command_bus.send(command)
         return {"status": "accepted", "message": "Log enviado para fila de ingestão"}
     except PermissionError as e:
@@ -204,7 +213,50 @@ async def list_logs(
     query_handler: LogQueryHandler = Depends(get_log_query_handler),
     current_user: AuthenticatedUser = Depends(get_current_user),
 ) -> list[LogResponseDTO]:
-    SecurityKernel.authorize(current_user, UserRole.VIEWER)
-    query = ListLogsQuery(skip=skip, limit=limit, tenant_id=tenant_id, source=source)
-    return await query_handler.list(query)
+    try:
+        SecurityKernel.authorize(current_user, UserRole.VIEWER)
+        query = ListLogsQuery(skip=skip, limit=limit, tenant_id=tenant_id, source=source)
+        return await query_handler.list(query)
+    except PermissionError as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e)) from e
+
+
+# -----------------------------------------------------------------------------
+# M2 Capability: POST /api/v1/alerts/acknowledge (Acknowledgement Humano de Alerta)
+# -----------------------------------------------------------------------------
+@router.post("/alerts/acknowledge", response_model=AlertAcknowledgementResponseDTO, status_code=status.HTTP_200_OK)
+async def acknowledge_alert(
+    dto: AcknowledgeAlertDTO,
+    command_bus: CommandBus = Depends(get_command_bus),
+    current_user: AuthenticatedUser = Depends(get_current_user),
+) -> AlertAcknowledgementResponseDTO:
+    """
+    Registra o acknowledgement humano auditável para um alerta ativo.
+    Exige perfil mínimo 'analyst' e é escopado por tenant.
+    """
+    try:
+        SecurityKernel.authorize(current_user, UserRole.ANALYST)
+        tenant_id = dto.tenant_id or current_user.tenant_id
+
+        command = AcknowledgeAlertCommand(
+            alert_id=dto.alert_id,
+            fingerprint=dto.fingerprint,
+            reason=dto.reason,
+            acknowledged_by=current_user.user_id,
+            tenant_id=tenant_id,
+        )
+        result = await command_bus.send(command)
+        SecurityKernel.audit(
+            user={"user_id": current_user.user_id, "tenant_id": tenant_id},
+            action="ACKNOWLEDGE_ALERT",
+            resource=f"alert:{dto.fingerprint}",
+            success=True,
+        )
+        return result  # type: ignore[no-any-return]
+    except PermissionError as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e)) from e
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
+
+
 

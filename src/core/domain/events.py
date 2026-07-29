@@ -34,3 +34,15 @@ class LogIngestedEvent(DomainEvent):
     source: str
     raw_data: str
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class AlertAcknowledgedEvent(DomainEvent):
+    """Evento disparado quando um alerta é reconhecido por um operador humano."""
+
+    event_type: str = "AlertAcknowledgedEvent"
+    alert_id: str
+    fingerprint: str
+    reason: str
+    acknowledged_by: str
+    acknowledged_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+

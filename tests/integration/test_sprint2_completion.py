@@ -11,7 +11,6 @@ Cobre os 6 itens pendentes da Sprint 2:
 6. Cobertura consolidada de testes
 """
 
-from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
@@ -22,12 +21,10 @@ from src.core.domain.events import LogIngestedEvent, TenantCreatedEvent
 from src.core.interfaces.event_handlers.log_event_handler import LogEventHandler
 from src.core.interfaces.event_handlers.tenant_event_handler import TenantEventHandler
 from src.shared.observability.metrics import (
-    DOMAIN_EVENT_HANDLER_DURATION_SECONDS,
     DOMAIN_EVENTS_TOTAL,
 )
 from src.shared.observability.sanitizer import DataMasker, data_masker
 from src.shared.observability.system_metrics import SystemMetricsCollector
-
 
 # ─── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -258,7 +255,7 @@ def test_system_metrics_collector_cpu_is_numeric() -> None:
     metrics = collector.collect()
     cpu = metrics.get("cpu_percent")
     # None é permitido em ambientes onde psutil não consegue ler CPU
-    assert cpu is None or isinstance(cpu, (int, float))
+    assert cpu is None or isinstance(cpu, int | float)
 
 
 def test_system_metrics_collector_memory_positive() -> None:
