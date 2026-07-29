@@ -14,6 +14,7 @@ OUTPUT_PATH = "deploy/alertmanager/alertmanager.rendered.yml"
 
 
 def render_config() -> str:
+    env = os.getenv("GOVSEC_ENV", "dev").lower().strip()
     slack_url = os.getenv("GOVSEC_SLACK_WEBHOOK_URL", "").strip()
     pagerduty_key = os.getenv("GOVSEC_PAGERDUTY_SERVICE_KEY", "").strip()
 
@@ -49,11 +50,19 @@ def render_config() -> str:
     rendered = template.replace("{{SLACK_CONFIG}}", slack_snippet)
     rendered = rendered.replace("{{PAGERDUTY_CONFIG}}", pagerduty_snippet)
 
+    # Validação de Segurança: Bloquear test-receiver e endpoints locais em Staging/Production
+    if env in ("staging", "production"):
+        if "test-receiver" in rendered or "host.docker.internal" in rendered:
+            raise ValueError(
+                f"🚨 [SECURITY ERROR] Ambiente '{env}' proíbe o uso de 'test-receiver' ou endpoints locais no Alertmanager!"
+            )
+
     with open(OUTPUT_PATH, "w", encoding="utf-8") as f:
         f.write(rendered)
 
-    print(f"✅ Configuração do Alertmanager renderizada com sucesso em {OUTPUT_PATH}")
+    print(f"✅ Configuração do Alertmanager [{env.upper()}] renderizada com sucesso em {OUTPUT_PATH}")
     return OUTPUT_PATH
+
 
 
 if __name__ == "__main__":
