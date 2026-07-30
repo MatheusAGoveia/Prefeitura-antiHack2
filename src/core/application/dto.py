@@ -132,3 +132,85 @@ class SecurityEventResponseDTO(BaseModel):
     is_duplicate_suppressed: bool = False
 
     model_config = ConfigDict(from_attributes=True)
+
+
+# ---------------------------------------------------------------------------
+# M3.2 — DTOs de Incidentes
+# ---------------------------------------------------------------------------
+
+# Status válidos para filtro de listagem e resposta (convenção lowercase)
+VALID_INCIDENT_STATUSES = frozenset(
+    ["open", "acknowledged", "investigating", "contained", "resolved", "closed"]
+)
+
+
+class ChangeIncidentStatusDTO(BaseModel):
+    """
+    Payload para mudança de status de incidente via API.
+    tenant_id e actor_id NUNCA são aceitos do cliente:
+      - tenant_id vem do JWT (obrigatório)
+      - actor_id é o user_id do JWT autenticado
+    """
+
+    new_status: str = Field(
+        ...,
+        description="Novo status do incidente (lowercase: open, acknowledged, investigating, contained, resolved, closed).",
+        examples=["investigating"],
+    )
+    reason: str = Field(
+        ...,
+        min_length=5,
+        max_length=1024,
+        description="Justificativa obrigatória para a mudança de status.",
+        examples=["Investigação iniciada — host isolado da rede."],
+    )
+
+    @field_validator("new_status")
+    @classmethod
+    def _validate_status(cls, v: str) -> str:
+        normalized = v.strip().lower()
+        if normalized not in VALID_INCIDENT_STATUSES:
+            raise ValueError(
+                f"Status inválido: '{v}'. Valores aceitos: {sorted(VALID_INCIDENT_STATUSES)}"
+            )
+        return normalized
+
+
+class EvidenceResponseDTO(BaseModel):
+    """DTO de resposta para uma evidência de incidente."""
+
+    evidence_id: UUID
+    incident_id: UUID
+    event_id: UUID
+    tenant_id: UUID
+    evidence_hash: str
+    description: str
+    added_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class IncidentResponseDTO(BaseModel):
+    """DTO de resposta completo para um incidente."""
+
+    incident_id: UUID
+    tenant_id: UUID
+    title: str
+    description: str
+    severity: str
+    status: str
+    correlation_key: str
+    created_at: datetime
+    updated_at: datetime
+    evidence_count: int = 0
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class IncidentListResponseDTO(BaseModel):
+    """DTO de resposta paginada para listagem de incidentes."""
+
+    items: list[IncidentResponseDTO]
+    total: int
+    skip: int
+    limit: int

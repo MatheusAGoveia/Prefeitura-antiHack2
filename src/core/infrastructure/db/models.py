@@ -136,6 +136,8 @@ class SecurityEventModel(Base):
         UniqueConstraint(
             "tenant_id", "source", "idempotency_key", name="uq_security_events_idempotency"
         ),
+        # Constraint composta necessária para FK tenant-aware de incident_evidences
+        UniqueConstraint("tenant_id", "event_id", name="uq_security_events_tenant_event"),
         Index("idx_security_events_tenant_occurred", "tenant_id", "occurred_at"),
         Index(
             "idx_security_events_tenant_asset_occurred",
@@ -217,3 +219,123 @@ class OutboxEventModel(Base):
         DateTime(timezone=True), nullable=True
     )
     last_error: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+
+
+class IncidentModel(Base):
+    """
+    Modelo relacional para a tabela incidents (M3.2).
+
+    Garantias de integridade:
+    - UNIQUE(tenant_id, incident_id): permite FK composta de tabelas filhas (tenant-aware).
+    - Índice único PARCIAL (status NOT IN ('resolved','closed')): permite reabrir incidente
+      após resolução/fechamento sem violar unicidade de chave de correlação.
+    - status usa lowercase (convenção única: domínio StrEnum + banco + API).
+    """
+
+    __tablename__ = "incidents"
+    __table_args__ = (
+        # FK composta referenciável por tabelas filhas (tenant-aware)
+        UniqueConstraint("tenant_id", "incident_id", name="uq_incidents_tenant_incident"),
+        # Índice único PARCIAL: apenas incidentes ativos (permite reabertura pós-RESOLVED/CLOSED)
+        Index(
+            "idx_incidents_active_corrkey_unique",
+            "tenant_id",
+            "correlation_key_hash",
+            unique=True,
+            postgresql_where=text("status NOT IN ('resolved', 'closed')"),
+            sqlite_where=text("status NOT IN ('resolved', 'closed')"),
+        ),
+        Index("idx_incidents_tenant_status", "tenant_id", "status"),
+        Index("idx_incidents_tenant_created", "tenant_id", "created_at"),
+    )
+
+    incident_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    tenant_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, index=True)
+    title: Mapped[str] = mapped_column(String(256), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    severity: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="open")
+    correlation_key: Mapped[str] = mapped_column(String(512), nullable=False)
+    correlation_key_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+
+class IncidentEvidenceModel(Base):
+    """
+    Modelo relacional para a tabela incident_evidences (M3.2).
+
+    Garantias de integridade:
+    - FK composta (tenant_id, incident_id) → incidents: previne cross-tenant.
+    - FK composta (tenant_id, event_id) → security_events: previne cross-tenant de eventos.
+    - UNIQUE(incident_id, event_id): idempotência de vínculo — mesmo evento não duplica evidência.
+    - raw_payload_masked: somente payload previamente sanitizado (sem tokens, senhas ou headers).
+    """
+
+    __tablename__ = "incident_evidences"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["tenant_id", "incident_id"],
+            ["incidents.tenant_id", "incidents.incident_id"],
+            name="fk_evidence_tenant_incident",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "event_id"],
+            ["security_events.tenant_id", "security_events.event_id"],
+            name="fk_evidence_tenant_event",
+        ),
+        UniqueConstraint("incident_id", "event_id", name="uq_evidence_incident_event"),
+        Index("idx_incident_evidences_tenant", "tenant_id"),
+        Index("idx_incident_evidences_incident", "incident_id"),
+    )
+
+    evidence_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    incident_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    tenant_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    event_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    evidence_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    raw_payload_masked: Mapped[dict[str, Any]] = mapped_column(
+        JSONB().with_variant(JSON(), "sqlite"), nullable=False
+    )
+    added_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
+    )
+
+
+class IncidentStatusHistoryModel(Base):
+    """
+    Modelo relacional para a tabela incident_status_history (M3.2).
+
+    Registro auditável imutável de toda transição de estado de incidente.
+    FK composta (tenant_id, incident_id) → incidents garante isolamento cross-tenant.
+    """
+
+    __tablename__ = "incident_status_history"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["tenant_id", "incident_id"],
+            ["incidents.tenant_id", "incidents.incident_id"],
+            name="fk_status_history_tenant_incident",
+            ondelete="CASCADE",
+        ),
+        Index("idx_status_history_incident_ts", "incident_id", "timestamp"),
+        Index("idx_status_history_tenant", "tenant_id"),
+    )
+
+    history_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    incident_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    tenant_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    from_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    to_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    actor_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

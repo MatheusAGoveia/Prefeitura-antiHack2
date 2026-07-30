@@ -57,3 +57,22 @@ class SecurityEventReceivedEvent(DomainEvent):
     severity: str
     is_asset_resolved: bool
     asset_id: UUID | None = None
+
+
+class IncidentCreatedEvent(DomainEvent):
+    """Evento disparado quando um novo incidente é criado pelo motor de correlação."""
+
+    event_type: str = "IncidentCreatedEvent"
+    incident_id: UUID
+    correlation_key_hash: str
+    severity: str
+    triggering_event_id: UUID
+
+
+class IncidentEvidenceAddedEvent(DomainEvent):
+    """Evento disparado quando uma nova evidência é vinculada a um incidente existente."""
+
+    event_type: str = "IncidentEvidenceAddedEvent"
+    incident_id: UUID
+    evidence_id: UUID
+    event_id: UUID

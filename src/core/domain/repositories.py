@@ -8,7 +8,7 @@ from uuid import UUID
 
 from src.core.domain.correlation import CorrelationRuleVersion
 from src.core.domain.entities import AlertAcknowledgement, AuditLog, Tenant
-from src.core.domain.incidents import Asset, SecurityEvent
+from src.core.domain.incidents import Asset, Incident, IncidentEvidence, SecurityEvent
 from src.core.domain.outbox import OutboxEvent
 
 
@@ -228,4 +228,76 @@ class OutboxRepository(ABC):
         backoff_seconds: int = 10,
     ) -> None:
         """Marca falha, incrementa retries e registra mensagem de erro sanitizada."""
+        pass
+
+
+class IncidentRepository(ABC):
+    """
+    Interface de Repositório de Incidentes (M3.2).
+    Todo acesso é estritamente filtrado por tenant_id.
+    """
+
+    @abstractmethod
+    async def save(self, incident: Incident) -> Incident:
+        """Persiste ou atualiza um incidente."""
+        pass
+
+    @abstractmethod
+    async def get_by_id(self, incident_id: UUID, tenant_id: UUID) -> Incident | None:
+        """Obtém incidente por (incident_id, tenant_id). Retorna None se não encontrado."""
+        pass
+
+    @abstractmethod
+    async def find_open_by_correlation_key(
+        self, tenant_id: UUID, correlation_key_hash: str
+    ) -> Incident | None:
+        """
+        Busca incidente ativo (status NOT IN resolved/closed) por (tenant_id, correlation_key_hash).
+        Garante que cross-tenant seja impossível: tenant_id é sempre filtro obrigatório.
+        """
+        pass
+
+    @abstractmethod
+    async def list(
+        self,
+        tenant_id: UUID,
+        skip: int = 0,
+        limit: int = 50,
+        status: str | None = None,
+    ) -> list[Incident]:
+        """
+        Lista incidentes de um tenant com paginação e filtro opcional por status.
+        tenant_id é sempre obrigatório — nunca aceito do cliente.
+        Ordenação estável por created_at DESC.
+        """
+        pass
+
+
+class IncidentEvidenceRepository(ABC):
+    """
+    Interface de Repositório de Evidências de Incidentes (M3.2).
+    Garante idempotência de vínculo e isolamento por tenant_id.
+    """
+
+    @abstractmethod
+    async def save(self, evidence: IncidentEvidence) -> IncidentEvidence:
+        """
+        Persiste uma evidência.
+        Deve capturar IntegrityError de UNIQUE(incident_id, event_id) e retornar a
+        evidência existente silenciosamente (idempotência de replay).
+        """
+        pass
+
+    @abstractmethod
+    async def exists(
+        self, incident_id: UUID, event_id: UUID, tenant_id: UUID
+    ) -> bool:
+        """Verifica se o vínculo (incident_id, event_id) já existe para o tenant."""
+        pass
+
+    @abstractmethod
+    async def list_by_incident(
+        self, incident_id: UUID, tenant_id: UUID
+    ) -> list[IncidentEvidence]:
+        """Lista todas as evidências de um incidente, filtrado por tenant_id."""
         pass

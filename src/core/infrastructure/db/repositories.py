@@ -1,19 +1,29 @@
 from datetime import datetime, timedelta, timezone
-from uuid import UUID
+from typing import Any
+from uuid import UUID, uuid4
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, desc, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.core.application.interfaces import SecurityEventUnitOfWork
+from src.core.application.interfaces import CorrelationUnitOfWork, SecurityEventUnitOfWork
 from src.core.domain.correlation import CorrelationRuleVersion
 from src.core.domain.entities import AlertAcknowledgement, AuditLog, Tenant, TenantStatus
-from src.core.domain.incidents import Asset, SecurityEvent, SecurityEventSeverity
+from src.core.domain.incidents import (
+    Asset,
+    Incident,
+    IncidentEvidence,
+    IncidentStatus,
+    SecurityEvent,
+    SecurityEventSeverity,
+)
 from src.core.domain.outbox import OutboxEvent
 from src.core.domain.repositories import (
     AlertAcknowledgementRepository,
     AssetRepository,
     CorrelationRuleVersionRepository,
+    IncidentEvidenceRepository,
+    IncidentRepository,
     LogRepository,
     OutboxRepository,
     SecurityEventRepository,
@@ -24,6 +34,9 @@ from src.core.infrastructure.db.models import (
     AssetModel,
     AuditLogModel,
     CorrelationRuleVersionModel,
+    IncidentEvidenceModel,
+    IncidentModel,
+    IncidentStatusHistoryModel,
     OutboxEventModel,
     SecurityEventModel,
     TenantModel,
@@ -1023,3 +1036,259 @@ class InMemorySecurityEventUnitOfWork(SecurityEventUnitOfWork):
 
     async def rollback(self) -> None:
         self.rolled_back = True
+
+
+# ---------------------------------------------------------------------------
+# M3.2 — Repositórios Postgres para Incidentes e Evidências
+# ---------------------------------------------------------------------------
+
+_ACTIVE_INCIDENT_STATUSES = (
+    IncidentStatus.OPEN,
+    IncidentStatus.ACKNOWLEDGED,
+    IncidentStatus.INVESTIGATING,
+    IncidentStatus.CONTAINED,
+)
+
+
+class PostgresIncidentRepository(IncidentRepository):
+    """Repositório Postgres de Incidentes (M3.2). Isolamento estrito por tenant_id."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    def _to_entity(self, model: IncidentModel) -> Incident:
+        return Incident(
+            incident_id=model.incident_id,
+            tenant_id=model.tenant_id,
+            title=model.title,
+            description=model.description,
+            severity=SecurityEventSeverity(model.severity),
+            status=IncidentStatus(model.status),
+            correlation_key=model.correlation_key,
+            created_at=model.created_at,
+            updated_at=model.updated_at,
+        )
+
+    async def save(self, incident: Incident) -> Incident:
+        stmt = select(IncidentModel).where(
+            and_(
+                IncidentModel.incident_id == incident.incident_id,
+                IncidentModel.tenant_id == incident.tenant_id,
+            )
+        )
+        result = await self.session.execute(stmt)
+        model = result.scalar_one_or_none()
+
+        if model is None:
+            model = IncidentModel(
+                incident_id=incident.incident_id,
+                tenant_id=incident.tenant_id,
+                title=incident.title,
+                description=incident.description,
+                severity=incident.severity.value,
+                status=incident.status.value,
+                correlation_key=incident.correlation_key,
+                correlation_key_hash=__import__('hashlib').sha256(
+                    incident.correlation_key.encode('utf-8')
+                ).hexdigest(),
+                created_at=incident.created_at,
+                updated_at=incident.updated_at,
+            )
+            self.session.add(model)
+        else:
+            model.title = incident.title
+            model.description = incident.description
+            model.severity = incident.severity.value
+            model.status = incident.status.value
+            model.updated_at = incident.updated_at
+
+        await self.session.flush()
+        return self._to_entity(model)
+
+    async def get_by_id(self, incident_id: UUID, tenant_id: UUID) -> Incident | None:
+        stmt = select(IncidentModel).where(
+            and_(
+                IncidentModel.incident_id == incident_id,
+                IncidentModel.tenant_id == tenant_id,
+            )
+        )
+        result = await self.session.execute(stmt)
+        model = result.scalar_one_or_none()
+        return self._to_entity(model) if model else None
+
+    async def find_open_by_correlation_key(
+        self, tenant_id: UUID, correlation_key_hash: str
+    ) -> Incident | None:
+        """Busca incidente ATIVO (status em 'open','acknowledged','investigating','contained')."""
+        active_values = [s.value for s in _ACTIVE_INCIDENT_STATUSES]
+        stmt = select(IncidentModel).where(
+            and_(
+                IncidentModel.tenant_id == tenant_id,
+                IncidentModel.correlation_key_hash == correlation_key_hash,
+                IncidentModel.status.in_(active_values),
+            )
+        )
+        result = await self.session.execute(stmt)
+        model = result.scalar_one_or_none()
+        return self._to_entity(model) if model else None
+
+    async def list(
+        self,
+        tenant_id: UUID,
+        skip: int = 0,
+        limit: int = 50,
+        status: str | None = None,
+    ) -> list[Incident]:
+        """Lista incidentes do tenant, ordenados por created_at DESC (ordenação estável)."""
+        stmt = select(IncidentModel).where(IncidentModel.tenant_id == tenant_id)
+        if status:
+            stmt = stmt.where(IncidentModel.status == status)
+        stmt = stmt.order_by(desc(IncidentModel.created_at)).offset(skip).limit(limit)
+        result = await self.session.execute(stmt)
+        return [self._to_entity(m) for m in result.scalars().all()]
+
+
+class PostgresIncidentEvidenceRepository(IncidentEvidenceRepository):
+    """Repositório Postgres de Evidências de Incidentes (M3.2). Idempotente via UQ."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    def _to_entity(self, model: IncidentEvidenceModel) -> IncidentEvidence:
+        return IncidentEvidence(
+            evidence_id=model.evidence_id,
+            incident_id=model.incident_id,
+            event_id=model.event_id,
+            tenant_id=model.tenant_id,
+            evidence_hash=model.evidence_hash,
+            added_at=model.added_at,
+            description=model.description,
+            raw_payload_masked=model.raw_payload_masked,
+        )
+
+    async def save(self, evidence: IncidentEvidence) -> IncidentEvidence:
+        """
+        Persiste uma evidência. Se UNIQUE(incident_id, event_id) violar (replay),
+        busca e retorna a evidência existente silenciosamente.
+        Usa SAVEPOINT para idempotência sem invalidar a transação pai.
+        """
+        # Verificar idempotência ANTES de tentar inserir (evita IntegrityError e rollback)
+        already_exists = await self.exists(
+            incident_id=evidence.incident_id,
+            event_id=evidence.event_id,
+            tenant_id=evidence.tenant_id,
+        )
+        if already_exists:
+            stmt = select(IncidentEvidenceModel).where(
+                and_(
+                    IncidentEvidenceModel.incident_id == evidence.incident_id,
+                    IncidentEvidenceModel.event_id == evidence.event_id,
+                    IncidentEvidenceModel.tenant_id == evidence.tenant_id,
+                )
+            )
+            result = await self.session.execute(stmt)
+            existing = result.scalar_one()
+            return self._to_entity(existing)
+
+        model = IncidentEvidenceModel(
+            evidence_id=evidence.evidence_id,
+            incident_id=evidence.incident_id,
+            tenant_id=evidence.tenant_id,
+            event_id=evidence.event_id,
+            evidence_hash=evidence.evidence_hash,
+            description=evidence.description,
+            raw_payload_masked=evidence.raw_payload_masked,
+            added_at=evidence.added_at,
+        )
+        self.session.add(model)
+        await self.session.flush()
+        return self._to_entity(model)
+
+    async def exists(
+        self, incident_id: UUID, event_id: UUID, tenant_id: UUID
+    ) -> bool:
+        stmt = select(IncidentEvidenceModel.evidence_id).where(
+            and_(
+                IncidentEvidenceModel.incident_id == incident_id,
+                IncidentEvidenceModel.event_id == event_id,
+                IncidentEvidenceModel.tenant_id == tenant_id,
+            )
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none() is not None
+
+    async def list_by_incident(
+        self, incident_id: UUID, tenant_id: UUID
+    ) -> list[IncidentEvidence]:
+        stmt = select(IncidentEvidenceModel).where(
+            and_(
+                IncidentEvidenceModel.incident_id == incident_id,
+                IncidentEvidenceModel.tenant_id == tenant_id,
+            )
+        ).order_by(IncidentEvidenceModel.added_at)
+        result = await self.session.execute(stmt)
+        return [self._to_entity(m) for m in result.scalars().all()]
+
+
+# ---------------------------------------------------------------------------
+# M3.2 — PostgresCorrelationUnitOfWork
+# ---------------------------------------------------------------------------
+
+
+class PostgresCorrelationUnitOfWork(CorrelationUnitOfWork):
+    """
+    Unit of Work Postgres para o motor de correlação (M3.2).
+    Todos os repositórios compartilham a mesma AsyncSession (mesma transação).
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+        self._security_events = PostgresSecurityEventRepository(session)
+        self._correlation_rules = PostgresCorrelationRuleVersionRepository(session)
+        self._incidents = PostgresIncidentRepository(session)
+        self._evidences = PostgresIncidentEvidenceRepository(session)
+        self._logs = PostgresLogRepository(session)
+        self._outbox = PostgresOutboxRepository(session)
+
+    @property
+    def security_events(self) -> PostgresSecurityEventRepository:
+        return self._security_events
+
+    @property
+    def correlation_rules(self) -> PostgresCorrelationRuleVersionRepository:
+        return self._correlation_rules
+
+    @property
+    def incidents(self) -> PostgresIncidentRepository:
+        return self._incidents
+
+    @property
+    def evidences(self) -> PostgresIncidentEvidenceRepository:
+        return self._evidences
+
+    @property
+    def logs(self) -> PostgresLogRepository:
+        return self._logs
+
+    @property
+    def outbox(self) -> PostgresOutboxRepository:
+        return self._outbox
+
+    async def __aenter__(self) -> "PostgresCorrelationUnitOfWork":
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: object | None,
+    ) -> None:
+        if exc_type is not None:
+            await self.rollback()
+        await self.session.close()
+
+    async def commit(self) -> None:
+        await self.session.commit()
+
+    async def rollback(self) -> None:
+        await self.session.rollback()

@@ -21,6 +21,7 @@ from src.core.infrastructure.config import settings
 from src.core.infrastructure.db.models import Base
 from src.core.infrastructure.db.unit_of_work import engine
 from src.core.interfaces.rest.auth_routers import router as auth_router
+from src.core.interfaces.rest.incident_routers import router as incident_router
 from src.core.interfaces.rest.routers import router as core_router
 from src.shared.observability import (
     PrometheusMetricsMiddleware,
@@ -112,6 +113,7 @@ instrument_fastapi(app)
 # 5. Rotas de Aplicação
 app.include_router(auth_router)
 app.include_router(core_router)
+app.include_router(incident_router)
 app.include_router(dashboard_router)
 
 # 6. Exposição de Métricas Prometheus, Health Checks e Dashboard Dev
