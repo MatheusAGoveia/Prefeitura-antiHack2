@@ -64,11 +64,21 @@ class EventBus(IEventPublisher):
         event_dict = event.model_dump(mode="json")
         logger.info(f"[EVENT PUBLISHED] EventType={event.event_type} EventID={event.event_id}")
 
-        if self.use_kafka and self._producer:
+        if self.use_kafka:
+            if not self._producer:
+                raise RuntimeError("Kafka AIOProducer não está ativo ou inicializado.")
             topic = f"{settings.GOVSEC_KAFKA_TOPIC_PREFIX}.events"
             key = str(event.tenant_id).encode("utf-8") if event.tenant_id else None
-            await self._producer.send_and_wait(topic, value=event_dict, key=key)
+            try:
+                await self._producer.send_and_wait(topic, value=event_dict, key=key)
+            except Exception as exc:
+                logger.error("Falha ao publicar evento no Kafka/Redpanda: %s", exc)
+                raise RuntimeError(f"Falha na entrega do evento ao Kafka: {exc}") from exc
         else:
+            if settings.GOVSEC_ENV in ("staging", "production"):
+                raise RuntimeError(
+                    f"Tentativa de publicação in-memory proibida no ambiente '{settings.GOVSEC_ENV}'."
+                )
             # Fallback In-Memory dispatch
             listeners = self._listeners.get(event.event_type, [])
             for listener in listeners:

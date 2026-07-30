@@ -577,3 +577,60 @@ async def test_outbox_worker_cli_execution() -> None:
     # 4. Teste da factory uow_factory do script
     session_uow = uow_factory()
     assert hasattr(session_uow, "session")
+
+
+@pytest.mark.asyncio
+async def test_kafka_broker_unavailable_does_not_mark_as_published() -> None:
+    """Valida que quando o Kafka/Redpanda falha ou fica indisponível, a mensagem NUNCA é marcada como published e o fallback em memória é bloqueado."""
+    from src.core.infrastructure.messaging.kafka_event_bus import KafkaEventBus
+
+    uow = InMemorySecurityEventUnitOfWork()
+    tenant_id = uuid4()
+
+    # Instancia KafkaEventBus com use_kafka=True e allow_fallback=False (modo de produção/estrito)
+    bus = KafkaEventBus(
+        bootstrap_servers="127.0.0.1:59999",
+        use_kafka=True,
+        allow_fallback=False,
+    )
+
+    # 1. Se start() falhar a conexão, deve lançar RuntimeError sem fallback silencioso
+    with pytest.raises(RuntimeError) as exc_conn:
+        await bus.start()
+    assert "Falha de conexão com Kafka" in str(exc_conn.value) or "127.0.0.1:59999" in str(exc_conn.value)
+
+    # 2. Criar mensagem outbox e tentar despachar usando um publisher que falha (Kafka indisponível)
+    evt = OutboxEvent(
+        tenant_id=tenant_id,
+        aggregate_type="SecurityEvent",
+        aggregate_id=uuid4(),
+        event_type="SecurityEventReceivedEvent",
+        payload={
+            "tenant_id": str(tenant_id),
+            "security_event_id": str(uuid4()),
+            "source": "Alertmanager",
+            "security_event_type": "HighCpu",
+            "severity": "HIGH",
+            "is_asset_resolved": True,
+            "asset_id": None,
+        },
+        idempotency_key="k-no-publish-on-err-001",
+    )
+    await uow.outbox.save(evt)
+
+    dispatcher = OutboxDispatcher(
+        uow_factory=lambda: uow,
+        event_publisher=bus,
+        max_retries=3,
+    )
+
+    processed = await dispatcher.process_outbox_batch(batch_size=10)
+    assert processed == 0
+
+    # Garante que a mensagem NÃO FOI marcada como published
+    saved_evt = uow.outbox.events[evt.outbox_event_id]
+    assert saved_evt.status == "failed"
+    assert saved_evt.status != "published"
+    assert saved_evt.published_at is None
+    assert saved_evt.retry_count == 1
+    assert saved_evt.last_error is not None
