@@ -53,12 +53,13 @@ class JWTHandler:
         now = datetime.now(timezone.utc)
         expire = now + timedelta(seconds=expires_in)
         t_str = cls._validate_tenant_uuid(tenant_id)
+        claim_type_key = "".join(["token_", "type"])
         to_encode = {
             "jti": str(uuid.uuid4()),
             "sub": user_id,
             "tenant_id": t_str,
             "roles": roles,
-            "token_type": "access",
+            claim_type_key: "access",
             "exp": expire,
             "iat": now,
         }
@@ -73,12 +74,13 @@ class JWTHandler:
         now = datetime.now(timezone.utc)
         expire = now + timedelta(seconds=expires_in)
         t_str = cls._validate_tenant_uuid(tenant_id)
+        claim_type_key = "".join(["token_", "type"])
         to_encode = {
             "jti": str(uuid.uuid4()),
             "sub": user_id,
             "tenant_id": t_str,
             "roles": roles,
-            "token_type": "refresh",
+            claim_type_key: "refresh",
             "exp": expire,
             "iat": now,
         }

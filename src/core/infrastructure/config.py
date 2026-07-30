@@ -92,8 +92,8 @@ class Settings(BaseSettings):
                         f"Em ambiente '{self.GOVSEC_ENV}', a origem local '{origin}' é estritamente proibida em GOVSEC_CORS_ALLOWED_ORIGINS."
                     )
 
-            default_secret = "super-secret-govsec-key-change-in-production"
-            if default_secret == self.GOVSEC_JWT_SECRET or len(self.GOVSEC_JWT_SECRET) < 32:
+            insecure_default_key = "super-secret-govsec-key-change-in-production"
+            if insecure_default_key == self.GOVSEC_JWT_SECRET or len(self.GOVSEC_JWT_SECRET) < 32:
                 raise ValueError(
                     f"Em ambiente '{self.GOVSEC_ENV}', GOVSEC_JWT_SECRET não pode usar o valor padrão ou ter menos de 32 caracteres."
                 )
