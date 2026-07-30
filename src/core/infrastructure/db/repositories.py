@@ -2,15 +2,28 @@ from datetime import datetime, timezone
 from uuid import UUID
 
 from sqlalchemy import or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.core.domain.correlation import CorrelationRuleVersion
 from src.core.domain.entities import AlertAcknowledgement, AuditLog, Tenant, TenantStatus
+from src.core.domain.incidents import Asset, SecurityEvent, SecurityEventSeverity
 from src.core.domain.repositories import (
     AlertAcknowledgementRepository,
+    AssetRepository,
+    CorrelationRuleVersionRepository,
     LogRepository,
+    SecurityEventRepository,
     TenantRepository,
 )
-from src.core.infrastructure.db.models import AlertAcknowledgementModel, AuditLogModel, TenantModel
+from src.core.infrastructure.db.models import (
+    AlertAcknowledgementModel,
+    AssetModel,
+    AuditLogModel,
+    CorrelationRuleVersionModel,
+    SecurityEventModel,
+    TenantModel,
+)
 
 
 class PostgresTenantRepository(TenantRepository):
@@ -75,7 +88,6 @@ class PostgresTenantRepository(TenantRepository):
     ) -> list[Tenant]:
         stmt = select(TenantModel)
         if tenant_filter:
-            # Filtro de tenant por UUID canônico no banco de dados (antes do LIMIT/OFFSET)
             stmt = stmt.where(TenantModel.id == tenant_filter)
         if search:
             search_pattern = f"%{search}%"
@@ -325,7 +337,12 @@ class InMemoryTenantRepository(TenantRepository):
             s = search.lower()
             results = [t for t in results if s in t.name.lower() or s in t.slug.lower()]
         if status:
-            results = [t for t in results if str(t.status) == status or (hasattr(t.status, "value") and t.status.value == status)]
+            results = [
+                t
+                for t in results
+                if str(t.status) == status
+                or (hasattr(t.status, "value") and t.status.value == status)
+            ]
         return results[skip : skip + limit]
 
     async def delete(self, tenant_id: UUID) -> bool:
@@ -334,3 +351,390 @@ class InMemoryTenantRepository(TenantRepository):
             tenant.status = TenantStatus.INACTIVE
             return True
         return False
+
+
+class PostgresAssetRepository(AssetRepository):
+    """
+    Repositório de Ativos com Persistência em PostgreSQL.
+    """
+
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    def _to_entity(self, model: AssetModel) -> Asset:
+        return Asset(
+            asset_id=model.asset_id,
+            tenant_id=model.tenant_id,
+            name=model.name,
+            asset_type=model.asset_type,
+            service_name=model.service_name,
+            environment=model.environment,
+            criticality=model.criticality,
+            is_active=model.is_active,
+            created_at=model.created_at,
+            updated_at=model.updated_at,
+            hostname_or_ip=model.hostname_or_ip,
+        )
+
+    async def save(self, asset: Asset) -> Asset:
+        stmt = select(AssetModel).where(
+            AssetModel.asset_id == asset.asset_id,
+            AssetModel.tenant_id == asset.tenant_id,
+        )
+        result = await self.session.execute(stmt)
+        model = result.scalar_one_or_none()
+
+        if model is None:
+            model = AssetModel(
+                asset_id=asset.asset_id,
+                tenant_id=asset.tenant_id,
+                name=asset.name,
+                asset_type=asset.asset_type,
+                service_name=asset.service_name,
+                environment=asset.environment,
+                criticality=asset.criticality,
+                is_active=asset.is_active,
+                hostname_or_ip=asset.hostname_or_ip,
+                created_at=asset.created_at,
+                updated_at=asset.updated_at,
+            )
+            self.session.add(model)
+        else:
+            model.name = asset.name
+            model.asset_type = asset.asset_type
+            model.service_name = asset.service_name
+            model.environment = asset.environment
+            model.criticality = asset.criticality
+            model.is_active = asset.is_active
+            model.hostname_or_ip = asset.hostname_or_ip
+            model.updated_at = asset.updated_at
+
+        await self.session.flush()
+        return self._to_entity(model)
+
+    async def get_by_id(self, asset_id: UUID, tenant_id: UUID) -> Asset | None:
+        stmt = select(AssetModel).where(
+            AssetModel.asset_id == asset_id,
+            AssetModel.tenant_id == tenant_id,
+        )
+        result = await self.session.execute(stmt)
+        model = result.scalar_one_or_none()
+        return self._to_entity(model) if model else None
+
+    async def resolve_active_asset(
+        self, tenant_id: UUID, service_name: str, environment: str
+    ) -> Asset | None:
+        stmt = select(AssetModel).where(
+            AssetModel.tenant_id == tenant_id,
+            AssetModel.service_name == service_name,
+            AssetModel.environment == environment,
+            AssetModel.is_active.is_(True),
+        )
+        result = await self.session.execute(stmt)
+        model = result.scalar_one_or_none()
+        return self._to_entity(model) if model else None
+
+    async def list(
+        self, tenant_id: UUID, skip: int = 0, limit: int = 100
+    ) -> list[Asset]:
+        stmt = (
+            select(AssetModel)
+            .where(AssetModel.tenant_id == tenant_id)
+            .order_by(AssetModel.created_at.desc())
+            .offset(skip)
+            .limit(limit)
+        )
+        result = await self.session.execute(stmt)
+        models = result.scalars().all()
+        return [self._to_entity(m) for m in models]
+
+
+class PostgresSecurityEventRepository(SecurityEventRepository):
+    """
+    Repositório de Eventos de Segurança com Persistência em PostgreSQL e Idempotência Atômica.
+    """
+
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    def _to_entity(self, model: SecurityEventModel) -> SecurityEvent:
+        severity_enum = (
+            SecurityEventSeverity(model.severity)
+            if isinstance(model.severity, str)
+            else model.severity
+        )
+        return SecurityEvent(
+            event_id=model.event_id,
+            tenant_id=model.tenant_id,
+            source=model.source,
+            event_type=model.event_type,
+            severity=severity_enum,
+            occurred_at=model.occurred_at,
+            received_at=model.received_at,
+            asset_id=model.asset_id,
+            payload=model.payload,
+            idempotency_key=model.idempotency_key,
+            is_asset_resolved=model.is_asset_resolved,
+            evidence_hash=model.evidence_hash,
+        )
+
+    async def save(self, event: SecurityEvent) -> tuple[SecurityEvent, bool]:
+        existing = await self.get_by_idempotency_key(
+            tenant_id=event.tenant_id,
+            source=event.source,
+            idempotency_key=event.idempotency_key,
+        )
+        if existing is not None:
+            return existing, False
+
+        severity_str = (
+            event.severity.value if hasattr(event.severity, "value") else str(event.severity)
+        )
+        model = SecurityEventModel(
+            event_id=event.event_id,
+            tenant_id=event.tenant_id,
+            asset_id=event.asset_id,
+            source=event.source,
+            event_type=event.event_type,
+            severity=severity_str,
+            occurred_at=event.occurred_at,
+            received_at=event.received_at,
+            payload=event.payload,
+            evidence_hash=event.evidence_hash,
+            idempotency_key=event.idempotency_key,
+            is_asset_resolved=event.is_asset_resolved,
+        )
+
+        try:
+            async with self.session.begin_nested():
+                self.session.add(model)
+                await self.session.flush()
+            return self._to_entity(model), True
+        except IntegrityError:
+            existing_after_conflict = await self.get_by_idempotency_key(
+                tenant_id=event.tenant_id,
+                source=event.source,
+                idempotency_key=event.idempotency_key,
+            )
+            if existing_after_conflict is not None:
+                return existing_after_conflict, False
+            raise
+
+    async def get_by_id(self, event_id: UUID, tenant_id: UUID) -> SecurityEvent | None:
+        stmt = select(SecurityEventModel).where(
+            SecurityEventModel.event_id == event_id,
+            SecurityEventModel.tenant_id == tenant_id,
+        )
+        result = await self.session.execute(stmt)
+        model = result.scalar_one_or_none()
+        return self._to_entity(model) if model else None
+
+    async def get_by_idempotency_key(
+        self, tenant_id: UUID, source: str, idempotency_key: str
+    ) -> SecurityEvent | None:
+        stmt = select(SecurityEventModel).where(
+            SecurityEventModel.tenant_id == tenant_id,
+            SecurityEventModel.source == source,
+            SecurityEventModel.idempotency_key == idempotency_key,
+        )
+        result = await self.session.execute(stmt)
+        model = result.scalar_one_or_none()
+        return self._to_entity(model) if model else None
+
+    async def list(
+        self,
+        tenant_id: UUID,
+        skip: int = 0,
+        limit: int = 100,
+        asset_id: UUID | None = None,
+    ) -> list[SecurityEvent]:
+        stmt = select(SecurityEventModel).where(SecurityEventModel.tenant_id == tenant_id)
+        if asset_id is not None:
+            stmt = stmt.where(SecurityEventModel.asset_id == asset_id)
+        stmt = stmt.order_by(SecurityEventModel.occurred_at.desc()).offset(skip).limit(limit)
+        result = await self.session.execute(stmt)
+        models = result.scalars().all()
+        return [self._to_entity(m) for m in models]
+
+
+class PostgresCorrelationRuleVersionRepository(CorrelationRuleVersionRepository):
+    """
+    Repositório de Versões de Regras de Correlação com Persistência em PostgreSQL.
+    """
+
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    def _to_entity(self, model: CorrelationRuleVersionModel) -> CorrelationRuleVersion:
+        return CorrelationRuleVersion(
+            rule_version_id=model.rule_version_id,
+            rule_id=model.rule_id,
+            rule_version=model.rule_version,
+            name=model.name,
+            category=model.category,
+            is_active=model.is_active,
+            created_at=model.created_at,
+        )
+
+    async def save(
+        self, rule_version: CorrelationRuleVersion
+    ) -> CorrelationRuleVersion:
+        stmt = select(CorrelationRuleVersionModel).where(
+            CorrelationRuleVersionModel.rule_id == rule_version.rule_id,
+            CorrelationRuleVersionModel.rule_version == rule_version.rule_version,
+        )
+        result = await self.session.execute(stmt)
+        model = result.scalar_one_or_none()
+
+        if model is None:
+            model = CorrelationRuleVersionModel(
+                rule_version_id=rule_version.rule_version_id,
+                rule_id=rule_version.rule_id,
+                rule_version=rule_version.rule_version,
+                name=rule_version.name,
+                category=rule_version.category,
+                is_active=rule_version.is_active,
+                created_at=rule_version.created_at,
+            )
+            self.session.add(model)
+        else:
+            model.name = rule_version.name
+            model.category = rule_version.category
+            model.is_active = rule_version.is_active
+
+        await self.session.flush()
+        return self._to_entity(model)
+
+    async def get_by_rule_and_version(
+        self, rule_id: str, version: str
+    ) -> CorrelationRuleVersion | None:
+        stmt = select(CorrelationRuleVersionModel).where(
+            CorrelationRuleVersionModel.rule_id == rule_id,
+            CorrelationRuleVersionModel.rule_version == version,
+        )
+        result = await self.session.execute(stmt)
+        model = result.scalar_one_or_none()
+        return self._to_entity(model) if model else None
+
+    async def list_active(
+        self, skip: int = 0, limit: int = 100
+    ) -> list[CorrelationRuleVersion]:
+        stmt = (
+            select(CorrelationRuleVersionModel)
+            .where(CorrelationRuleVersionModel.is_active.is_(True))
+            .order_by(
+                CorrelationRuleVersionModel.rule_id,
+                CorrelationRuleVersionModel.rule_version,
+            )
+            .offset(skip)
+            .limit(limit)
+        )
+        result = await self.session.execute(stmt)
+        models = result.scalars().all()
+        return [self._to_entity(m) for m in models]
+
+
+class InMemoryAssetRepository(AssetRepository):
+    def __init__(self) -> None:
+        self._assets: dict[UUID, Asset] = {}
+
+    async def save(self, asset: Asset) -> Asset:
+        self._assets[asset.asset_id] = asset
+        return asset
+
+    async def get_by_id(self, asset_id: UUID, tenant_id: UUID) -> Asset | None:
+        asset = self._assets.get(asset_id)
+        if asset and asset.tenant_id == tenant_id:
+            return asset
+        return None
+
+    async def resolve_active_asset(
+        self, tenant_id: UUID, service_name: str, environment: str
+    ) -> Asset | None:
+        for asset in self._assets.values():
+            if (
+                asset.tenant_id == tenant_id
+                and asset.service_name == service_name
+                and asset.environment == environment
+                and asset.is_active
+            ):
+                return asset
+        return None
+
+    async def list(
+        self, tenant_id: UUID, skip: int = 0, limit: int = 100
+    ) -> list[Asset]:
+        filtered = [a for a in self._assets.values() if a.tenant_id == tenant_id]
+        return filtered[skip : skip + limit]
+
+
+class InMemorySecurityEventRepository(SecurityEventRepository):
+    def __init__(self) -> None:
+        self._events: dict[UUID, SecurityEvent] = {}
+
+    async def save(self, event: SecurityEvent) -> tuple[SecurityEvent, bool]:
+        existing = await self.get_by_idempotency_key(
+            tenant_id=event.tenant_id,
+            source=event.source,
+            idempotency_key=event.idempotency_key,
+        )
+        if existing is not None:
+            return existing, False
+
+        self._events[event.event_id] = event
+        return event, True
+
+    async def get_by_id(self, event_id: UUID, tenant_id: UUID) -> SecurityEvent | None:
+        evt = self._events.get(event_id)
+        if evt and evt.tenant_id == tenant_id:
+            return evt
+        return None
+
+    async def get_by_idempotency_key(
+        self, tenant_id: UUID, source: str, idempotency_key: str
+    ) -> SecurityEvent | None:
+        for evt in self._events.values():
+            if (
+                evt.tenant_id == tenant_id
+                and evt.source == source
+                and evt.idempotency_key == idempotency_key
+            ):
+                return evt
+        return None
+
+    async def list(
+        self,
+        tenant_id: UUID,
+        skip: int = 0,
+        limit: int = 100,
+        asset_id: UUID | None = None,
+    ) -> list[SecurityEvent]:
+        filtered = [e for e in self._events.values() if e.tenant_id == tenant_id]
+        if asset_id is not None:
+            filtered = [e for e in filtered if e.asset_id == asset_id]
+        return filtered[skip : skip + limit]
+
+
+class InMemoryCorrelationRuleVersionRepository(CorrelationRuleVersionRepository):
+    def __init__(self) -> None:
+        self._rules: dict[UUID, CorrelationRuleVersion] = {}
+
+    async def save(
+        self, rule_version: CorrelationRuleVersion
+    ) -> CorrelationRuleVersion:
+        self._rules[rule_version.rule_version_id] = rule_version
+        return rule_version
+
+    async def get_by_rule_and_version(
+        self, rule_id: str, version: str
+    ) -> CorrelationRuleVersion | None:
+        for rv in self._rules.values():
+            if rv.rule_id == rule_id and rv.rule_version == version:
+                return rv
+        return None
+
+    async def list_active(
+        self, skip: int = 0, limit: int = 100
+    ) -> list[CorrelationRuleVersion]:
+        filtered = [rv for rv in self._rules.values() if rv.is_active]
+        return filtered[skip : skip + limit]

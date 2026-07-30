@@ -9,7 +9,8 @@ isolamento total de infraestrutura e frameworks externos.
 import hashlib
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from uuid import UUID
 
 from src.core.domain.exceptions import DomainError
@@ -57,6 +58,40 @@ class CorrelationKey:
 
     def __str__(self) -> str:
         return self.to_canonical_string()
+
+
+@dataclass(frozen=True)
+class CorrelationRuleVersion:
+    """
+    Contrato de Domínio representando uma versão catalogada de Regra de Correlação.
+    Estrutura preparatória de catálogo/versionamento para M3.2.
+    """
+
+    rule_version_id: UUID
+    rule_id: str
+    rule_version: str
+    name: str
+    category: str
+    is_active: bool = True
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.rule_version_id, UUID):
+            raise DomainError(
+                f"rule_version_id deve ser um UUID válido, recebido: {type(self.rule_version_id)}"
+            )
+        if not self.rule_id or not self.rule_id.strip():
+            raise DomainError("rule_id é obrigatório e não pode ser vazio.")
+        if not self.rule_version or not self.rule_version.strip():
+            raise DomainError("rule_version é obrigatória e não pode ser vazia.")
+        if not self.name or not self.name.strip():
+            raise DomainError("name é obrigatório e não pode ser vazio.")
+        if not self.category or not self.category.strip():
+            raise DomainError("category é obrigatória e não pode ser vazia.")
+        if not isinstance(self.is_active, bool):
+            raise DomainError(f"is_active deve ser um booleano, recebido: {type(self.is_active)}")
+        if not isinstance(self.created_at, datetime):
+            raise DomainError(f"created_at deve ser datetime UTC, recebido: {type(self.created_at)}")
 
 
 class CorrelationRule(ABC):

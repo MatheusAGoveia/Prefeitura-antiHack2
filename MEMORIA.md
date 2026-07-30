@@ -86,13 +86,14 @@
 | **2026-07-29** | Remoção de Ofuscação & Isolação de Estado em Testes | Removidas todas as concatenações artificiais de strings. Adicionada fixture pytest `in_memory_revocation_store` com `try/finally` para isolar e restaurar o estado global de `JWTHandler._revocation_store`. |
 | **2026-07-30** | ADR-005: Fundação do M3 | Aprovação da ADR 005 congelando a arquitetura de correlação determinística, isolamento por tenant_id UUID, persistência transacional antes do Kafka e contratos puros de domínio. |
 | **2026-07-30** | Validação Estrita de Timestamps UTC | Implementado o helper `_validate_utc_datetime` no domínio M3.0, exigindo estritamente datetimes timezone-aware no fuso UTC (+00:00) em todos os contratos (Asset, SecurityEvent, UnresolvedAssetEvent, Incident, IncidentEvidence, IncidentStatusChange). |
+| **2026-07-30** | Sprint M3.1: Persistência Assíncrona & Idempotência PostgreSQL | Implementadas as migrações Alembic `0005_create_m3_assets_security_events`, modelos SQLAlchemy, repositórios PostgreSQL assíncronos, handler CQRS `IngestSecurityEventHandler` com idempotência atômica, publicação `SecurityEventReceivedEvent` pós-commit e script de seed local. |
 
 ---
 
 ## 📌 Registros Recentes & Próximos Passos
-- **Sprint M3.0 Concluída & Validada:** Criada a branch `feature/m3-correlation-incidents`, elaborada a ADR 005, definidos os contratos de domínio com validação estrita de `tenant_id` UUID e timestamps UTC. Suíte de testes aprovada com 127/127 testes passando, ruff 0 erros, mypy 0 erros, bandit 0 avisos de média/alta severidade, compileall 0 erros e git diff --check OK.
-- **Próximos Passos (Sprint M3.1+):**
-  - Implementar migrações Alembic e modelos SQLAlchemy para `incidents`, `security_events`, `incident_evidences` e `assets`.
-  - Criar rotas FastAPI REST para gestão de incidentes.
-  - Integrar Webhook do Alertmanager.
+- **Sprint M3.1 Concluída & Validada:** Implementada a persistência transacional de `assets`, `security_events` e `correlation_rule_versions` no PostgreSQL com `tenant_id` UUID, idempotência atômica por constraint, resolução de ativos por tenant/serviço/ambiente, `UnresolvedAssetEvent` sem publicação antecipada em broker, publicação `SecurityEventReceivedEvent` pós-commit e script de seed local seguro (`scripts/seed/seed_m3_assets.py`). Suíte de testes aprovada com 139/139 testes passando, ruff 0 erros, mypy 0 erros, bandit 0 avisos de média/alta severidade, compileall 0 erros e git diff --check OK.
+- **Próximos Passos (Sprint M3.2):**
+  - Criar migrações Alembic e modelos SQLAlchemy para `incidents`, `incident_evidence`, `incident_event_links` e histórico de status.
+  - Implementar motor de correlação determinístico e criação de incidentes.
+  - Criar rotas FastAPI REST para incidentes e webhook do Alertmanager.
   - Desenvolver Event Inbox e Incident Center no dashboard Next.js.

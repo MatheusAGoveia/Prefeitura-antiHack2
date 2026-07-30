@@ -6,7 +6,9 @@ GovSec Shield — Domain Repositories
 from abc import ABC, abstractmethod
 from uuid import UUID
 
+from src.core.domain.correlation import CorrelationRuleVersion
 from src.core.domain.entities import AlertAcknowledgement, AuditLog, Tenant
+from src.core.domain.incidents import Asset, SecurityEvent
 
 
 class TenantRepository(ABC):
@@ -94,3 +96,97 @@ class AlertAcknowledgementRepository(ABC):
         pass
 
 
+class AssetRepository(ABC):
+    """
+    Interface de Repositório de Ativos (M3.1).
+    """
+
+    @abstractmethod
+    async def save(self, asset: Asset) -> Asset:
+        """Persiste ou atualiza um ativo no repositório."""
+        pass
+
+    @abstractmethod
+    async def get_by_id(self, asset_id: UUID, tenant_id: UUID) -> Asset | None:
+        """Obtém um ativo por asset_id e tenant_id (isolamento multi-tenant estrito)."""
+        pass
+
+    @abstractmethod
+    async def resolve_active_asset(
+        self, tenant_id: UUID, service_name: str, environment: str
+    ) -> Asset | None:
+        """Resolve um ativo ativo por tenant_id, service_name e environment."""
+        pass
+
+    @abstractmethod
+    async def list(
+        self, tenant_id: UUID, skip: int = 0, limit: int = 100
+    ) -> list[Asset]:
+        """Lista ativos de um tenant com paginação."""
+        pass
+
+
+class SecurityEventRepository(ABC):
+    """
+    Interface de Repositório de Eventos de Segurança (M3.1).
+    """
+
+    @abstractmethod
+    async def save(self, event: SecurityEvent) -> tuple[SecurityEvent, bool]:
+        """
+        Persiste um evento de segurança com garantia de idempotência no banco de dados.
+        Retorna uma tupla (event, created):
+        - created=True se um novo registro foi inserido;
+        - created=False se o evento foi suprimido devido a duplicidade de (tenant_id, source, idempotency_key).
+        """
+        pass
+
+    @abstractmethod
+    async def get_by_id(self, event_id: UUID, tenant_id: UUID) -> SecurityEvent | None:
+        """Obtém um evento por event_id e tenant_id."""
+        pass
+
+    @abstractmethod
+    async def get_by_idempotency_key(
+        self, tenant_id: UUID, source: str, idempotency_key: str
+    ) -> SecurityEvent | None:
+        """Busca evento existente por chave de idempotência e tenant."""
+        pass
+
+    @abstractmethod
+    async def list(
+        self,
+        tenant_id: UUID,
+        skip: int = 0,
+        limit: int = 100,
+        asset_id: UUID | None = None,
+    ) -> list[SecurityEvent]:
+        """Lista eventos de segurança de um tenant com paginação e filtro opcional por asset_id."""
+        pass
+
+
+class CorrelationRuleVersionRepository(ABC):
+    """
+    Interface de Repositório de Versões de Regras de Correlação (M3.1).
+    """
+
+    @abstractmethod
+    async def save(
+        self, rule_version: CorrelationRuleVersion
+    ) -> CorrelationRuleVersion:
+        """Persiste uma versão de regra no repositório."""
+        pass
+
+    @abstractmethod
+    async def get_by_rule_and_version(
+        self, rule_id: str, version: str
+    ) -> CorrelationRuleVersion | None:
+        """Busca versão de regra por rule_id e versão."""
+        pass
+
+    @abstractmethod
+    async def list_active(
+        self, skip: int = 0, limit: int = 100
+    ) -> list[CorrelationRuleVersion]:
+        """Lista versões de regras ativas."""
+        pass

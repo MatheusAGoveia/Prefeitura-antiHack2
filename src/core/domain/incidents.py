@@ -107,13 +107,13 @@ def sanitize_payload(payload: dict[str, Any]) -> dict[str, Any]:
 class Asset:
     """Entidade de Domínio representando um Ativo de TI/Infraestrutura."""
 
-    asset_id: UUID
     tenant_id: UUID
     name: str
     asset_type: str
     service_name: str
     environment: str
     criticality: str
+    asset_id: UUID = field(default_factory=uuid4)
     is_active: bool = True
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
@@ -148,9 +148,9 @@ class UnresolvedAssetEvent:
     Não publica em brokers nem cria incidentes em M3.0.
     """
 
-    event_id: UUID
     tenant_id: UUID
     security_event_id: UUID
+    event_id: UUID = field(default_factory=uuid4)
     occurred_at_utc: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
     def __post_init__(self) -> None:
@@ -170,7 +170,6 @@ class UnresolvedAssetEvent:
 class SecurityEvent:
     """Contrato de Evento de Segurança Normalizado."""
 
-    event_id: UUID
     tenant_id: UUID
     source: str
     event_type: str
@@ -180,7 +179,8 @@ class SecurityEvent:
     asset_id: UUID | None
     payload: dict[str, Any]
     idempotency_key: str
-    is_asset_resolved: bool
+    event_id: UUID = field(default_factory=uuid4)
+    is_asset_resolved: bool = True
     evidence_hash: str = ""
 
     def __post_init__(self) -> None:
@@ -212,7 +212,6 @@ class SecurityEvent:
         if self.asset_id is not None or self.is_asset_resolved:
             return None
         return UnresolvedAssetEvent(
-            event_id=uuid4(),
             tenant_id=self.tenant_id,
             security_event_id=self.event_id,
             occurred_at_utc=self.occurred_at,

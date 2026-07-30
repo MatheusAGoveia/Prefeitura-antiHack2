@@ -1,5 +1,5 @@
 """
-Commands Canônicos (CQRS M0.7)
+Commands Canônicos (CQRS M0.7 / M3.1)
 GovSec Shield — Application Commands
 """
 
@@ -94,3 +94,44 @@ class AcknowledgeAlertCommand(Command):
             "tenant_id": tenant_id,
         }
         super().__init__(metadata=meta, payload=payload)
+
+
+class IngestSecurityEventCommand(Command):
+    """Command CQRS para ingestão assíncrona e idempotente de SecurityEvent (M3.1)."""
+
+    def __init__(
+        self,
+        tenant_id: UUID,
+        source: str,
+        event_type: str,
+        severity: str,
+        occurred_at: datetime,
+        received_at: datetime,
+        idempotency_key: str,
+        payload: dict[str, Any],
+        service_name: str | None = None,
+        environment: str | None = None,
+        **kwargs: Any,
+    ):
+        meta = CommandMetadata(
+            command_name="IngestSecurityEventCommand",
+            tenant=str(tenant_id),
+            idempotency_key=idempotency_key,
+        )
+        cmd_payload = {
+            "tenant_id": str(tenant_id),
+            "source": source,
+            "event_type": event_type,
+            "severity": severity,
+            "occurred_at": occurred_at.isoformat()
+            if isinstance(occurred_at, datetime)
+            else str(occurred_at),
+            "received_at": received_at.isoformat()
+            if isinstance(received_at, datetime)
+            else str(received_at),
+            "idempotency_key": idempotency_key,
+            "payload": payload,
+            "service_name": service_name,
+            "environment": environment,
+        }
+        super().__init__(metadata=meta, payload=cmd_payload)

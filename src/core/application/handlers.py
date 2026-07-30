@@ -12,15 +12,29 @@ from src.core.application.commands import (
     CreateTenantCommand,
     DeleteTenantCommand,
     IngestLogCommand,
+    IngestSecurityEventCommand,
     UpdateTenantCommand,
 )
-from src.core.application.dto import AlertAcknowledgementResponseDTO, TenantResponseDTO
+from src.core.application.dto import (
+    AlertAcknowledgementResponseDTO,
+    SecurityEventResponseDTO,
+    TenantResponseDTO,
+)
 from src.core.application.interfaces import IEventPublisher
 from src.core.domain.entities import AlertAcknowledgement, AuditLog, Tenant, TenantStatus
-from src.core.domain.events import AlertAcknowledgedEvent, LogIngestedEvent, TenantCreatedEvent
+from src.core.domain.events import (
+    AlertAcknowledgedEvent,
+    LogIngestedEvent,
+    SecurityEventReceivedEvent,
+    TenantCreatedEvent,
+)
+from src.core.domain.exceptions import DomainError
+from src.core.domain.incidents import SecurityEvent, SecurityEventSeverity
 from src.core.domain.repositories import (
     AlertAcknowledgementRepository,
+    AssetRepository,
     LogRepository,
+    SecurityEventRepository,
     TenantRepository,
 )
 
@@ -161,7 +175,6 @@ class AcknowledgeAlertHandler:
         else:
             raise ValueError("tenant_id é obrigatório e deve ser um UUID válido.")
 
-        # Idempotência: verificar se já existe acknowledgement com este fingerprint e tenant
         existing = await self.ack_repo.get_by_fingerprint(fingerprint, tenant_id)
         if existing:
             return AlertAcknowledgementResponseDTO(
@@ -200,4 +213,170 @@ class AcknowledgeAlertHandler:
             acknowledged_by=saved.acknowledged_by,
             tenant_id=saved.tenant_id,
             timestamp=saved.timestamp,
+        )
+
+
+class IngestSecurityEventHandler:
+    """
+    Handler CQRS para ingestão assíncrona, idempotente e auditável de SecurityEvent (M3.1).
+    """
+
+    def __init__(
+        self,
+        asset_repo: AssetRepository,
+        security_event_repo: SecurityEventRepository,
+        event_publisher: IEventPublisher,
+        log_repo: LogRepository | None = None,
+    ):
+        self.asset_repo = asset_repo
+        self.security_event_repo = security_event_repo
+        self.event_publisher = event_publisher
+        self.log_repo = log_repo
+
+    async def handle(self, command: IngestSecurityEventCommand) -> SecurityEventResponseDTO:
+        cmd_p = command.payload
+
+        # 1. Validar tenant_id UUID
+        raw_tenant = cmd_p["tenant_id"]
+        if isinstance(raw_tenant, UUID):
+            tenant_id = raw_tenant
+        else:
+            try:
+                tenant_id = UUID(str(raw_tenant))
+            except (ValueError, TypeError) as err:
+                raise DomainError(f"tenant_id deve ser um UUID válido: '{raw_tenant}'") from err
+
+        source = str(cmd_p["source"]).strip()
+        event_type = str(cmd_p["event_type"]).strip()
+        severity_val = cmd_p["severity"]
+        severity_enum = (
+            SecurityEventSeverity(severity_val)
+            if isinstance(severity_val, str) and severity_val in SecurityEventSeverity.__members__
+            else SecurityEventSeverity.HIGH
+        )
+
+        occurred_at_raw = cmd_p["occurred_at"]
+        occurred_at = (
+            datetime.fromisoformat(occurred_at_raw)
+            if isinstance(occurred_at_raw, str)
+            else occurred_at_raw
+        )
+
+        received_at_raw = cmd_p.get("received_at") or datetime.now(timezone.utc)
+        received_at = (
+            datetime.fromisoformat(received_at_raw)
+            if isinstance(received_at_raw, str)
+            else received_at_raw
+        )
+
+        idempotency_key = str(cmd_p["idempotency_key"]).strip()
+        raw_payload = cmd_p.get("payload") or {}
+
+        service_name = cmd_p.get("service_name")
+        environment = cmd_p.get("environment")
+
+        # 2. Resolução de Ativo por tenant_id, service_name e environment
+        resolved_asset = None
+        if service_name and environment:
+            resolved_asset = await self.asset_repo.resolve_active_asset(
+                tenant_id=tenant_id,
+                service_name=service_name,
+                environment=environment,
+            )
+
+        asset_id = resolved_asset.asset_id if resolved_asset else None
+        is_asset_resolved = resolved_asset is not None
+
+        # 3. Construção da Entidade de Domínio M3.0
+        event_domain = SecurityEvent(
+            tenant_id=tenant_id,
+            source=source,
+            event_type=event_type,
+            severity=severity_enum,
+            occurred_at=occurred_at,
+            received_at=received_at,
+            asset_id=asset_id,
+            payload=raw_payload,
+            idempotency_key=idempotency_key,
+            is_asset_resolved=is_asset_resolved,
+        )
+
+        # 4. Caso o ativo não tenha sido resolvido, criar contrato UnresolvedAssetEvent (para rastreabilidade)
+        if not is_asset_resolved:
+            unresolved_event = event_domain.create_unresolved_asset_event()
+            if self.log_repo and unresolved_event:
+                audit_unresolved = AuditLog(
+                    tenant_id=tenant_id,
+                    source="SecurityEventIngestion",
+                    raw_data=f"UnresolvedAssetEvent created for event_id={event_domain.event_id}, source={source}",
+                )
+                await self.log_repo.save(audit_unresolved)
+
+        # 5. Persistência transacional no PostgreSQL
+        saved_event, created = await self.security_event_repo.save(event_domain)
+
+        # 6. Replay duplicado: retornar DTO suprimido sem republicar
+        if not created:
+            if self.log_repo:
+                audit_suppressed = AuditLog(
+                    tenant_id=tenant_id,
+                    source="SecurityEventIngestion",
+                    raw_data=f"Duplicate event suppressed. IdempotencyKey={idempotency_key}, Source={source}",
+                )
+                await self.log_repo.save(audit_suppressed)
+
+            return SecurityEventResponseDTO(
+                event_id=saved_event.event_id,
+                tenant_id=saved_event.tenant_id,
+                asset_id=saved_event.asset_id,
+                source=saved_event.source,
+                event_type=saved_event.event_type,
+                severity=saved_event.severity.value
+                if hasattr(saved_event.severity, "value")
+                else str(saved_event.severity),
+                occurred_at=saved_event.occurred_at,
+                received_at=saved_event.received_at,
+                idempotency_key=saved_event.idempotency_key,
+                is_asset_resolved=saved_event.is_asset_resolved,
+                evidence_hash=saved_event.evidence_hash,
+                is_duplicate_suppressed=True,
+            )
+
+        # 7. Novo evento persistido com sucesso: auditar e publicar pós-commit
+        if self.log_repo:
+            audit_persisted = AuditLog(
+                tenant_id=tenant_id,
+                source="SecurityEventIngestion",
+                raw_data=f"SecurityEvent persisted. EventID={saved_event.event_id}, IdempotencyKey={idempotency_key}",
+            )
+            await self.log_repo.save(audit_persisted)
+
+        evt_received = SecurityEventReceivedEvent(
+            tenant_id=saved_event.tenant_id,
+            security_event_id=saved_event.event_id,
+            source=saved_event.source,
+            security_event_type=saved_event.event_type,
+            severity=saved_event.severity.value
+            if hasattr(saved_event.severity, "value")
+            else str(saved_event.severity),
+            is_asset_resolved=saved_event.is_asset_resolved,
+            asset_id=saved_event.asset_id,
+        )
+        await self.event_publisher.publish(evt_received)
+
+        return SecurityEventResponseDTO(
+            event_id=saved_event.event_id,
+            tenant_id=saved_event.tenant_id,
+            asset_id=saved_event.asset_id,
+            source=saved_event.source,
+            event_type=saved_event.event_type,
+            severity=saved_event.severity.value
+            if hasattr(saved_event.severity, "value")
+            else str(saved_event.severity),
+            occurred_at=saved_event.occurred_at,
+            received_at=saved_event.received_at,
+            idempotency_key=saved_event.idempotency_key,
+            is_asset_resolved=saved_event.is_asset_resolved,
+            evidence_hash=saved_event.evidence_hash,
+            is_duplicate_suppressed=False,
         )

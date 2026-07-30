@@ -11,7 +11,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from src.core.infrastructure.config import settings
 from src.core.infrastructure.db.repositories import (
     PostgresAlertAcknowledgementRepository,
+    PostgresAssetRepository,
+    PostgresCorrelationRuleVersionRepository,
     PostgresLogRepository,
+    PostgresSecurityEventRepository,
     PostgresTenantRepository,
 )
 
@@ -31,13 +34,15 @@ async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
             await session.close()
 
 
-
 class UnitOfWork:
     def __init__(self, session: AsyncSession):
         self.session = session
         self.tenants = PostgresTenantRepository(session)
         self.logs = PostgresLogRepository(session)
         self.alert_acks = PostgresAlertAcknowledgementRepository(session)
+        self.assets = PostgresAssetRepository(session)
+        self.security_events = PostgresSecurityEventRepository(session)
+        self.rule_versions = PostgresCorrelationRuleVersionRepository(session)
 
     async def __aenter__(self) -> "UnitOfWork":
         return self
@@ -57,4 +62,3 @@ class UnitOfWork:
 
     async def rollback(self) -> None:
         await self.session.rollback()
-

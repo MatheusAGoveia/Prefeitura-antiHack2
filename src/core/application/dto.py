@@ -3,7 +3,7 @@ DTOs do Módulo Core
 GovSec Shield — Application Layer DTOs
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
 
@@ -61,7 +61,12 @@ class LogResponseDTO(BaseModel):
 class AcknowledgeAlertDTO(BaseModel):
     alert_id: str = Field(..., min_length=1, max_length=128, examples=["ServiceDown-Betim-01"])
     fingerprint: str = Field(..., min_length=1, max_length=128, examples=["a1b2c3d4e5f6"])
-    reason: str = Field(..., min_length=5, max_length=512, examples=["Incidente verificado e servidor em reinício manual."])
+    reason: str = Field(
+        ...,
+        min_length=5,
+        max_length=512,
+        examples=["Incidente verificado e servidor em reinício manual."],
+    )
     tenant_id: UUID | None = None
 
     @field_validator("tenant_id", mode="before")
@@ -85,5 +90,45 @@ class AlertAcknowledgementResponseDTO(BaseModel):
     acknowledged_by: str
     tenant_id: UUID
     timestamp: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class IngestSecurityEventDTO(BaseModel):
+    tenant_id: UUID
+    source: str = Field(..., min_length=1, max_length=64)
+    event_type: str = Field(..., min_length=1, max_length=64)
+    severity: str = Field(..., min_length=1, max_length=32)
+    occurred_at: datetime
+    received_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    idempotency_key: str = Field(..., min_length=1, max_length=128)
+    payload: dict[str, Any] = Field(default_factory=dict)
+    service_name: str | None = Field(None, max_length=128)
+    environment: str | None = Field(None, max_length=64)
+
+    @field_validator("tenant_id", mode="before")
+    @classmethod
+    def _validate_tenant_id(cls, v: Any) -> UUID:
+        if isinstance(v, UUID):
+            return v
+        try:
+            return UUID(str(v))
+        except (ValueError, TypeError) as err:
+            raise ValueError(f"tenant_id deve ser um UUID válido, recebido: '{v}'") from err
+
+
+class SecurityEventResponseDTO(BaseModel):
+    event_id: UUID
+    tenant_id: UUID
+    asset_id: UUID | None
+    source: str
+    event_type: str
+    severity: str
+    occurred_at: datetime
+    received_at: datetime
+    idempotency_key: str
+    is_asset_resolved: bool
+    evidence_hash: str
+    is_duplicate_suppressed: bool = False
 
     model_config = ConfigDict(from_attributes=True)

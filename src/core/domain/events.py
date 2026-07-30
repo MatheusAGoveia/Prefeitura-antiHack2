@@ -46,3 +46,14 @@ class AlertAcknowledgedEvent(DomainEvent):
     acknowledged_by: str
     acknowledged_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
+
+class SecurityEventReceivedEvent(DomainEvent):
+    """Evento disparado após a persistência transacional bem-sucedida de um novo SecurityEvent."""
+
+    event_type: str = "SecurityEventReceivedEvent"
+    security_event_id: UUID
+    source: str
+    security_event_type: str
+    severity: str
+    is_asset_resolved: bool
+    asset_id: UUID | None = None
