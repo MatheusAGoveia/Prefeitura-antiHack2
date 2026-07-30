@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from uuid import UUID
 
 from src.core.domain.exceptions import DomainError
-from src.core.domain.incidents import SecurityEvent
+from src.core.domain.incidents import SecurityEvent, _validate_utc_datetime
 
 
 @dataclass(frozen=True)
@@ -90,8 +90,8 @@ class CorrelationRuleVersion:
             raise DomainError("category é obrigatória e não pode ser vazia.")
         if not isinstance(self.is_active, bool):
             raise DomainError(f"is_active deve ser um booleano, recebido: {type(self.is_active)}")
-        if not isinstance(self.created_at, datetime):
-            raise DomainError(f"created_at deve ser datetime UTC, recebido: {type(self.created_at)}")
+
+        _validate_utc_datetime(self.created_at, "created_at")
 
 
 class CorrelationRule(ABC):

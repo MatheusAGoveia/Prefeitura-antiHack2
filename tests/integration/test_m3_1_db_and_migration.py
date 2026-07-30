@@ -1,5 +1,5 @@
 """
-Testes de Integração com Banco de Dados e Migrações Alembic — Capability M3.1
+Testes de Integração com Banco de Dados e Migrações Alembic — Capability M3.1 (Bloqueadores)
 GovSec Shield — Integration Tests
 """
 
@@ -10,12 +10,14 @@ import pytest
 import pytest_asyncio
 from alembic.config import Config
 from alembic.script import ScriptDirectory
+from sqlalchemy import inspect
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from src.core.domain.correlation import CorrelationRuleVersion
 from src.core.domain.incidents import Asset, SecurityEvent, SecurityEventSeverity
 from src.core.infrastructure.config import settings
-from src.core.infrastructure.db.models import Base
+from src.core.infrastructure.db.models import AssetModel, Base, SecurityEventModel
 from src.core.infrastructure.db.repositories import (
     PostgresAssetRepository,
     PostgresCorrelationRuleVersionRepository,
@@ -50,6 +52,95 @@ def test_migration_0005_definition_and_reversibility() -> None:
     assert rev.down_revision == "0004_alert_ack_tenant_id_uuid"
     assert rev.module.upgrade is not None
     assert rev.module.downgrade is not None
+
+
+@pytest.mark.asyncio
+async def test_cross_tenant_asset_event_constraint_violation(async_session: AsyncSession) -> None:
+    """Valida que o banco de dados rejeita via FK composta associar SecurityEvent do Tenant A a Ativo do Tenant B."""
+    tenant_a = uuid4()
+    tenant_b = uuid4()
+    asset_id_b = uuid4()
+
+    # 1. Cria ativo pertencente ao Tenant B
+    asset_b_model = AssetModel(
+        asset_id=asset_id_b,
+        tenant_id=tenant_b,
+        name="Servidor Tenant B",
+        asset_type="service",
+        service_name="api-tenant-b",
+        environment="production",
+        criticality="HIGH",
+        is_active=True,
+    )
+    async_session.add(asset_b_model)
+    await async_session.flush()
+
+    # 2. Tenta criar um SecurityEvent pertencente ao Tenant A associado ao ativo do Tenant B
+    now = datetime.now(timezone.utc)
+    cross_tenant_event = SecurityEventModel(
+        event_id=uuid4(),
+        tenant_id=tenant_a,  # Tenant A!
+        asset_id=asset_id_b,  # Ativo do Tenant B!
+        source="Alertmanager",
+        event_type="UnauthorizedAccess",
+        severity="HIGH",
+        occurred_at=now,
+        received_at=now,
+        payload={"msg": "cross tenant attempt"},
+        evidence_hash="hash-123",
+        idempotency_key="idemp-cross-tenant-1",
+        is_asset_resolved=True,
+    )
+
+    async_session.add(cross_tenant_event)
+
+    with pytest.raises(IntegrityError) as exc_info:
+        await async_session.flush()
+
+    # Confirma que a exceção foi uma violação de chave estrangeira (FK) de integridade
+    assert (
+        "FOREIGN KEY" in str(exc_info.value).upper()
+        or "FOREIGNKEY" in str(exc_info.value).upper()
+        or "CONSTRAINT" in str(exc_info.value).upper()
+    )
+
+
+@pytest.mark.asyncio
+async def test_real_database_constraints_inspection(async_session: AsyncSession) -> None:
+    """Valida via Inspector do SQLAlchemy que as constraints únicas e FK compostas existem no schema real."""
+    conn = await async_session.connection()
+
+    def inspect_tables(sync_conn):
+        inspector = inspect(sync_conn)
+
+        # 1. Tablas existentes
+        table_names = inspector.get_table_names()
+        assert "assets" in table_names
+        assert "security_events" in table_names
+        assert "correlation_rule_versions" in table_names
+
+        # 2. Foreign Keys de security_events
+        fks = inspector.get_foreign_keys("security_events")
+        has_composite_fk = any(
+            fk["constrained_columns"] == ["tenant_id", "asset_id"]
+            and fk["referred_table"] == "assets"
+            and fk["referred_columns"] == ["tenant_id", "asset_id"]
+            for fk in fks
+        )
+        assert (
+            has_composite_fk
+        ), f"FK composta (tenant_id, asset_id) não encontrada em security_events: {fks}"
+
+        # 3. Unique constraints de assets
+        asset_uqs = inspector.get_unique_constraints("assets")
+        has_tenant_asset_uq = any(
+            set(uq["column_names"]) == {"tenant_id", "asset_id"} for uq in asset_uqs
+        )
+        assert (
+            has_tenant_asset_uq
+        ), f"Unique constraint (tenant_id, asset_id) não encontrada em assets: {asset_uqs}"
+
+    await conn.run_sync(inspect_tables)
 
 
 @pytest.mark.asyncio

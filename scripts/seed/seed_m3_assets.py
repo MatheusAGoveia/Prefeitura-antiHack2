@@ -12,6 +12,8 @@ import logging
 import sys
 from uuid import UUID
 
+from src.core.domain.entities import TenantStatus
+from src.core.domain.exceptions import DomainError
 from src.core.domain.incidents import Asset
 from src.core.infrastructure.config import settings
 from src.core.infrastructure.db.unit_of_work import AsyncSessionLocal, UnitOfWork
@@ -20,35 +22,39 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger("seed_m3_assets")
 
 
-async def seed_dev_assets(tenant_id: UUID | None = None) -> None:
-    # Trava de Segurança: Proibir execução automática ou acidental em staging/production
-    if settings.GOVSEC_ENV in ("staging", "production"):
+async def seed_dev_assets(tenant_id: UUID) -> None:
+    # Trava de Segurança 1: Proibir execução fora dos ambientes autorizados (dev/test)
+    if settings.GOVSEC_ENV not in ("development", "dev", "test"):
         raise RuntimeError(
             f"Execução de seed cancelada (Fail-Closed): O ambiente atual é '{settings.GOVSEC_ENV}'. "
             f"Scripts de seed local de dados são estritamente proibidos fora de 'development' e 'test'."
         )
 
+    if not isinstance(tenant_id, UUID):
+        raise ValueError(f"--tenant-id deve ser um UUID válido, recebido: {tenant_id}")
+
     async with AsyncSessionLocal() as session:
         uow = UnitOfWork(session)
 
-        # Resolução explícita de tenant (sem hardcode)
-        target_tenant_id = tenant_id
-        if target_tenant_id is None:
-            # Tentar buscar tenant dev existente no repositório
-            existing_tenants = await uow.tenants.list(limit=1)
-            if existing_tenants:
-                target_tenant_id = existing_tenants[0].id
-            else:
-                raise ValueError(
-                    "Nenhum tenant cadastrado encontrado. Informe o --tenant-id explicitamente "
-                    "ou crie um tenant prévio no ambiente dev."
-                )
+        # Trava de Segurança 2: Validar que o tenant informado existe e está ATIVO no banco
+        tenant = await uow.tenants.get_by_id(tenant_id)
+        if not tenant:
+            raise ValueError(f"Tenant com ID '{tenant_id}' não foi localizado no banco de dados.")
 
-        logger.info(f"Iniciando seed de ativos M3.1 para o Tenant UUID: {target_tenant_id}")
+        tenant_status_val = (
+            tenant.status.value if hasattr(tenant.status, "value") else str(tenant.status)
+        )
+        if tenant_status_val != TenantStatus.ACTIVE.value:
+            raise ValueError(
+                f"Tenant '{tenant_id}' possui status '{tenant_status_val}'. "
+                f"Seed é permitido apenas para tenants ativos ({TenantStatus.ACTIVE.value})."
+            )
+
+        logger.info(f"Iniciando seed de ativos M3.1 para o Tenant UUID ativo: {tenant_id}")
 
         # Resolução de ativo existente para garantir idempotência
         existing_asset = await uow.assets.resolve_active_asset(
-            tenant_id=target_tenant_id,
+            tenant_id=tenant_id,
             service_name="govsec-core-api",
             environment="development",
         )
@@ -62,7 +68,7 @@ async def seed_dev_assets(tenant_id: UUID | None = None) -> None:
 
         # Cadastrar novo ativo
         new_asset = Asset(
-            tenant_id=target_tenant_id,
+            tenant_id=tenant_id,
             name="GovSec Core API",
             asset_type="service",
             service_name="govsec-core-api",
@@ -86,16 +92,21 @@ def main() -> None:
     parser.add_argument(
         "--tenant-id",
         type=str,
-        help="UUID do tenant de destino (opcional, utiliza primeiro tenant dev ativo se omitido)",
+        required=True,
+        help="UUID do tenant de destino (obrigatorio)",
     )
     args = parser.parse_args()
 
-    tenant_uuid = UUID(args.tenant_id) if args.tenant_id else None
+    try:
+        tenant_uuid = UUID(args.tenant_id)
+    except (ValueError, TypeError):
+        logger.error(f"Erro de parâmetro: --tenant-id deve ser um UUID válido: '{args.tenant_id}'")
+        sys.exit(1)
 
     try:
         asyncio.run(seed_dev_assets(tenant_id=tenant_uuid))
-    except Exception as exc:
-        logger.error(f"Falha no seed de ativos: {exc}")
+    except (ValueError, RuntimeError, DomainError) as exc:
+        logger.error(f"Falha de validação no seed de ativos: {exc}")
         sys.exit(1)
 
 

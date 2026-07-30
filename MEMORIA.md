@@ -87,11 +87,12 @@
 | **2026-07-30** | ADR-005: Fundação do M3 | Aprovação da ADR 005 congelando a arquitetura de correlação determinística, isolamento por tenant_id UUID, persistência transacional antes do Kafka e contratos puros de domínio. |
 | **2026-07-30** | Validação Estrita de Timestamps UTC | Implementado o helper `_validate_utc_datetime` no domínio M3.0, exigindo estritamente datetimes timezone-aware no fuso UTC (+00:00) em todos os contratos (Asset, SecurityEvent, UnresolvedAssetEvent, Incident, IncidentEvidence, IncidentStatusChange). |
 | **2026-07-30** | Sprint M3.1: Persistência Assíncrona & Idempotência PostgreSQL | Implementadas as migrações Alembic `0005_create_m3_assets_security_events`, modelos SQLAlchemy, repositórios PostgreSQL assíncronos, handler CQRS `IngestSecurityEventHandler` com idempotência atômica, publicação `SecurityEventReceivedEvent` pós-commit e script de seed local. |
+| **2026-07-30** | Correção de Bloqueadores M3.1 (Integridade & Transação) | Corregida a FK composta `(tenant_id, asset_id)` para impedir violação cross-tenant, sincronizados modelos ORM e Alembic 0005, ajustada a publicação no broker estritamente pós-commit, eliminada duplicidade de auditoria em replays, adicionada validação estrita de severidade sem fallback silencioso, estendida validação UTC a `CorrelationRuleVersion` e exigida validação de `--tenant-id` ativo no seed. |
 
 ---
 
 ## 📌 Registros Recentes & Próximos Passos
-- **Sprint M3.1 Concluída & Validada:** Implementada a persistência transacional de `assets`, `security_events` e `correlation_rule_versions` no PostgreSQL com `tenant_id` UUID, idempotência atômica por constraint, resolução de ativos por tenant/serviço/ambiente, `UnresolvedAssetEvent` sem publicação antecipada em broker, publicação `SecurityEventReceivedEvent` pós-commit e script de seed local seguro (`scripts/seed/seed_m3_assets.py`). Suíte de testes aprovada com 139/139 testes passando, ruff 0 erros, mypy 0 erros, bandit 0 avisos de média/alta severidade, compileall 0 erros e git diff --check OK.
+- **Sprint M3.1 Concluída & Auditada:** Todas as correções de bloqueadores de M3.1 foram integradas. A suíte conta com 141/141 testes aprovados, ruff 0 erros, mypy 0 erros em 111 arquivos, bandit 0 avisos de segurança, compileall 0 erros e git diff --check OK.
 - **Próximos Passos (Sprint M3.2):**
   - Criar migrações Alembic e modelos SQLAlchemy para `incidents`, `incident_evidence`, `incident_event_links` e histórico de status.
   - Implementar motor de correlação determinístico e criação de incidentes.

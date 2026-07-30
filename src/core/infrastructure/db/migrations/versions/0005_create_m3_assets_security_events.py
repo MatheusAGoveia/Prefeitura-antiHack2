@@ -46,6 +46,7 @@ def upgrade(op_ctx: Operations | None = None) -> None:
         sa.Column("hostname_or_ip", sa.String(length=256), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+        sa.UniqueConstraint("tenant_id", "asset_id", name="uq_assets_tenant_asset"),
         sa.UniqueConstraint(
             "tenant_id", "service_name", "environment", name="uq_assets_tenant_service_env"
         ),
@@ -60,12 +61,7 @@ def upgrade(op_ctx: Operations | None = None) -> None:
         "security_events",
         sa.Column("event_id", uuid_type, primary_key=True, nullable=False),
         sa.Column("tenant_id", uuid_type, nullable=False),
-        sa.Column(
-            "asset_id",
-            uuid_type,
-            sa.ForeignKey("assets.asset_id", ondelete="SET NULL"),
-            nullable=True,
-        ),
+        sa.Column("asset_id", uuid_type, nullable=True),
         sa.Column("source", sa.String(length=64), nullable=False),
         sa.Column("event_type", sa.String(length=64), nullable=False),
         sa.Column("severity", sa.String(length=32), nullable=False),
@@ -78,6 +74,11 @@ def upgrade(op_ctx: Operations | None = None) -> None:
             "is_asset_resolved", sa.Boolean(), nullable=False, server_default=sa.text("false")
         ),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.ForeignKeyConstraint(
+            ["tenant_id", "asset_id"],
+            ["assets.tenant_id", "assets.asset_id"],
+            name="fk_security_events_tenant_asset",
+        ),
         sa.UniqueConstraint(
             "tenant_id", "source", "idempotency_key", name="uq_security_events_idempotency"
         ),

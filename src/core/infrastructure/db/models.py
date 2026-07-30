@@ -7,7 +7,16 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, String, Text
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    DateTime,
+    ForeignKeyConstraint,
+    Index,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy import Enum as SQLEnum
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
@@ -78,6 +87,14 @@ class AssetModel(Base):
     """Modelo relacional para a tabela assets."""
 
     __tablename__ = "assets"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "asset_id", name="uq_assets_tenant_asset"),
+        UniqueConstraint(
+            "tenant_id", "service_name", "environment", name="uq_assets_tenant_service_env"
+        ),
+        Index("idx_assets_tenant_id", "tenant_id"),
+        Index("idx_assets_tenant_service_env", "tenant_id", "service_name", "environment"),
+    )
 
     asset_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
     tenant_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, index=True)
@@ -103,12 +120,27 @@ class SecurityEventModel(Base):
     """Modelo relacional para a tabela security_events."""
 
     __tablename__ = "security_events"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["tenant_id", "asset_id"],
+            ["assets.tenant_id", "assets.asset_id"],
+            name="fk_security_events_tenant_asset",
+        ),
+        UniqueConstraint(
+            "tenant_id", "source", "idempotency_key", name="uq_security_events_idempotency"
+        ),
+        Index("idx_security_events_tenant_occurred", "tenant_id", "occurred_at"),
+        Index(
+            "idx_security_events_tenant_asset_occurred",
+            "tenant_id",
+            "asset_id",
+            "occurred_at",
+        ),
+    )
 
     event_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
     tenant_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, index=True)
-    asset_id: Mapped[UUID | None] = mapped_column(
-        PG_UUID(as_uuid=True), ForeignKey("assets.asset_id", ondelete="SET NULL"), nullable=True, index=True
-    )
+    asset_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True, index=True)
     source: Mapped[str] = mapped_column(String(64), nullable=False)
     event_type: Mapped[str] = mapped_column(String(64), nullable=False)
     severity: Mapped[str] = mapped_column(String(32), nullable=False)
@@ -129,6 +161,7 @@ class CorrelationRuleVersionModel(Base):
     """Modelo relacional para a tabela correlation_rule_versions."""
 
     __tablename__ = "correlation_rule_versions"
+    __table_args__ = (UniqueConstraint("rule_id", "rule_version", name="uq_rule_id_version"),)
 
     rule_version_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
     rule_id: Mapped[str] = mapped_column(String(64), nullable=False)
