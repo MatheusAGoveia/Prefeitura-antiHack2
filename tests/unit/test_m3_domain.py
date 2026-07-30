@@ -5,9 +5,9 @@ GovSec Shield — Unit Tests
 
 import ast
 import inspect
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, cast
+from typing import cast
 from uuid import UUID, uuid4
 
 import pytest
@@ -17,7 +17,9 @@ from src.core.domain.exceptions import DomainError
 from src.core.domain.incidents import (
     Asset,
     Incident,
+    IncidentEvidence,
     IncidentStatus,
+    IncidentStatusChange,
     InvalidStatusTransitionError,
     SecurityEvent,
     SecurityEventSeverity,
@@ -30,7 +32,7 @@ from src.core.domain.m4_contracts import Engagement, ScopeTarget, SecurityJob, T
 def test_tenant_uuid_invariants_across_m3_entities() -> None:
     """Valida que tenant_id deve ser estritamente um UUID válido em todas as entidades M3."""
     tenant_id = uuid4()
-    invalid_tenant_id = cast(Any, "tenant-slug-invalido")
+    invalid_tenant_id = cast(UUID, "tenant-slug-invalido")
 
     # Asset
     asset = Asset(
@@ -169,7 +171,149 @@ def test_asset_contract_and_validations() -> None:
             service_name="service",
             environment="prod",
             criticality="HIGH",
-            is_active=cast(Any, "true"),
+            is_active=cast(bool, "true"),
+        )
+
+
+def test_utc_datetime_validation_across_domain_contracts() -> None:
+    """Valida estritamente que timestamps de domínio devem ser timezone-aware e ter fuso horário UTC."""
+    tenant_id = uuid4()
+    asset_id = uuid4()
+    event_id = uuid4()
+    incident_id = uuid4()
+
+    valid_utc = datetime.now(timezone.utc)
+    naive_dt = datetime.now()  # Sem timezone
+    non_utc_dt = datetime.now(timezone(timedelta(hours=-3)))  # Offset não-UTC (-03:00)
+
+    # 1. Asset com timestamps válidos e inválidos
+    valid_asset = Asset(
+        asset_id=asset_id,
+        tenant_id=tenant_id,
+        name="SRV-01",
+        asset_type="SERVER",
+        service_name="api",
+        environment="prod",
+        criticality="HIGH",
+        created_at=valid_utc,
+        updated_at=valid_utc,
+    )
+    assert valid_asset.created_at == valid_utc
+
+    with pytest.raises(DomainError) as exc_naive_asset:
+        Asset(
+            asset_id=asset_id,
+            tenant_id=tenant_id,
+            name="SRV-01",
+            asset_type="SERVER",
+            service_name="api",
+            environment="prod",
+            criticality="HIGH",
+            created_at=naive_dt,
+        )
+    assert "timezone-aware" in str(exc_naive_asset.value)
+
+    with pytest.raises(DomainError) as exc_offset_asset:
+        Asset(
+            asset_id=asset_id,
+            tenant_id=tenant_id,
+            name="SRV-01",
+            asset_type="SERVER",
+            service_name="api",
+            environment="prod",
+            criticality="HIGH",
+            updated_at=non_utc_dt,
+        )
+    assert "estritamente UTC" in str(exc_offset_asset.value)
+
+    # 2. SecurityEvent
+    with pytest.raises(DomainError):
+        SecurityEvent(
+            event_id=event_id,
+            tenant_id=tenant_id,
+            source="Alertmanager",
+            event_type="ServiceDown",
+            severity=SecurityEventSeverity.HIGH,
+            occurred_at=naive_dt,
+            received_at=valid_utc,
+            asset_id=asset_id,
+            payload={},
+            idempotency_key="k1",
+            is_asset_resolved=True,
+        )
+
+    with pytest.raises(DomainError):
+        SecurityEvent(
+            event_id=event_id,
+            tenant_id=tenant_id,
+            source="Alertmanager",
+            event_type="ServiceDown",
+            severity=SecurityEventSeverity.HIGH,
+            occurred_at=valid_utc,
+            received_at=non_utc_dt,
+            asset_id=asset_id,
+            payload={},
+            idempotency_key="k2",
+            is_asset_resolved=True,
+        )
+
+    # 3. UnresolvedAssetEvent
+    with pytest.raises(DomainError):
+        UnresolvedAssetEvent(
+            event_id=uuid4(),
+            tenant_id=tenant_id,
+            security_event_id=event_id,
+            occurred_at_utc=naive_dt,
+        )
+
+    # 4. IncidentEvidence
+    with pytest.raises(DomainError):
+        IncidentEvidence(
+            evidence_id=uuid4(),
+            incident_id=incident_id,
+            event_id=event_id,
+            tenant_id=tenant_id,
+            evidence_hash="sha256",
+            added_at=non_utc_dt,
+            description="Evidência",
+            raw_payload_masked={},
+        )
+
+    # 5. IncidentStatusChange
+    with pytest.raises(DomainError):
+        IncidentStatusChange(
+            from_status=IncidentStatus.OPEN,
+            to_status=IncidentStatus.ACKNOWLEDGED,
+            actor_id="user1",
+            reason="justificativa",
+            timestamp=naive_dt,
+        )
+
+    # 6. Incident e transition_to
+    with pytest.raises(DomainError):
+        Incident(
+            incident_id=incident_id,
+            tenant_id=tenant_id,
+            title="Incidente",
+            description="desc",
+            severity=SecurityEventSeverity.HIGH,
+            status=IncidentStatus.OPEN,
+            correlation_key="ckey",
+            created_at=non_utc_dt,
+        )
+
+    incident = Incident(
+        incident_id=incident_id,
+        tenant_id=tenant_id,
+        title="Incidente",
+        description="desc",
+        severity=SecurityEventSeverity.HIGH,
+        status=IncidentStatus.OPEN,
+        correlation_key="ckey",
+    )
+    with pytest.raises(DomainError):
+        incident.transition_to(
+            IncidentStatus.ACKNOWLEDGED, actor_id="analyst", reason="motivo", timestamp=non_utc_dt
         )
 
 

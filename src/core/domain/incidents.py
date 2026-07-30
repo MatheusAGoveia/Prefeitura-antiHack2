@@ -8,12 +8,25 @@ isolamento total de frameworks web, ORMs e componentes de infraestrutura.
 
 import hashlib
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from enum import StrEnum
 from typing import Any
 from uuid import UUID, uuid4
 
 from src.core.domain.exceptions import DomainError
+
+
+def _validate_utc_datetime(dt: Any, field_name: str) -> None:
+    """
+    Valida estritamente se um valor é um datetime timezone-aware com fuso horário UTC (+00:00).
+    Rejeita valores não-datetime, datetimes ingênuos (naive) e datetimes com offset diferente de UTC.
+    """
+    if not isinstance(dt, datetime):
+        raise DomainError(f"'{field_name}' deve ser um datetime, recebido: '{type(dt).__name__}'")
+    if dt.tzinfo is None or dt.utcoffset() is None:
+        raise DomainError(f"'{field_name}' deve possuir fuso horário explícito (timezone-aware).")
+    if dt.utcoffset() != timedelta(0):
+        raise DomainError(f"'{field_name}' deve possuir fuso horário estritamente UTC (+00:00).")
 
 
 class InvalidStatusTransitionError(DomainError):
@@ -123,10 +136,9 @@ class Asset:
             raise DomainError("criticality é obrigatório e não pode ser vazio.")
         if not isinstance(self.is_active, bool):
             raise DomainError(f"is_active deve ser um booleano, recebido: {type(self.is_active)}")
-        if not isinstance(self.created_at, datetime):
-            raise DomainError(f"created_at deve ser datetime UTC, recebido: {type(self.created_at)}")
-        if not isinstance(self.updated_at, datetime):
-            raise DomainError(f"updated_at deve ser datetime UTC, recebido: {type(self.updated_at)}")
+
+        _validate_utc_datetime(self.created_at, "created_at")
+        _validate_utc_datetime(self.updated_at, "updated_at")
 
 
 @dataclass(frozen=True)
@@ -150,10 +162,8 @@ class UnresolvedAssetEvent:
             raise DomainError(
                 f"security_event_id deve ser um UUID válido, recebido: {type(self.security_event_id)}"
             )
-        if not isinstance(self.occurred_at_utc, datetime):
-            raise DomainError(
-                f"occurred_at_utc deve ser datetime UTC, recebido: {type(self.occurred_at_utc)}"
-            )
+
+        _validate_utc_datetime(self.occurred_at_utc, "occurred_at_utc")
 
 
 @dataclass
@@ -178,6 +188,9 @@ class SecurityEvent:
             raise DomainError(f"tenant_id deve ser um UUID válido, recebido: {type(self.tenant_id)}")
         if not isinstance(self.event_id, UUID):
             raise DomainError(f"event_id deve ser um UUID válido, recebido: {type(self.event_id)}")
+
+        _validate_utc_datetime(self.occurred_at, "occurred_at")
+        _validate_utc_datetime(self.received_at, "received_at")
 
         # Redaction de segurança no payload
         self.payload = sanitize_payload(self.payload)
@@ -223,6 +236,8 @@ class IncidentEvidence:
         if not isinstance(self.tenant_id, UUID):
             raise DomainError(f"tenant_id deve ser um UUID válido, recebido: {type(self.tenant_id)}")
 
+        _validate_utc_datetime(self.added_at, "added_at")
+
 
 @dataclass(frozen=True)
 class IncidentStatusChange:
@@ -233,6 +248,9 @@ class IncidentStatusChange:
     actor_id: str
     reason: str
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+
+    def __post_init__(self) -> None:
+        _validate_utc_datetime(self.timestamp, "timestamp")
 
 
 @dataclass
@@ -256,6 +274,9 @@ class Incident:
             raise DomainError(f"tenant_id deve ser um UUID válido, recebido: {type(self.tenant_id)}")
         if not isinstance(self.incident_id, UUID):
             raise DomainError(f"incident_id deve ser um UUID válido, recebido: {type(self.incident_id)}")
+
+        _validate_utc_datetime(self.created_at, "created_at")
+        _validate_utc_datetime(self.updated_at, "updated_at")
 
     def transition_to(
         self,
@@ -281,6 +302,8 @@ class Incident:
             )
 
         ts = timestamp or datetime.now(timezone.utc)
+        _validate_utc_datetime(ts, "timestamp")
+
         change_record = IncidentStatusChange(
             from_status=self.status,
             to_status=new_status,
