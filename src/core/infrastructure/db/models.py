@@ -97,6 +97,7 @@ class AssetModel(Base):
             "environment",
             unique=True,
             postgresql_where=text("is_active = true"),
+            sqlite_where=text("is_active = 1"),
         ),
         Index("idx_assets_tenant_id", "tenant_id"),
         Index("idx_assets_tenant_service_env", "tenant_id", "service_name", "environment"),

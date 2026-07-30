@@ -469,7 +469,10 @@ async def test_outbox_lease_recovery_stuck_processing_message() -> None:
 
 @pytest.mark.asyncio
 async def test_outbox_worker_cli_execution() -> None:
-    """Valida a execução do worker CLI do OutboxDispatcher e relatórios de saúde."""
+    """Valida a execução completa do worker CLI do OutboxDispatcher com publisher, retry, lease e uow_factory."""
+    from datetime import timedelta
+
+    from scripts.outbox_worker import uow_factory
     from src.core.infrastructure.cli.outbox_worker import (
         inspect_outbox_health,
         run_outbox_worker_loop,
@@ -478,28 +481,99 @@ async def test_outbox_worker_cli_execution() -> None:
     uow = InMemorySecurityEventUnitOfWork()
     publisher = MockEventPublisher()
 
-    health = await inspect_outbox_health(uow)
-    assert health["pending_count"] == 0
+    # 1. Quando Kafka está desabilitado, worker recusa execução e retorna 0
+    refused = await run_outbox_worker_loop(
+        uow_factory=lambda: uow,
+        event_publisher=publisher,
+        run_once=True,
+        override_bus_check=False,
+    )
+    assert refused == 0
 
-    evt = OutboxEvent(
-        tenant_id=uuid4(),
+    # 2. Insere mensagem pending e mensagem processing expirada
+    tenant_id = uuid4()
+    valid_payload_pending = {
+        "tenant_id": str(tenant_id),
+        "security_event_id": str(uuid4()),
+        "source": "Alertmanager",
+        "security_event_type": "TestPending",
+        "severity": "HIGH",
+        "is_asset_resolved": True,
+        "asset_id": None,
+    }
+    valid_payload_expired = {
+        "tenant_id": str(tenant_id),
+        "security_event_id": str(uuid4()),
+        "source": "Alertmanager",
+        "security_event_type": "TestExpired",
+        "severity": "CRITICAL",
+        "is_asset_resolved": False,
+        "asset_id": None,
+    }
+
+    evt_pending = OutboxEvent(
+        tenant_id=tenant_id,
         aggregate_type="SecurityEvent",
         aggregate_id=uuid4(),
         event_type="SecurityEventReceivedEvent",
-        payload={
-            "tenant_id": str(uuid4()),
-            "source": "Alertmanager",
-            "event_type": "Test",
-            "occurred_at": datetime.now(timezone.utc).isoformat(),
-        },
-        idempotency_key="k-cli-001",
+        payload=valid_payload_pending,
+        idempotency_key="k-pending-001",
     )
-    await uow.outbox.save(evt)
+    evt_expired = OutboxEvent(
+        tenant_id=tenant_id,
+        aggregate_type="SecurityEvent",
+        aggregate_id=uuid4(),
+        event_type="SecurityEventReceivedEvent",
+        payload=valid_payload_expired,
+        idempotency_key="k-expired-001",
+        status="processing",
+        claimed_at=datetime.now(timezone.utc) - timedelta(seconds=120),
+        claim_expires_at=datetime.now(timezone.utc) - timedelta(seconds=60),
+    )
+    await uow.outbox.save(evt_pending)
+    await uow.outbox.save(evt_expired)
 
+    # Inspect health antes de processar
+    health_before = await inspect_outbox_health(uow)
+    assert health_before["pending_count"] == 1
+    assert health_before["expired_processing_count"] == 1
+
+    # Executa worker com override_bus_check=True
     processed = await run_outbox_worker_loop(
         uow_factory=lambda: uow,
         event_publisher=publisher,
         run_once=True,
+        override_bus_check=True,
     )
-    # Retorna 0 quando Kafka não está configurado
-    assert processed == 0
+    assert processed == 2
+    assert len(publisher.published_events) == 2
+
+    # Verifica status publicado
+    assert uow.outbox.events[evt_pending.outbox_event_id].status == "published"
+    assert uow.outbox.events[evt_expired.outbox_event_id].status == "published"
+
+    # 3. Teste de falha no publisher -> marca status="failed"
+    evt_fail = OutboxEvent(
+        tenant_id=tenant_id,
+        aggregate_type="SecurityEvent",
+        aggregate_id=uuid4(),
+        event_type="SecurityEventReceivedEvent",
+        payload={"tenant_id": str(tenant_id)},
+        idempotency_key="k-fail-001",
+    )
+    await uow.outbox.save(evt_fail)
+
+    fail_publisher = MockEventPublisher(should_fail=True)
+    processed_fail = await run_outbox_worker_loop(
+        uow_factory=lambda: uow,
+        event_publisher=fail_publisher,
+        run_once=True,
+        override_bus_check=True,
+    )
+    assert processed_fail == 0
+    assert uow.outbox.events[evt_fail.outbox_event_id].status == "failed"
+    assert uow.outbox.events[evt_fail.outbox_event_id].retry_count == 1
+
+    # 4. Teste da factory uow_factory do script
+    session_uow = uow_factory()
+    assert hasattr(session_uow, "session")

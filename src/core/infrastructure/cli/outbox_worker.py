@@ -8,6 +8,7 @@ inspeção de métricas de saúde (pending, failed, lease expirado) e validaçã
 
 import asyncio
 import logging
+from datetime import datetime, timezone
 from typing import Any
 
 from src.core.application.interfaces.event_publisher import IEventPublisher
@@ -19,9 +20,10 @@ logger = logging.getLogger("govsec.infrastructure.outbox_worker")
 
 
 def is_event_bus_configured() -> bool:
-    """Verifica se o broker de mensageria (Kafka/Redpanda/EventBus) está configurado."""
-    bootstrap = getattr(settings, "KAFKA_BOOTSTRAP_SERVERS", "") or ""
-    return bool(bootstrap.strip())
+    """Verifica se o broker de mensageria (Kafka/Redpanda) está habilitado e configurado."""
+    use_kafka = getattr(settings, "GOVSEC_USE_KAFKA", False)
+    bootstrap = getattr(settings, "GOVSEC_KAFKA_BOOTSTRAP", "") or ""
+    return bool(use_kafka) and bool(bootstrap.strip())
 
 
 async def inspect_outbox_health(uow: SecurityEventUnitOfWork) -> dict[str, Any]:
@@ -31,7 +33,7 @@ async def inspect_outbox_health(uow: SecurityEventUnitOfWork) -> dict[str, Any]:
     """
     if hasattr(uow.outbox, "events"):  # InMemory
         events = list(uow.outbox.events.values())
-        now_ts = asyncio.get_event_loop().time()
+        now = datetime.now(timezone.utc)
         pending = sum(1 for e in events if e.status == "pending")
         failed = sum(1 for e in events if e.status == "failed")
         expired_processing = sum(
@@ -39,7 +41,7 @@ async def inspect_outbox_health(uow: SecurityEventUnitOfWork) -> dict[str, Any]:
             for e in events
             if e.status == "processing"
             and e.claim_expires_at
-            and e.claim_expires_at.timestamp() <= now_ts
+            and e.claim_expires_at <= now
         )
         return {
             "pending_count": pending,
@@ -63,13 +65,14 @@ async def run_outbox_worker_loop(
     lease_seconds: int = 30,
     max_retries: int = 5,
     run_once: bool = False,
+    override_bus_check: bool = False,
 ) -> int:
     """
     Loop de execução do worker do OutboxDispatcher.
     """
-    if not is_event_bus_configured():
+    if not override_bus_check and not is_event_bus_configured():
         logger.info(
-            "EventBus/Kafka não está configurado (KAFKA_BOOTSTRAP_SERVERS vazio). Worker outbox não iniciado."
+            "Kafka EventBus não está habilitado (GOVSEC_USE_KAFKA=False ou GOVSEC_KAFKA_BOOTSTRAP vazio). Worker outbox não iniciado."
         )
         return 0
 

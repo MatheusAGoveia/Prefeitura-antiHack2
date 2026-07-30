@@ -175,7 +175,7 @@ def test_alembic_step_by_step_0005_to_0006_real() -> None:
             )
             conn.commit()
 
-            with pytest.raises(Exception) as exc_info:
+            with pytest.raises(IntegrityError) as exc_info:
                 conn.execute(
                     text(
                         "INSERT INTO assets (asset_id, tenant_id, name, asset_type, service_name, environment, criticality, is_active, created_at, updated_at) "
