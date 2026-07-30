@@ -580,26 +580,70 @@ async def test_outbox_worker_cli_execution() -> None:
 
 
 @pytest.mark.asyncio
-async def test_kafka_broker_unavailable_does_not_mark_as_published() -> None:
-    """Valida que quando o Kafka/Redpanda falha ou fica indisponível, a mensagem NUNCA é marcada como published e o fallback em memória é bloqueado."""
+async def test_kafka_event_bus_creates_aiokafka_producer_with_compatible_arguments(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Valida que KafkaEventBus cria o AIOKafkaProducer com argumentos reais e compatíveis com aiokafka (sem max_block_ms)."""
+    from unittest.mock import AsyncMock
+
+    from aiokafka import AIOKafkaProducer
+
     from src.core.infrastructure.messaging.kafka_event_bus import KafkaEventBus
 
-    uow = InMemorySecurityEventUnitOfWork()
-    tenant_id = uuid4()
+    # Permite a execução do construtor REAL de AIOKafkaProducer (validando a assinatura)
+    # Mocka apenas o método start() da classe para não abrir socket de rede real
+    mock_start = AsyncMock()
+    monkeypatch.setattr(AIOKafkaProducer, "start", mock_start)
 
-    # Instancia KafkaEventBus com use_kafka=True e allow_fallback=False (modo de produção/estrito)
+    bus = KafkaEventBus(
+        bootstrap_servers="127.0.0.1:9092",
+        use_kafka=True,
+        allow_fallback=False,
+    )
+
+    await bus.start()
+
+    # Confirma que _producer é uma instância REAL de AIOKafkaProducer criada sem erro de assinatura
+    assert isinstance(bus._producer, AIOKafkaProducer)
+    assert mock_start.called
+    assert bus._producer._request_timeout_ms == 3000
+    assert not hasattr(bus._producer, "_max_block_ms")
+
+
+@pytest.mark.asyncio
+async def test_kafka_broker_unavailable_raises_controlled_error() -> None:
+    """Valida que quando o Kafka/Redpanda está indisponível, a tentativa de conexão real gera erro controlado."""
+    from src.core.infrastructure.messaging.kafka_event_bus import KafkaEventBus
+
     bus = KafkaEventBus(
         bootstrap_servers="127.0.0.1:59999",
         use_kafka=True,
         allow_fallback=False,
     )
 
-    # 1. Se start() falhar a conexão, deve lançar RuntimeError sem fallback silencioso
+    # 1. Tentativa de conexão em porta fechada lança RuntimeError controlado
     with pytest.raises(RuntimeError) as exc_conn:
         await bus.start()
-    assert "Falha de conexão com Kafka" in str(exc_conn.value) or "127.0.0.1:59999" in str(exc_conn.value)
 
-    # 2. Criar mensagem outbox e tentar despachar usando um publisher que falha (Kafka indisponível)
+    assert "Falha de conexão com Kafka" in str(exc_conn.value) or "127.0.0.1:59999" in str(exc_conn.value)
+    # A causa não pode ser erro de argumento inválido (TypeError)
+    assert not isinstance(exc_conn.value.__cause__, TypeError)
+
+
+@pytest.mark.asyncio
+async def test_kafka_delivery_failure_retains_outbox_failed_and_increments_retry() -> None:
+    """Valida que falhas na entrega ao Kafka mantêm a mensagem no outbox como failed, incrementam retry_count e nunca marcam como published."""
+    from src.core.infrastructure.messaging.kafka_event_bus import KafkaEventBus
+
+    uow = InMemorySecurityEventUnitOfWork()
+    tenant_id = uuid4()
+
+    bus = KafkaEventBus(
+        bootstrap_servers="127.0.0.1:59999",
+        use_kafka=True,
+        allow_fallback=False,
+    )
+
     evt = OutboxEvent(
         tenant_id=tenant_id,
         aggregate_type="SecurityEvent",

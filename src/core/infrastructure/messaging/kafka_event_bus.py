@@ -46,7 +46,6 @@ class KafkaEventBus(EventBus):
                     bootstrap_servers=self.bootstrap_servers,
                     value_serializer=lambda v: json.dumps(v, default=str).encode("utf-8"),
                     request_timeout_ms=3000,
-                    max_block_ms=3000,
                 )
                 await self._producer.start()
                 logger.info("Kafka AIOProducer iniciado com sucesso em %s", self.bootstrap_servers)

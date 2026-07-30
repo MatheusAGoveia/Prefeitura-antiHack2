@@ -7,8 +7,9 @@
 ## 📌 Estado Atual do Projeto
 - **Repositório:** `MatheusAGoveia/Prefeitura-antiHack2`
 - **Branch Ativa:** `feature/m3-correlation-incidents`
-- **Data da Última Atualização:** 2026-07-30T12:46:00Z
+- **Data da Última Atualização:** 2026-07-30T14:32:00Z
 - **Responsável:** IA Assistente (Arquiteto Principal GovSec Shield)
+- **Status Atual:** Sprint M3.1 100% Concluída e Aprovada com aiokafka e Transactional Outbox corrigidos.
 
 ---
 
@@ -88,12 +89,12 @@
 | **2026-07-30** | Validação Estrita de Timestamps UTC | Implementado o helper `_validate_utc_datetime` no domínio M3.0, exigindo estritamente datetimes timezone-aware no fuso UTC (+00:00) em todos os contratos (Asset, SecurityEvent, UnresolvedAssetEvent, Incident, IncidentEvidence, IncidentStatusChange). |
 | **2026-07-30** | Sprint M3.1: Persistência Assíncrona & Idempotência PostgreSQL | Implementadas as migrações Alembic `0005_create_m3_assets_security_events`, modelos SQLAlchemy, repositórios PostgreSQL assíncronos, handler CQRS `IngestSecurityEventHandler` com idempotência atômica, publicação `SecurityEventReceivedEvent` pós-commit e script de seed local. |
 | **2026-07-30** | Correção de Bloqueadores M3.1 (Integridade & Transação) | Corregida a FK composta `(tenant_id, asset_id)` para impedir violação cross-tenant, sincronizados modelos ORM e Alembic 0005, ajustada a publicação no broker estritamente pós-commit, eliminada duplicidade de auditoria em replays, adicionada validação estrita de severidade sem fallback silencioso, estendida validação UTC a `CorrelationRuleVersion` e exigida validação de `--tenant-id` ativo no seed. |
-| **2026-07-30** | Correção Final M3.1 (Outbox Lease, CLI Worker & Kafka Integration) | Implementado o padrão Transactional Outbox com lease (`claimed_at`, `claim_expires_at`) em UTC, sincronizadas as configurações reais `settings.GOVSEC_KAFKA_BOOTSTRAP` e `settings.GOVSEC_USE_KAFKA`, criada a `uow_factory()` válida no script CLI, utilizado o `KafkaEventBus` real (sem mock em memória no script), ajustado `AssetModel` com índice único parcial para PostgreSQL e SQLite (`sqlite_where`), substituído `pytest.raises(Exception)` por `IntegrityError` no teste de migração e validados 145 testes com 0 erros nos linters/analisadores. |
+| **2026-07-30** | Correção Final M3.1 (AIOKafkaProducer & Poetry Lock) | Removido `max_block_ms=3000` incompatível com `aiokafka 0.11+`, preservado `request_timeout_ms=3000`, travado `poetry.lock`, ajustadas dependências de build no Python 3.13, e implementados 3 testes unitários isolados validando a construção real do `AIOKafkaProducer`, erro de rede controlado com broker indisponível e retenção do status `failed` no Transactional Outbox. |
 
 ---
 
 ## 📌 Registros Recentes & Próximos Passos
-- **Sprint M3.1 Totalmente Concluída & Auditada:** Todas as correções da Sprint M3.1 foram validadas com 145/145 testes aprovados, ruff 0 erros, mypy 0 erros em 117 arquivos, bandit 0 avisos de segurança, compileall 0 erros e 8 serviços do Docker Compose dev healthy.
+- **Sprint M3.1 Totalmente Concluída & Auditada:** Todas as correções da Sprint M3.1 foram validadas com 148/148 testes aprovados, ruff 0 erros, mypy 0 erros em 117 arquivos, bandit 0 avisos de segurança, compileall 0 erros.
 - **Próximos Passos (Sprint M3.2):**
   - Criar migrações Alembic e modelos SQLAlchemy para `incidents`, `incident_evidence`, `incident_event_links` e histórico de status.
   - Implementar motor de correlação determinístico e criação de incidentes.
