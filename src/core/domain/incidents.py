@@ -8,25 +8,16 @@ isolamento total de frameworks web, ORMs e componentes de infraestrutura.
 
 import hashlib
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from enum import StrEnum
 from typing import Any
 from uuid import UUID, uuid4
 
 from src.core.domain.exceptions import DomainError
+from src.core.domain.validation import validate_utc_datetime
 
-
-def _validate_utc_datetime(dt: Any, field_name: str) -> None:
-    """
-    Valida estritamente se um valor é um datetime timezone-aware com fuso horário UTC (+00:00).
-    Rejeita valores não-datetime, datetimes ingênuos (naive) e datetimes com offset diferente de UTC.
-    """
-    if not isinstance(dt, datetime):
-        raise DomainError(f"'{field_name}' deve ser um datetime, recebido: '{type(dt).__name__}'")
-    if dt.tzinfo is None or dt.utcoffset() is None:
-        raise DomainError(f"'{field_name}' deve possuir fuso horário explícito (timezone-aware).")
-    if dt.utcoffset() != timedelta(0):
-        raise DomainError(f"'{field_name}' deve possuir fuso horário estritamente UTC (+00:00).")
+# Alias público de retrocompatibilidade para o domínio
+_validate_utc_datetime = validate_utc_datetime
 
 
 class InvalidStatusTransitionError(DomainError):
@@ -137,8 +128,8 @@ class Asset:
         if not isinstance(self.is_active, bool):
             raise DomainError(f"is_active deve ser um booleano, recebido: {type(self.is_active)}")
 
-        _validate_utc_datetime(self.created_at, "created_at")
-        _validate_utc_datetime(self.updated_at, "updated_at")
+        validate_utc_datetime(self.created_at, "created_at")
+        validate_utc_datetime(self.updated_at, "updated_at")
 
 
 @dataclass(frozen=True)
@@ -193,16 +184,16 @@ class SecurityEvent:
         _validate_utc_datetime(self.received_at, "received_at")
 
         # Redaction de segurança no payload
-        self.payload = sanitize_payload(self.payload)
+        object.__setattr__(self, "payload", sanitize_payload(self.payload))
 
         # Regra de ativo não resolvido
         if self.asset_id is None:
-            self.is_asset_resolved = False
+            object.__setattr__(self, "is_asset_resolved", False)
 
         # Gera evidência criptográfica se não fornecida
         if not self.evidence_hash:
             raw = f"{self.event_id}:{self.tenant_id}:{self.source}:{self.event_type}:{self.idempotency_key}"
-            self.evidence_hash = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+            object.__setattr__(self, "evidence_hash", hashlib.sha256(raw.encode("utf-8")).hexdigest())
 
     def create_unresolved_asset_event(self) -> UnresolvedAssetEvent | None:
         """
@@ -274,8 +265,8 @@ class Incident:
         if not isinstance(self.incident_id, UUID):
             raise DomainError(f"incident_id deve ser um UUID válido, recebido: {type(self.incident_id)}")
 
-        _validate_utc_datetime(self.created_at, "created_at")
-        _validate_utc_datetime(self.updated_at, "updated_at")
+        validate_utc_datetime(self.created_at, "created_at")
+        validate_utc_datetime(self.updated_at, "updated_at")
 
     def transition_to(
         self,

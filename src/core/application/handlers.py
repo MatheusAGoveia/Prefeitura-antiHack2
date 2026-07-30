@@ -5,7 +5,6 @@ GovSec Shield — Command Handlers
 
 import re
 from datetime import datetime, timezone
-from typing import Any
 from uuid import UUID
 
 from src.core.application.commands import (
@@ -21,21 +20,19 @@ from src.core.application.dto import (
     SecurityEventResponseDTO,
     TenantResponseDTO,
 )
-from src.core.application.interfaces import IEventPublisher
+from src.core.application.interfaces import IEventPublisher, SecurityEventUnitOfWork
 from src.core.domain.entities import AlertAcknowledgement, AuditLog, Tenant, TenantStatus
 from src.core.domain.events import (
     AlertAcknowledgedEvent,
     LogIngestedEvent,
-    SecurityEventReceivedEvent,
     TenantCreatedEvent,
 )
 from src.core.domain.exceptions import DomainError
 from src.core.domain.incidents import SecurityEvent, SecurityEventSeverity
+from src.core.domain.outbox import OutboxEvent
 from src.core.domain.repositories import (
     AlertAcknowledgementRepository,
-    AssetRepository,
     LogRepository,
-    SecurityEventRepository,
     TenantRepository,
 )
 
@@ -219,28 +216,17 @@ class AcknowledgeAlertHandler:
 
 class IngestSecurityEventHandler:
     """
-    Handler CQRS para ingestão assíncrona, idempotente e auditável de SecurityEvent (M3.1).
-    Fluxo Transacional:
-    1. Validar e normalizar entradas (tenant_id UUID, severidade sem fallback silencioso, strings não vazias, payload dict).
-    2. Resolver Asset por (tenant_id, service_name, environment).
-    3. Construir SecurityEvent com validação de domínio.
-    4. Persistir SecurityEvent e AuditLogs relacionados na MESMA transação.
-    5. Confirmar transação (commit).
-    6. Publicar SecurityEventReceivedEvent SOMENTE após o sucesso do commit.
+    Handler CQRS para ingestão assíncrona, idempotente, auditável e transacional de SecurityEvent (M3.1).
+    Fluxo Transacional com Transactional Outbox Pattern:
+    1. Validar e normalizar entradas (tenant_id UUID, severidade sem fallback silencioso, occurred_at UTC obrigatório, payload dict).
+    2. Utilizar obrigatoriamente a abstração tipada SecurityEventUnitOfWork.
+    3. Resolver Asset por (tenant_id, service_name, environment).
+    4. Construir SecurityEvent com validação estrita de domínio.
+    5. Persistir SecurityEvent, AuditLogs e mensagem de Outbox na MESMA transação atomicamente.
+    6. Executar commit na transação. O despacho para o broker é realizado assincronamente pelo OutboxDispatcher.
     """
 
-    def __init__(
-        self,
-        asset_repo: AssetRepository,
-        security_event_repo: SecurityEventRepository,
-        event_publisher: IEventPublisher,
-        log_repo: LogRepository | None = None,
-        uow: Any = None,
-    ):
-        self.asset_repo = asset_repo
-        self.security_event_repo = security_event_repo
-        self.event_publisher = event_publisher
-        self.log_repo = log_repo
+    def __init__(self, uow: SecurityEventUnitOfWork) -> None:
         self.uow = uow
 
     async def handle(self, command: IngestSecurityEventCommand) -> SecurityEventResponseDTO:
@@ -289,70 +275,79 @@ class IngestSecurityEventHandler:
         else:
             raise DomainError(f"Severidade de segurança inválida: '{raw_severity}'")
 
-        # Conversão de timestamps
+        # Conversão e validação estrita de occurred_at (OBRIGATÓRIO)
         occurred_at_raw = cmd_p.get("occurred_at")
+        if occurred_at_raw is None:
+            raise DomainError("occurred_at é obrigatório.")
+
         if isinstance(occurred_at_raw, str):
-            occurred_at = datetime.fromisoformat(occurred_at_raw)
+            try:
+                occurred_at = datetime.fromisoformat(occurred_at_raw)
+            except (ValueError, TypeError) as err:
+                raise DomainError(f"occurred_at com formato ISO-8601 inválido: '{occurred_at_raw}'") from err
         elif isinstance(occurred_at_raw, datetime):
             occurred_at = occurred_at_raw
         else:
-            occurred_at = datetime.now(timezone.utc)
+            raise DomainError(f"occurred_at inválido: '{occurred_at_raw}'")
 
+        # Conversão de received_at (opcional, padrão agora em UTC)
         received_at_raw = cmd_p.get("received_at")
-        if isinstance(received_at_raw, str):
-            received_at = datetime.fromisoformat(received_at_raw)
+        if received_at_raw is None:
+            received_at = datetime.now(timezone.utc)
+        elif isinstance(received_at_raw, str):
+            try:
+                received_at = datetime.fromisoformat(received_at_raw)
+            except (ValueError, TypeError) as err:
+                raise DomainError(f"received_at com formato ISO-8601 inválido: '{received_at_raw}'") from err
         elif isinstance(received_at_raw, datetime):
             received_at = received_at_raw
         else:
-            received_at = datetime.now(timezone.utc)
+            raise DomainError(f"received_at inválido: '{received_at_raw}'")
 
         service_name = cmd_p.get("service_name")
         environment = cmd_p.get("environment")
 
-        # 2. Resolução de Ativo por tenant_id, service_name e environment
-        resolved_asset = None
-        if service_name and environment:
-            resolved_asset = await self.asset_repo.resolve_active_asset(
+        async with self.uow:
+            # 2. Resolução de Ativo por tenant_id, service_name e environment
+            resolved_asset = None
+            if service_name and environment:
+                resolved_asset = await self.uow.assets.resolve_active_asset(
+                    tenant_id=tenant_id,
+                    service_name=service_name,
+                    environment=environment,
+                )
+
+            asset_id = resolved_asset.asset_id if resolved_asset else None
+            is_asset_resolved = resolved_asset is not None
+
+            # 3. Construção da Entidade de Domínio M3.0 (valida UTC e sanitiza payload)
+            event_domain = SecurityEvent(
                 tenant_id=tenant_id,
-                service_name=service_name,
-                environment=environment,
+                source=source,
+                event_type=event_type,
+                severity=severity_enum,
+                occurred_at=occurred_at,
+                received_at=received_at,
+                asset_id=asset_id,
+                payload=raw_payload,
+                idempotency_key=idempotency_key,
+                is_asset_resolved=is_asset_resolved,
             )
 
-        asset_id = resolved_asset.asset_id if resolved_asset else None
-        is_asset_resolved = resolved_asset is not None
-
-        # 3. Construção da Entidade de Domínio M3.0 (valida UTC e sanitiza payload)
-        event_domain = SecurityEvent(
-            tenant_id=tenant_id,
-            source=source,
-            event_type=event_type,
-            severity=severity_enum,
-            occurred_at=occurred_at,
-            received_at=received_at,
-            asset_id=asset_id,
-            payload=raw_payload,
-            idempotency_key=idempotency_key,
-            is_asset_resolved=is_asset_resolved,
-        )
-
-        # 4. Persistência transacional e auditorias na mesma transação
-        try:
-            saved_event, created = await self.security_event_repo.save(event_domain)
+            # 4. Persistência transacional atômica (SecurityEvent, AuditLog e Outbox na mesma transação)
+            saved_event, created = await self.uow.security_events.save(event_domain)
 
             if not created:
                 # Replay duplicado: auditoria de supressão na mesma transação
-                if self.log_repo:
-                    audit_suppressed = AuditLog(
-                        tenant_id=tenant_id,
-                        source="SecurityEventIngestion",
-                        raw_data=f"Duplicate event suppressed. IdempotencyKey={idempotency_key}, Source={source}",
-                    )
-                    await self.log_repo.save(audit_suppressed)
+                audit_suppressed = AuditLog(
+                    tenant_id=tenant_id,
+                    source="SecurityEventIngestion",
+                    raw_data=f"Duplicate event suppressed. IdempotencyKey={idempotency_key}, Source={source}",
+                )
+                await self.uow.logs.save(audit_suppressed)
+                await self.uow.commit()
 
-                if self.uow:
-                    await self.uow.commit()
-
-                # Replay duplicado NÃO publica evento no EventBus
+                # Replay duplicado NÃO gera mensagem no outbox
                 return SecurityEventResponseDTO(
                     event_id=saved_event.event_id,
                     tenant_id=saved_event.tenant_id,
@@ -371,47 +366,48 @@ class IngestSecurityEventHandler:
                 )
 
             # Evento novo: auditoria de persistência
-            if self.log_repo:
-                audit_persisted = AuditLog(
-                    tenant_id=tenant_id,
-                    source="SecurityEventIngestion",
-                    raw_data=f"SecurityEvent persisted. EventID={saved_event.event_id}, IdempotencyKey={idempotency_key}",
-                )
-                await self.log_repo.save(audit_persisted)
+            audit_persisted = AuditLog(
+                tenant_id=tenant_id,
+                source="SecurityEventIngestion",
+                raw_data=f"SecurityEvent persisted. EventID={saved_event.event_id}, IdempotencyKey={idempotency_key}",
+            )
+            await self.uow.logs.save(audit_persisted)
 
-                # Auditoria de UnresolvedAssetEvent ÚNICA VEZ apenas para evento novo sem ativo
-                if not is_asset_resolved:
-                    unresolved_event = saved_event.create_unresolved_asset_event()
-                    if unresolved_event:
-                        audit_unresolved = AuditLog(
-                            tenant_id=tenant_id,
-                            source="SecurityEventIngestion",
-                            raw_data=f"UnresolvedAssetEvent created for event_id={saved_event.event_id}, source={source}",
-                        )
-                        await self.log_repo.save(audit_unresolved)
+            # Auditoria de UnresolvedAssetEvent ÚNICA VEZ apenas para evento novo sem ativo
+            if not is_asset_resolved:
+                unresolved_event = saved_event.create_unresolved_asset_event()
+                if unresolved_event:
+                    audit_unresolved = AuditLog(
+                        tenant_id=tenant_id,
+                        source="SecurityEventIngestion",
+                        raw_data=f"UnresolvedAssetEvent created for event_id={saved_event.event_id}, source={source}",
+                    )
+                    await self.uow.logs.save(audit_unresolved)
 
-            # Confirmar a transação no banco antes da publicação
-            if self.uow:
-                await self.uow.commit()
+            # Gravação da mensagem de evento no Transactional Outbox na MESMA transação
+            outbox_payload = {
+                "tenant_id": str(saved_event.tenant_id),
+                "security_event_id": str(saved_event.event_id),
+                "source": saved_event.source,
+                "security_event_type": saved_event.event_type,
+                "severity": saved_event.severity.value
+                if hasattr(saved_event.severity, "value")
+                else str(saved_event.severity),
+                "is_asset_resolved": saved_event.is_asset_resolved,
+                "asset_id": str(saved_event.asset_id) if saved_event.asset_id else None,
+            }
+            outbox_entry = OutboxEvent(
+                tenant_id=saved_event.tenant_id,
+                aggregate_type="SecurityEvent",
+                aggregate_id=saved_event.event_id,
+                event_type="SecurityEventReceivedEvent",
+                payload=outbox_payload,
+                idempotency_key=f"outbox-{saved_event.tenant_id}-{saved_event.idempotency_key}",
+            )
+            await self.uow.outbox.save(outbox_entry)
 
-        except Exception:
-            if self.uow:
-                await self.uow.rollback()
-            raise
-
-        # 5. Publicação pós-commit confirmada no EventBus
-        evt_received = SecurityEventReceivedEvent(
-            tenant_id=saved_event.tenant_id,
-            security_event_id=saved_event.event_id,
-            source=saved_event.source,
-            security_event_type=saved_event.event_type,
-            severity=saved_event.severity.value
-            if hasattr(saved_event.severity, "value")
-            else str(saved_event.severity),
-            is_asset_resolved=saved_event.is_asset_resolved,
-            asset_id=saved_event.asset_id,
-        )
-        await self.event_publisher.publish(evt_received)
+            # Confirmar atomicamente a transação completa (Event + Audit + Outbox)
+            await self.uow.commit()
 
         return SecurityEventResponseDTO(
             event_id=saved_event.event_id,

@@ -1,8 +1,9 @@
 import asyncio
+import contextlib
 from logging.config import fileConfig
 
 from alembic import context
-from sqlalchemy import pool
+from sqlalchemy import create_engine, pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
@@ -10,10 +11,14 @@ from src.core.infrastructure.config import settings
 from src.core.infrastructure.db.models import Base
 
 config = context.config
-config.set_main_option("sqlalchemy.url", settings.GOVSEC_DB_URL)
+
+if not config.get_main_option("sqlalchemy.url"):
+    config.set_main_option("sqlalchemy.url", settings.GOVSEC_DB_URL)
 
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    with contextlib.suppress(Exception):
+        fileConfig(config.config_file_name, disable_existing_loggers=False)
+
 
 target_metadata = Base.metadata
 
@@ -48,7 +53,14 @@ async def run_async_migrations() -> None:
 
 
 def run_migrations_online() -> None:
-    asyncio.run(run_async_migrations())
+    url = config.get_main_option("sqlalchemy.url") or ""
+    if "sqlite" in url and "aiosqlite" not in url:
+        connectable = create_engine(url, poolclass=pool.NullPool)
+        with connectable.connect() as connection:
+            do_run_migrations(connection)
+        connectable.dispose()
+    else:
+        asyncio.run(run_async_migrations())
 
 
 if context.is_offline_mode():

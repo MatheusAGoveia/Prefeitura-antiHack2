@@ -1,18 +1,21 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
-from sqlalchemy import or_, select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.core.application.interfaces import SecurityEventUnitOfWork
 from src.core.domain.correlation import CorrelationRuleVersion
 from src.core.domain.entities import AlertAcknowledgement, AuditLog, Tenant, TenantStatus
 from src.core.domain.incidents import Asset, SecurityEvent, SecurityEventSeverity
+from src.core.domain.outbox import OutboxEvent
 from src.core.domain.repositories import (
     AlertAcknowledgementRepository,
     AssetRepository,
     CorrelationRuleVersionRepository,
     LogRepository,
+    OutboxRepository,
     SecurityEventRepository,
     TenantRepository,
 )
@@ -21,6 +24,7 @@ from src.core.infrastructure.db.models import (
     AssetModel,
     AuditLogModel,
     CorrelationRuleVersionModel,
+    OutboxEventModel,
     SecurityEventModel,
     TenantModel,
 )
@@ -738,3 +742,259 @@ class InMemoryCorrelationRuleVersionRepository(CorrelationRuleVersionRepository)
     ) -> list[CorrelationRuleVersion]:
         filtered = [rv for rv in self._rules.values() if rv.is_active]
         return filtered[skip : skip + limit]
+
+
+class PostgresOutboxRepository(OutboxRepository):
+    """
+    Repositório de Mensagens do Transactional Outbox em PostgreSQL.
+    """
+
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    def _to_entity(self, model: OutboxEventModel) -> OutboxEvent:
+        return OutboxEvent(
+            outbox_event_id=model.outbox_event_id,
+            tenant_id=model.tenant_id,
+            aggregate_type=model.aggregate_type,
+            aggregate_id=model.aggregate_id,
+            event_type=model.event_type,
+            payload=model.payload,
+            idempotency_key=model.idempotency_key,
+            status=model.status,
+            retry_count=model.retry_count,
+            next_retry_at=model.next_retry_at,
+            created_at=model.created_at,
+            published_at=model.published_at,
+            last_error=model.last_error,
+        )
+
+    async def save(self, outbox_event: OutboxEvent) -> OutboxEvent:
+        model = OutboxEventModel(
+            outbox_event_id=outbox_event.outbox_event_id,
+            tenant_id=outbox_event.tenant_id,
+            aggregate_type=outbox_event.aggregate_type,
+            aggregate_id=outbox_event.aggregate_id,
+            event_type=outbox_event.event_type,
+            payload=outbox_event.payload,
+            idempotency_key=outbox_event.idempotency_key,
+            status=outbox_event.status,
+            retry_count=outbox_event.retry_count,
+            next_retry_at=outbox_event.next_retry_at,
+            created_at=outbox_event.created_at,
+            published_at=outbox_event.published_at,
+            last_error=outbox_event.last_error,
+        )
+        self.session.add(model)
+        await self.session.flush()
+        return self._to_entity(model)
+
+    async def fetch_pending_and_claim(
+        self, limit: int = 100, lock_for_update: bool = True
+    ) -> list[OutboxEvent]:
+        now = datetime.now(timezone.utc)
+        stmt = (
+            select(OutboxEventModel)
+            .where(
+                or_(
+                    OutboxEventModel.status == "pending",
+                    and_(
+                        OutboxEventModel.status == "failed",
+                        OutboxEventModel.next_retry_at <= now,
+                    ),
+                )
+            )
+            .order_by(OutboxEventModel.created_at.asc())
+            .limit(limit)
+        )
+
+        if lock_for_update and self.session.bind and self.session.bind.dialect.name == "postgresql":
+            stmt = stmt.with_for_update(skip_locked=True)
+
+        result = await self.session.execute(stmt)
+        models = list(result.scalars().all())
+
+        claimed_entities: list[OutboxEvent] = []
+        for model in models:
+            model.status = "processing"
+            claimed_entities.append(self._to_entity(model))
+
+        await self.session.flush()
+        return claimed_entities
+
+    async def mark_published(self, outbox_event_id: UUID) -> None:
+        stmt = select(OutboxEventModel).where(OutboxEventModel.outbox_event_id == outbox_event_id)
+        res = await self.session.execute(stmt)
+        model = res.scalar_one_or_none()
+        if model:
+            model.status = "published"
+            model.published_at = datetime.now(timezone.utc)
+            await self.session.flush()
+
+    async def mark_failed(
+        self,
+        outbox_event_id: UUID,
+        error_message: str,
+        max_retries: int = 5,
+        backoff_seconds: int = 10,
+    ) -> None:
+        stmt = select(OutboxEventModel).where(OutboxEventModel.outbox_event_id == outbox_event_id)
+        res = await self.session.execute(stmt)
+        model = res.scalar_one_or_none()
+        if model:
+            model.retry_count += 1
+            sanitized_err = error_message[:1024]
+            model.last_error = sanitized_err
+            if model.retry_count >= max_retries:
+                model.status = "failed"
+                model.next_retry_at = None
+            else:
+                model.status = "failed"
+                delay = backoff_seconds * (2 ** (model.retry_count - 1))
+                model.next_retry_at = datetime.now(timezone.utc) + timedelta(seconds=delay)
+            await self.session.flush()
+
+
+class InMemoryOutboxRepository(OutboxRepository):
+    """
+    Repositório InMemory de Mensagens do Transactional Outbox para Testes.
+    """
+
+    def __init__(self) -> None:
+        self.events: dict[UUID, OutboxEvent] = {}
+
+    async def save(self, outbox_event: OutboxEvent) -> OutboxEvent:
+        self.events[outbox_event.outbox_event_id] = outbox_event
+        return outbox_event
+
+    async def fetch_pending_and_claim(
+        self, limit: int = 100, lock_for_update: bool = True
+    ) -> list[OutboxEvent]:
+        now = datetime.now(timezone.utc)
+        claimed: list[OutboxEvent] = []
+        for evt in list(self.events.values()):
+            if len(claimed) >= limit:
+                break
+            if evt.status == "pending" or (
+                evt.status == "failed" and evt.next_retry_at and evt.next_retry_at <= now
+            ):
+                updated_evt = OutboxEvent(
+                    outbox_event_id=evt.outbox_event_id,
+                    tenant_id=evt.tenant_id,
+                    aggregate_type=evt.aggregate_type,
+                    aggregate_id=evt.aggregate_id,
+                    event_type=evt.event_type,
+                    payload=evt.payload,
+                    idempotency_key=evt.idempotency_key,
+                    status="processing",
+                    retry_count=evt.retry_count,
+                    next_retry_at=evt.next_retry_at,
+                    created_at=evt.created_at,
+                    published_at=evt.published_at,
+                    last_error=evt.last_error,
+                )
+                self.events[evt.outbox_event_id] = updated_evt
+                claimed.append(updated_evt)
+        return claimed
+
+    async def mark_published(self, outbox_event_id: UUID) -> None:
+        if outbox_event_id in self.events:
+            evt = self.events[outbox_event_id]
+            updated = OutboxEvent(
+                outbox_event_id=evt.outbox_event_id,
+                tenant_id=evt.tenant_id,
+                aggregate_type=evt.aggregate_type,
+                aggregate_id=evt.aggregate_id,
+                event_type=evt.event_type,
+                payload=evt.payload,
+                idempotency_key=evt.idempotency_key,
+                status="published",
+                retry_count=evt.retry_count,
+                next_retry_at=evt.next_retry_at,
+                created_at=evt.created_at,
+                published_at=datetime.now(timezone.utc),
+                last_error=evt.last_error,
+            )
+            self.events[outbox_event_id] = updated
+
+    async def mark_failed(
+        self,
+        outbox_event_id: UUID,
+        error_message: str,
+        max_retries: int = 5,
+        backoff_seconds: int = 10,
+    ) -> None:
+        if outbox_event_id in self.events:
+            evt = self.events[outbox_event_id]
+            new_retries = evt.retry_count + 1
+            sanitized_err = error_message[:1024]
+            if new_retries >= max_retries:
+                next_retry = None
+            else:
+                delay = backoff_seconds * (2 ** (new_retries - 1))
+                next_retry = datetime.now(timezone.utc) + timedelta(seconds=delay)
+
+            updated = OutboxEvent(
+                outbox_event_id=evt.outbox_event_id,
+                tenant_id=evt.tenant_id,
+                aggregate_type=evt.aggregate_type,
+                aggregate_id=evt.aggregate_id,
+                event_type=evt.event_type,
+                payload=evt.payload,
+                idempotency_key=evt.idempotency_key,
+                status="failed",
+                retry_count=new_retries,
+                next_retry_at=next_retry,
+                created_at=evt.created_at,
+                published_at=evt.published_at,
+                last_error=sanitized_err,
+            )
+            self.events[outbox_event_id] = updated
+
+
+class InMemorySecurityEventUnitOfWork(SecurityEventUnitOfWork):
+    """
+    Unit of Work InMemory para testes da camada de aplicação e domínio.
+    """
+
+    def __init__(
+        self,
+        assets: AssetRepository | None = None,
+        security_events: SecurityEventRepository | None = None,
+        logs: LogRepository | None = None,
+        outbox: OutboxRepository | None = None,
+        tenants: TenantRepository | None = None,
+    ) -> None:
+        self._assets = assets or InMemoryAssetRepository()
+        self._security_events = security_events or InMemorySecurityEventRepository()
+        self._logs = logs or InMemoryLogRepository()
+        self._outbox = outbox or InMemoryOutboxRepository()
+        self._tenants = tenants or InMemoryTenantRepository()
+        self.committed = False
+        self.rolled_back = False
+
+    @property
+    def tenants(self) -> TenantRepository:
+        return self._tenants
+
+    @property
+    def assets(self) -> AssetRepository:
+        return self._assets
+
+    @property
+    def security_events(self) -> SecurityEventRepository:
+        return self._security_events
+
+    @property
+    def logs(self) -> LogRepository:
+        return self._logs
+
+    @property
+    def outbox(self) -> OutboxRepository:
+        return self._outbox
+
+    async def commit(self) -> None:
+        self.committed = True
+
+    async def rollback(self) -> None:
+        self.rolled_back = True

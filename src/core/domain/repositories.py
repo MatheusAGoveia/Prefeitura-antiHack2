@@ -9,6 +9,7 @@ from uuid import UUID
 from src.core.domain.correlation import CorrelationRuleVersion
 from src.core.domain.entities import AlertAcknowledgement, AuditLog, Tenant
 from src.core.domain.incidents import Asset, SecurityEvent
+from src.core.domain.outbox import OutboxEvent
 
 
 class TenantRepository(ABC):
@@ -189,4 +190,41 @@ class CorrelationRuleVersionRepository(ABC):
         self, skip: int = 0, limit: int = 100
     ) -> list[CorrelationRuleVersion]:
         """Lista versões de regras ativas."""
+        pass
+
+
+class OutboxRepository(ABC):
+    """
+    Interface de Repositório para Transactional Outbox (M3.1).
+    """
+
+    @abstractmethod
+    async def save(self, outbox_event: OutboxEvent) -> OutboxEvent:
+        """Persiste ou atualiza uma mensagem na outbox."""
+        pass
+
+    @abstractmethod
+    async def fetch_pending_and_claim(
+        self, limit: int = 100, lock_for_update: bool = True
+    ) -> list[OutboxEvent]:
+        """
+        Busca mensagens elegíveis ('pending' ou 'failed' com next_retry_at <= now)
+        e atualiza o status para 'processing' com garantia concorrencial.
+        """
+        pass
+
+    @abstractmethod
+    async def mark_published(self, outbox_event_id: UUID) -> None:
+        """Marca mensagem como 'published' e grava published_at."""
+        pass
+
+    @abstractmethod
+    async def mark_failed(
+        self,
+        outbox_event_id: UUID,
+        error_message: str,
+        max_retries: int = 5,
+        backoff_seconds: int = 10,
+    ) -> None:
+        """Marca falha, incrementa retries e registra mensagem de erro sanitizada."""
         pass

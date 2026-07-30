@@ -10,6 +10,7 @@ import argparse
 import asyncio
 import logging
 import sys
+from typing import Any
 from uuid import UUID
 
 from src.core.domain.entities import TenantStatus
@@ -22,69 +23,82 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger("seed_m3_assets")
 
 
-async def seed_dev_assets(tenant_id: UUID) -> None:
+async def seed_dev_assets(
+    tenant_id: UUID,
+    uow: Any = None,
+    env_override: str | None = None,
+) -> Asset:
+    current_env = env_override if env_override is not None else settings.GOVSEC_ENV
+
     # Trava de Segurança 1: Proibir execução fora dos ambientes autorizados (dev/test)
-    if settings.GOVSEC_ENV not in ("development", "dev", "test"):
+    if current_env not in ("development", "dev", "test"):
         raise RuntimeError(
-            f"Execução de seed cancelada (Fail-Closed): O ambiente atual é '{settings.GOVSEC_ENV}'. "
+            f"Execução de seed cancelada (Fail-Closed): O ambiente atual é '{current_env}'. "
             f"Scripts de seed local de dados são estritamente proibidos fora de 'development' e 'test'."
         )
 
     if not isinstance(tenant_id, UUID):
         raise ValueError(f"--tenant-id deve ser um UUID válido, recebido: {tenant_id}")
 
+    if uow is not None:
+        return await _execute_seed_with_uow(tenant_id, uow)
+
     async with AsyncSessionLocal() as session:
-        uow = UnitOfWork(session)
+        uow_impl = UnitOfWork(session)
+        return await _execute_seed_with_uow(tenant_id, uow_impl)
 
-        # Trava de Segurança 2: Validar que o tenant informado existe e está ATIVO no banco
-        tenant = await uow.tenants.get_by_id(tenant_id)
-        if not tenant:
-            raise ValueError(f"Tenant com ID '{tenant_id}' não foi localizado no banco de dados.")
 
-        tenant_status_val = (
-            tenant.status.value if hasattr(tenant.status, "value") else str(tenant.status)
-        )
-        if tenant_status_val != TenantStatus.ACTIVE.value:
-            raise ValueError(
-                f"Tenant '{tenant_id}' possui status '{tenant_status_val}'. "
-                f"Seed é permitido apenas para tenants ativos ({TenantStatus.ACTIVE.value})."
-            )
+async def _execute_seed_with_uow(tenant_id: UUID, uow: Any) -> Asset:
+    # Trava de Segurança 2: Validar que o tenant informado existe e está ATIVO no banco
+    tenant = await uow.tenants.get_by_id(tenant_id)
+    if not tenant:
+        raise ValueError(f"Tenant com ID '{tenant_id}' não foi localizado no banco de dados.")
 
-        logger.info(f"Iniciando seed de ativos M3.1 para o Tenant UUID ativo: {tenant_id}")
-
-        # Resolução de ativo existente para garantir idempotência
-        existing_asset = await uow.assets.resolve_active_asset(
-            tenant_id=tenant_id,
-            service_name="govsec-core-api",
-            environment="development",
+    tenant_status_val = (
+        tenant.status.value if hasattr(tenant.status, "value") else str(tenant.status)
+    )
+    if tenant_status_val != TenantStatus.ACTIVE.value:
+        raise ValueError(
+            f"Tenant '{tenant_id}' possui status '{tenant_status_val}'. "
+            f"Seed é permitido apenas para tenants ativos ({TenantStatus.ACTIVE.value})."
         )
 
-        if existing_asset:
-            logger.info(
-                f"[SEED REPEAT] Ativo 'govsec-core-api' (development) já cadastrado. "
-                f"AssetID={existing_asset.asset_id}"
-            )
-            return
+    logger.info(f"Iniciando seed de ativos M3.1 para o Tenant UUID ativo: {tenant_id}")
 
-        # Cadastrar novo ativo
-        new_asset = Asset(
-            tenant_id=tenant_id,
-            name="GovSec Core API",
-            asset_type="service",
-            service_name="govsec-core-api",
-            environment="development",
-            criticality="HIGH",
-            is_active=True,
-            hostname_or_ip="api.internal.local",
-        )
+    # Resolução de ativo ativo existente para garantir idempotência
+    existing_asset = await uow.assets.resolve_active_asset(
+        tenant_id=tenant_id,
+        service_name="govsec-core-api",
+        environment="development",
+    )
 
-        saved_asset = await uow.assets.save(new_asset)
-        await uow.commit()
-
+    if existing_asset:
         logger.info(
-            f"[SEED SUCCESS] Ativo 'govsec-core-api' cadastrado com sucesso. "
-            f"AssetID={saved_asset.asset_id}, TenantID={saved_asset.tenant_id}"
+            f"[SEED REPEAT] Ativo 'govsec-core-api' (development) já cadastrado e ativo. "
+            f"AssetID={existing_asset.asset_id}"
         )
+        return existing_asset
+
+    # Cadastrar novo ativo
+    new_asset = Asset(
+        tenant_id=tenant_id,
+        name="GovSec Core API",
+        asset_type="service",
+        service_name="govsec-core-api",
+        environment="development",
+        criticality="HIGH",
+        is_active=True,
+        hostname_or_ip="api.internal.local",
+    )
+
+    saved_asset = await uow.assets.save(new_asset)
+    await uow.commit()
+
+    logger.info(
+        f"[SEED SUCCESS] Ativo 'govsec-core-api' cadastrado com sucesso. "
+        f"AssetID={saved_asset.asset_id}, TenantID={saved_asset.tenant_id}"
+    )
+    return saved_asset
 
 
 def main() -> None:

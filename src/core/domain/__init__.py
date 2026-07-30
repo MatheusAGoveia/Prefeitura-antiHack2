@@ -32,14 +32,17 @@ from src.core.domain.incidents import (
     sanitize_payload,
 )
 from src.core.domain.m4_contracts import Engagement, ScopeTarget, SecurityJob, ToolAdapter
+from src.core.domain.outbox import OutboxEvent
 from src.core.domain.repositories import (
     AlertAcknowledgementRepository,
     AssetRepository,
     CorrelationRuleVersionRepository,
     LogRepository,
+    OutboxRepository,
     SecurityEventRepository,
     TenantRepository,
 )
+from src.core.domain.validation import validate_utc_datetime
 
 __all__ = [
     "AlertAcknowledgement",
@@ -65,6 +68,8 @@ __all__ = [
     "InvalidStatusTransitionError",
     "LogIngestedEvent",
     "LogRepository",
+    "OutboxEvent",
+    "OutboxRepository",
     "RedisRevocationUnavailableError",
     "ScopeTarget",
     "SecurityEvent",
@@ -79,4 +84,5 @@ __all__ = [
     "ToolAdapter",
     "UnresolvedAssetEvent",
     "sanitize_payload",
+    "validate_utc_datetime",
 ]

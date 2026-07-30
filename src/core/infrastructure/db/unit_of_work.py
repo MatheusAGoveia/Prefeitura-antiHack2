@@ -4,16 +4,18 @@ GovSec Shield — Infrastructure Unit of Work
 """
 
 from collections.abc import AsyncGenerator
-from typing import Any
+from typing import Self
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from src.core.application.interfaces import SecurityEventUnitOfWork
 from src.core.infrastructure.config import settings
 from src.core.infrastructure.db.repositories import (
     PostgresAlertAcknowledgementRepository,
     PostgresAssetRepository,
     PostgresCorrelationRuleVersionRepository,
     PostgresLogRepository,
+    PostgresOutboxRepository,
     PostgresSecurityEventRepository,
     PostgresTenantRepository,
 )
@@ -34,24 +36,58 @@ async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
             await session.close()
 
 
-class UnitOfWork:
+class UnitOfWork(SecurityEventUnitOfWork):
+    """
+    Implementação concreta de UnitOfWork utilizando SQLAlchemy Async.
+    Garante que todos os repositórios compartilhem a mesma AsyncSession.
+    """
+
     def __init__(self, session: AsyncSession):
         self.session = session
-        self.tenants = PostgresTenantRepository(session)
-        self.logs = PostgresLogRepository(session)
-        self.alert_acks = PostgresAlertAcknowledgementRepository(session)
-        self.assets = PostgresAssetRepository(session)
-        self.security_events = PostgresSecurityEventRepository(session)
-        self.rule_versions = PostgresCorrelationRuleVersionRepository(session)
+        self._tenants = PostgresTenantRepository(session)
+        self._logs = PostgresLogRepository(session)
+        self._alert_acks = PostgresAlertAcknowledgementRepository(session)
+        self._assets = PostgresAssetRepository(session)
+        self._security_events = PostgresSecurityEventRepository(session)
+        self._rule_versions = PostgresCorrelationRuleVersionRepository(session)
+        self._outbox = PostgresOutboxRepository(session)
 
-    async def __aenter__(self) -> "UnitOfWork":
+    @property
+    def tenants(self) -> PostgresTenantRepository:
+        return self._tenants
+
+    @property
+    def logs(self) -> PostgresLogRepository:
+        return self._logs
+
+    @property
+    def alert_acks(self) -> PostgresAlertAcknowledgementRepository:
+        return self._alert_acks
+
+    @property
+    def assets(self) -> PostgresAssetRepository:
+        return self._assets
+
+    @property
+    def security_events(self) -> PostgresSecurityEventRepository:
+        return self._security_events
+
+    @property
+    def rule_versions(self) -> PostgresCorrelationRuleVersionRepository:
+        return self._rule_versions
+
+    @property
+    def outbox(self) -> PostgresOutboxRepository:
+        return self._outbox
+
+    async def __aenter__(self) -> Self:
         return self
 
     async def __aexit__(
         self,
         exc_type: type[BaseException] | None,
         exc_val: BaseException | None,
-        exc_tb: Any,
+        exc_tb: object | None,
     ) -> None:
         if exc_type is not None:
             await self.rollback()
