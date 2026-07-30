@@ -19,12 +19,13 @@ from src.core.domain.incidents import SecurityEvent
 @dataclass(frozen=True)
 class CorrelationKey:
     """
-    Value Object representando a chave estável e determinística de correlação.
+    Value Object representando a chave estável, determinística e versionada de correlação.
     Garantia de que apenas um incidente estará aberto por (tenant_id, correlation_key).
     """
 
     tenant_id: UUID
     rule_id: str
+    rule_version: str
     asset_key: str
     category: str
     time_window: str
@@ -34,6 +35,8 @@ class CorrelationKey:
             raise DomainError(f"tenant_id deve ser um UUID válido, recebido: {type(self.tenant_id)}")
         if not self.rule_id or not self.rule_id.strip():
             raise DomainError("rule_id é obrigatório para CorrelationKey.")
+        if not self.rule_version or not self.rule_version.strip():
+            raise DomainError("rule_version é obrigatória para CorrelationKey.")
         if not self.asset_key or not self.asset_key.strip():
             raise DomainError("asset_key é obrigatório para CorrelationKey.")
         if not self.category or not self.category.strip():
@@ -43,7 +46,10 @@ class CorrelationKey:
 
     def to_canonical_string(self) -> str:
         """Retorna a representação textual determinística canônica."""
-        return f"{self.tenant_id}:{self.rule_id}:{self.asset_key}:{self.category}:{self.time_window}"
+        return (
+            f"{self.tenant_id}:{self.rule_id}:{self.rule_version}:"
+            f"{self.asset_key}:{self.category}:{self.time_window}"
+        )
 
     def to_hash(self) -> str:
         """Retorna o hash SHA-256 da chave de correlação."""

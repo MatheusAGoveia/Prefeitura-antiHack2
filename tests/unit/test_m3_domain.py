@@ -4,8 +4,10 @@ GovSec Shield — Unit Tests
 """
 
 import ast
+import inspect
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any, cast
 from uuid import UUID, uuid4
 
 import pytest
@@ -19,6 +21,7 @@ from src.core.domain.incidents import (
     InvalidStatusTransitionError,
     SecurityEvent,
     SecurityEventSeverity,
+    UnresolvedAssetEvent,
     sanitize_payload,
 )
 from src.core.domain.m4_contracts import Engagement, ScopeTarget, SecurityJob, ToolAdapter
@@ -27,27 +30,29 @@ from src.core.domain.m4_contracts import Engagement, ScopeTarget, SecurityJob, T
 def test_tenant_uuid_invariants_across_m3_entities() -> None:
     """Valida que tenant_id deve ser estritamente um UUID válido em todas as entidades M3."""
     tenant_id = uuid4()
-    str(tenant_id)
-    invalid_tenant_id = "tenant-slug-invalido"
+    invalid_tenant_id = cast(Any, "tenant-slug-invalido")
 
     # Asset
     asset = Asset(
         asset_id=uuid4(),
         tenant_id=tenant_id,
         name="Servidor Central",
-        hostname_or_ip="192.168.1.10",
         asset_type="SERVER",
+        service_name="api-gateway",
+        environment="production",
         criticality="HIGH",
+        hostname_or_ip="192.168.1.10",
     )
     assert asset.tenant_id == tenant_id
 
     with pytest.raises(DomainError):
         Asset(
             asset_id=uuid4(),
-            tenant_id=invalid_tenant_id,  # type: ignore[arg-type]
+            tenant_id=invalid_tenant_id,
             name="Servidor Central",
-            hostname_or_ip="192.168.1.10",
             asset_type="SERVER",
+            service_name="api-gateway",
+            environment="production",
             criticality="HIGH",
         )
 
@@ -70,7 +75,7 @@ def test_tenant_uuid_invariants_across_m3_entities() -> None:
     with pytest.raises(DomainError):
         SecurityEvent(
             event_id=uuid4(),
-            tenant_id=invalid_tenant_id,  # type: ignore[arg-type]
+            tenant_id=invalid_tenant_id,
             source="Alertmanager",
             event_type="ServiceDown",
             severity=SecurityEventSeverity.HIGH,
@@ -86,6 +91,7 @@ def test_tenant_uuid_invariants_across_m3_entities() -> None:
     ckey = CorrelationKey(
         tenant_id=tenant_id,
         rule_id="R-001",
+        rule_version="1.0.0",
         asset_key=str(asset.asset_id),
         category="availability",
         time_window="5m",
@@ -94,20 +100,86 @@ def test_tenant_uuid_invariants_across_m3_entities() -> None:
 
     with pytest.raises(DomainError):
         CorrelationKey(
-            tenant_id=invalid_tenant_id,  # type: ignore[arg-type]
+            tenant_id=invalid_tenant_id,
             rule_id="R-001",
+            rule_version="1.0.0",
             asset_key="asset-1",
             category="availability",
             time_window="5m",
         )
 
 
-def test_deterministic_correlation_key_generation() -> None:
-    """Valida que CorrelationKey é determinística e produz strings/hashes reproduzíveis."""
+def test_asset_contract_and_validations() -> None:
+    """Valida o contrato mínimo de Asset e suas regras de validação de domínio."""
+    tenant_id = uuid4()
+    asset_id = uuid4()
+    now = datetime.now(timezone.utc)
+
+    asset = Asset(
+        asset_id=asset_id,
+        tenant_id=tenant_id,
+        name="DB-Cluster-01",
+        asset_type="DATABASE",
+        service_name="postgres-primary",
+        environment="staging",
+        criticality="CRITICAL",
+        is_active=True,
+        created_at=now,
+        updated_at=now,
+        hostname_or_ip="db.internal.local",
+    )
+
+    assert asset.asset_id == asset_id
+    assert asset.tenant_id == tenant_id
+    assert asset.service_name == "postgres-primary"
+    assert asset.environment == "staging"
+    assert asset.is_active is True
+    assert asset.hostname_or_ip == "db.internal.local"
+
+    # Validação de campos obrigatórios vazios
+    with pytest.raises(DomainError):
+        Asset(
+            asset_id=asset_id,
+            tenant_id=tenant_id,
+            name="",
+            asset_type="DATABASE",
+            service_name="service",
+            environment="prod",
+            criticality="HIGH",
+        )
+
+    with pytest.raises(DomainError):
+        Asset(
+            asset_id=asset_id,
+            tenant_id=tenant_id,
+            name="DB",
+            asset_type="DATABASE",
+            service_name="   ",
+            environment="prod",
+            criticality="HIGH",
+        )
+
+    # Validação de is_active booleano
+    with pytest.raises(DomainError):
+        Asset(
+            asset_id=asset_id,
+            tenant_id=tenant_id,
+            name="DB",
+            asset_type="DATABASE",
+            service_name="service",
+            environment="prod",
+            criticality="HIGH",
+            is_active=cast(Any, "true"),
+        )
+
+
+def test_versioned_deterministic_correlation_key_generation() -> None:
+    """Valida que CorrelationKey inclui rule_version e produz chaves/hashes determinísticos e sensíveis à versão."""
     tenant_id = UUID("11111111-1111-1111-1111-111111111111")
     ckey1 = CorrelationKey(
         tenant_id=tenant_id,
         rule_id="RULE-SERVICE-DOWN",
+        rule_version="1.0.0",
         asset_key="srv-01",
         category="availability",
         time_window="2026-07-30T09:00:00Z_5m",
@@ -115,18 +187,90 @@ def test_deterministic_correlation_key_generation() -> None:
     ckey2 = CorrelationKey(
         tenant_id=tenant_id,
         rule_id="RULE-SERVICE-DOWN",
+        rule_version="1.0.0",
+        asset_key="srv-01",
+        category="availability",
+        time_window="2026-07-30T09:00:00Z_5m",
+    )
+    ckey_diff_version = CorrelationKey(
+        tenant_id=tenant_id,
+        rule_id="RULE-SERVICE-DOWN",
+        rule_version="1.1.0",
         asset_key="srv-01",
         category="availability",
         time_window="2026-07-30T09:00:00Z_5m",
     )
 
-    expected_canonical = (
-        "11111111-1111-1111-1111-111111111111:RULE-SERVICE-DOWN:srv-01:availability:2026-07-30T09:00:00Z_5m"
+    expected_canonical_v1 = (
+        "11111111-1111-1111-1111-111111111111:RULE-SERVICE-DOWN:1.0.0:srv-01:availability:2026-07-30T09:00:00Z_5m"
     )
-    assert ckey1.to_canonical_string() == expected_canonical
-    assert ckey2.to_canonical_string() == expected_canonical
+    expected_canonical_v2 = (
+        "11111111-1111-1111-1111-111111111111:RULE-SERVICE-DOWN:1.1.0:srv-01:availability:2026-07-30T09:00:00Z_5m"
+    )
+
+    assert ckey1.to_canonical_string() == expected_canonical_v1
+    assert ckey2.to_canonical_string() == expected_canonical_v1
     assert ckey1.to_hash() == ckey2.to_hash()
-    assert str(ckey1) == expected_canonical
+
+    # Mudança de versão deve gerar string e hash diferentes
+    assert ckey_diff_version.to_canonical_string() == expected_canonical_v2
+    assert ckey1.to_hash() != ckey_diff_version.to_hash()
+
+    # Versão vazia é rejeitada
+    with pytest.raises(DomainError):
+        CorrelationKey(
+            tenant_id=tenant_id,
+            rule_id="RULE-SERVICE-DOWN",
+            rule_version="",
+            asset_key="srv-01",
+            category="availability",
+            time_window="5m",
+        )
+
+
+def test_unresolved_asset_event_and_security_event_integration() -> None:
+    """Valida que eventos sem ativo (asset_id is None) geram UnresolvedAssetEvent e is_asset_resolved=False."""
+    tenant_id = uuid4()
+    event_id = uuid4()
+
+    event_no_asset = SecurityEvent(
+        event_id=event_id,
+        tenant_id=tenant_id,
+        source="Alertmanager",
+        event_type="UnknownHostAlert",
+        severity=SecurityEventSeverity.HIGH,
+        occurred_at=datetime.now(timezone.utc),
+        received_at=datetime.now(timezone.utc),
+        asset_id=None,
+        payload={"ip": "10.0.0.99"},
+        idempotency_key="idemp-no-asset",
+        is_asset_resolved=True,  # Deve ser forçado para False
+    )
+
+    assert event_no_asset.asset_id is None
+    assert event_no_asset.is_asset_resolved is False
+
+    unresolved_evt = event_no_asset.create_unresolved_asset_event()
+    assert unresolved_evt is not None
+    assert isinstance(unresolved_evt, UnresolvedAssetEvent)
+    assert unresolved_evt.tenant_id == tenant_id
+    assert unresolved_evt.security_event_id == event_id
+
+    # Evento com ativo resolvido não gera UnresolvedAssetEvent
+    event_with_asset = SecurityEvent(
+        event_id=uuid4(),
+        tenant_id=tenant_id,
+        source="Alertmanager",
+        event_type="ServiceDown",
+        severity=SecurityEventSeverity.LOW,
+        occurred_at=datetime.now(timezone.utc),
+        received_at=datetime.now(timezone.utc),
+        asset_id=uuid4(),
+        payload={},
+        idempotency_key="idemp-with-asset",
+        is_asset_resolved=True,
+    )
+    assert event_with_asset.create_unresolved_asset_event() is None
 
 
 def test_incident_status_valid_transitions() -> None:
@@ -186,12 +330,10 @@ def test_incident_status_invalid_transitions_raised() -> None:
         correlation_key="ckey-test",
     )
 
-    # Tenta saltar de OPEN direto para RESOLVED (Inválido)
     with pytest.raises(InvalidStatusTransitionError) as exc_info:
         incident.transition_to(IncidentStatus.RESOLVED, actor_id="analyst", reason="Tentando resolver direto")
     assert "Transição inválida" in str(exc_info.value)
 
-    # Tenta avançar de CLOSED (Estado Terminal)
     incident.status = IncidentStatus.CLOSED
     with pytest.raises(InvalidStatusTransitionError):
         incident.transition_to(IncidentStatus.OPEN, actor_id="analyst", reason="Reabrindo")
@@ -219,27 +361,6 @@ def test_incident_transition_requires_actor_and_reason() -> None:
     assert "reason" in str(exc2.value)
 
 
-def test_security_event_unresolved_asset_flag() -> None:
-    """Valida que eventos sem ativo associado (asset_id is None) são marcados como não resolvidos."""
-    tenant_id = uuid4()
-    event_no_asset = SecurityEvent(
-        event_id=uuid4(),
-        tenant_id=tenant_id,
-        source="Alertmanager",
-        event_type="UnknownHostAlert",
-        severity=SecurityEventSeverity.HIGH,
-        occurred_at=datetime.now(timezone.utc),
-        received_at=datetime.now(timezone.utc),
-        asset_id=None,
-        payload={"ip": "10.0.0.99"},
-        idempotency_key="idemp-no-asset",
-        is_asset_resolved=True,  # Deve ser sobrescrito para False devido a asset_id is None
-    )
-
-    assert event_no_asset.asset_id is None
-    assert event_no_asset.is_asset_resolved is False
-
-
 def test_security_event_payload_redaction() -> None:
     """Valida a sanitização/redaction de segredos e credenciais em payloads de eventos."""
     raw_payload = {
@@ -262,7 +383,10 @@ def test_security_event_payload_redaction() -> None:
 
 
 def test_m4_preparatory_contracts_stubs_without_execution() -> None:
-    """Valida a instanciação dos contratos estáticos preparatórios de M4."""
+    """
+    Valida que contratos preparatórios de M4 são abstratos e não contêm
+    implementação concreta, execução, subprocessos ou ferramentas.
+    """
     tenant_id = uuid4()
 
     target = ScopeTarget(
@@ -289,22 +413,9 @@ def test_m4_preparatory_contracts_stubs_without_execution() -> None:
     )
     assert job.status == "PENDING"
 
-    # ToolAdapter é ABC pura
-    class DummyToolAdapter(ToolAdapter):
-        @property
-        def adapter_id(self) -> str:
-            return "dummy-adapter"
-
-        @property
-        def tool_name(self) -> str:
-            return "dummy-tool"
-
-        def execute_job(self, job: SecurityJob) -> dict[str, str]:
-            return {"status": "not_implemented_m3"}
-
-    adapter = DummyToolAdapter()
-    assert adapter.adapter_id == "dummy-adapter"
-    assert adapter.execute_job(job)["status"] == "not_implemented_m3"
+    # ToolAdapter é uma classe abstrata pura sem implementações
+    assert inspect.isabstract(ToolAdapter)
+    assert ToolAdapter.__abstractmethods__ == {"adapter_id", "tool_name", "execute_job"}
 
 
 def test_domain_layer_has_zero_infrastructure_imports() -> None:

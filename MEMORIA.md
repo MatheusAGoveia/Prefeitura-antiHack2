@@ -95,4 +95,3 @@
   - Criar rotas FastAPI REST para gestão de incidentes.
   - Integrar Webhook do Alertmanager.
   - Desenvolver Event Inbox e Incident Center no dashboard Next.js.
-

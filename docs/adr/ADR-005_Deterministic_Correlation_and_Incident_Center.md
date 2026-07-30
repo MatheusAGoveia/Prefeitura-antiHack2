@@ -17,19 +17,20 @@ Além disso, a arquitetura do GovSec Shield exige estrita aderência aos princí
 
 ### 1. Limite entre M3 e M4
 - **Capability M3 (Central de Incidentes & Correlação Determinística):** Responsável por recepcionar `SecurityEvent` normalizados, aplicar regras determinísticas tipadas, agrupar eventos em `Incident` via `CorrelationKey`, persistir o ciclo de vida transacional no PostgreSQL, expor APIs REST/GraphQL para o dashboard Next.js e registrar toda ação humana auditável.
-- **Capability M4 (Orquestração & Automação de Segurança):** Responsável por execução de jobs de segurança (`SecurityJob`), adaptadores de ferramentas (`ToolAdapter`), gestão de engajamentos (`Engagement`) e escopo de alvos (`ScopeTarget`). M3 apenas define os contratos preparatórios estáticos para M4, sem executar scanners, ferramentas ofensivas, filas de execução ou rotinas ativas.
+- **Capability M4 (Orquestração & Automação de Segurança):** Responsável por definição estática de contratos para jobs de segurança (`SecurityJob`), adaptadores de ferramentas (`ToolAdapter`), gestão de engajamentos (`Engagement`) e escopo de alvos (`ScopeTarget`). M3 apenas define os contratos preparatórios abstratos para M4, sem qualquer implementação concreta, execução de scanners, ferramentas ofensivas, filas de execução ou rotinas ativas.
 
 ### 2. Identidade Canônica de Tenant
 - `tenant_id` (UUID v4) é a **única** identidade canônica e obrigatória em todas as entidades, Value Objects, eventos de domínio e comandos de M3.
 - Operações sem `tenant_id` válido são terminantemente rejeitadas pelo Security Kernel.
 
-### 3. Tratamento de Ativos Não Resolvidos (`unresolved_asset`)
+### 3. Tratamento de Ativos Não Resolvidos (`UnresolvedAssetEvent`)
 - Quando um `SecurityEvent` é ingerido sem associação direta com um `Asset` cadastrado no domínio do tenant (`asset_id is None`), o sistema **nunca** gera um incidente crítico automático.
-- Em vez disso, o evento gera o evento de domínio `unresolved_asset` e é direcionado para a fila de tratamento manual (*Event Inbox*).
+- Em vez disso, o evento fica inequivocamente marcado como não resolvido (`is_asset_resolved = False`) e gera o contrato de evento de domínio `UnresolvedAssetEvent` (`event_id`, `tenant_id`, `security_event_id`, `occurred_at_utc`), que será persistido e direcionado para a fila de tratamento manual (*Event Inbox*) na M3.1. Em M3.0, este contrato não realiza publicação em brokers de mensageria nem cria incidentes.
 
-### 4. Chave de Correlação Determinística (`CorrelationKey`)
-- A correlação de eventos utiliza uma chave determinística estável e imutável formada por:
-  $$\text{CorrelationKey} = f(\text{tenant\_id}, \text{rule\_id}, \text{asset\_key}, \text{category}, \text{time\_window})$$
+### 4. Chave de Correlação Determinística e Versionada (`CorrelationKey`)
+- A correlação de eventos utiliza uma chave determinística, estável, versionada e imutável formada por:
+  $$\text{CorrelationKey} = f(\text{tenant\_id}, \text{rule\_id}, \text{rule\_version}, \text{asset\_key}, \text{category}, \text{time\_window})$$
+- A inclusão explícita de `rule_version` garante que alterações ou evolução no algoritmo da regra gerem chaves e hashes SHA-256 distintos, prevenindo agrupamento indevido entre versões de regras.
 - **Invariante de Unicidade Operacional:** Deve existir no futuro **apenas um único incidente aberto** (`IncidentStatus.OPEN`, `ACKNOWLEDGED`, `INVESTIGATING` ou `CONTAINED`) por tupla `(tenant_id, correlation_key)`. Novos eventos com a mesma chave dentro da janela de correlação são anexados ao incidente existente como `IncidentEvidence`.
 
 ### 5. Persistência Transacional Antes da Publicação Assíncrona
@@ -65,5 +66,5 @@ $$\text{OPEN} \longrightarrow \text{ACKNOWLEDGED} \longrightarrow \text{INVESTIG
 - Endpoints REST FastAPI para listagem, criação e alteração de estado de incidentes.
 - Webhook de ingestão de alertas do Alertmanager para a API FastAPI.
 - Telas de Incident Center e Event Inbox no dashboard Next.js.
-- Regras concretas de correlação (ex: `ServiceDownRule`, `BruteForcePatternRule`).
+- Regras adicionais de correlação determinísticas.
 - Métricas Prometheus para incidentes abertos/resolvidos.

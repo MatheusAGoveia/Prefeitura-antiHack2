@@ -27,6 +27,7 @@ from src.core.domain.incidents import (
     InvalidStatusTransitionError,
     SecurityEvent,
     SecurityEventSeverity,
+    UnresolvedAssetEvent,
     sanitize_payload,
 )
 from src.core.domain.m4_contracts import Engagement, ScopeTarget, SecurityJob, ToolAdapter
@@ -67,5 +68,6 @@ __all__ = [
     "TenantRepository",
     "TenantStatus",
     "ToolAdapter",
+    "UnresolvedAssetEvent",
     "sanitize_payload",
 ]

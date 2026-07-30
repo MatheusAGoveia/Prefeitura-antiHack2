@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import StrEnum
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from src.core.domain.exceptions import DomainError
 
@@ -97,17 +97,63 @@ class Asset:
     asset_id: UUID
     tenant_id: UUID
     name: str
-    hostname_or_ip: str
     asset_type: str
+    service_name: str
+    environment: str
     criticality: str
+    is_active: bool = True
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    hostname_or_ip: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.tenant_id, UUID):
             raise DomainError(f"tenant_id deve ser um UUID válido, recebido: {type(self.tenant_id)}")
         if not isinstance(self.asset_id, UUID):
             raise DomainError(f"asset_id deve ser um UUID válido, recebido: {type(self.asset_id)}")
+        if not self.name or not self.name.strip():
+            raise DomainError("name é obrigatório e não pode ser vazio.")
+        if not self.asset_type or not self.asset_type.strip():
+            raise DomainError("asset_type é obrigatório e não pode ser vazio.")
+        if not self.service_name or not self.service_name.strip():
+            raise DomainError("service_name é obrigatório e não pode ser vazio.")
+        if not self.environment or not self.environment.strip():
+            raise DomainError("environment é obrigatório e não pode ser vazio.")
+        if not self.criticality or not self.criticality.strip():
+            raise DomainError("criticality é obrigatório e não pode ser vazio.")
+        if not isinstance(self.is_active, bool):
+            raise DomainError(f"is_active deve ser um booleano, recebido: {type(self.is_active)}")
+        if not isinstance(self.created_at, datetime):
+            raise DomainError(f"created_at deve ser datetime UTC, recebido: {type(self.created_at)}")
+        if not isinstance(self.updated_at, datetime):
+            raise DomainError(f"updated_at deve ser datetime UTC, recebido: {type(self.updated_at)}")
+
+
+@dataclass(frozen=True)
+class UnresolvedAssetEvent:
+    """
+    Contrato puro de domínio para evento de ativo não resolvido (Event Inbox em M3.1).
+    Não publica em brokers nem cria incidentes em M3.0.
+    """
+
+    event_id: UUID
+    tenant_id: UUID
+    security_event_id: UUID
+    occurred_at_utc: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.tenant_id, UUID):
+            raise DomainError(f"tenant_id deve ser um UUID válido, recebido: {type(self.tenant_id)}")
+        if not isinstance(self.event_id, UUID):
+            raise DomainError(f"event_id deve ser um UUID válido, recebido: {type(self.event_id)}")
+        if not isinstance(self.security_event_id, UUID):
+            raise DomainError(
+                f"security_event_id deve ser um UUID válido, recebido: {type(self.security_event_id)}"
+            )
+        if not isinstance(self.occurred_at_utc, datetime):
+            raise DomainError(
+                f"occurred_at_utc deve ser datetime UTC, recebido: {type(self.occurred_at_utc)}"
+            )
 
 
 @dataclass
@@ -144,6 +190,20 @@ class SecurityEvent:
         if not self.evidence_hash:
             raw = f"{self.event_id}:{self.tenant_id}:{self.source}:{self.event_type}:{self.idempotency_key}"
             self.evidence_hash = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+    def create_unresolved_asset_event(self) -> UnresolvedAssetEvent | None:
+        """
+        Cria o contrato de evento de ativo não resolvido se o ativo for None.
+        Formalização de contrato sem efeitos colaterais de infraestrutura ou automação.
+        """
+        if self.asset_id is not None or self.is_asset_resolved:
+            return None
+        return UnresolvedAssetEvent(
+            event_id=uuid4(),
+            tenant_id=self.tenant_id,
+            security_event_id=self.event_id,
+            occurred_at_utc=self.occurred_at,
+        )
 
 
 @dataclass(frozen=True)
