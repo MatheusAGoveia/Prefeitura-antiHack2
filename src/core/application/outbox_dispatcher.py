@@ -34,14 +34,14 @@ class OutboxDispatcher:
         self.max_retries = max_retries
         self.backoff_seconds = backoff_seconds
 
-    async def process_outbox_batch(self, batch_size: int = 100) -> int:
+    async def process_outbox_batch(self, batch_size: int = 100, lease_seconds: int = 30) -> int:
         """
         Busca e processa um lote de mensagens elegíveis no outbox.
         Retorna o número de mensagens processadas com sucesso.
         """
         async with self.uow_factory() as uow:
             claimed_events = await uow.outbox.fetch_pending_and_claim(
-                limit=batch_size, lock_for_update=True
+                limit=batch_size, lease_seconds=lease_seconds, lock_for_update=True
             )
             if not claimed_events:
                 return 0

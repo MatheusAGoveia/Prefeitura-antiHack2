@@ -19,7 +19,7 @@ from src.core.domain.validation import validate_utc_datetime
 class OutboxEvent:
     """
     Entidade de Domínio representando uma mensagem de evento pendente de publicação no broker.
-    Garante o padrão Transactional Outbox.
+    Garante o padrão Transactional Outbox com resiliência contra mensagens presas via lease.
     """
 
     tenant_id: UUID
@@ -34,6 +34,8 @@ class OutboxEvent:
     next_retry_at: datetime | None = None
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     published_at: datetime | None = None
+    claimed_at: datetime | None = None
+    claim_expires_at: datetime | None = None
     last_error: str | None = None
 
     def __post_init__(self) -> None:
@@ -54,7 +56,7 @@ class OutboxEvent:
         if not self.idempotency_key or not self.idempotency_key.strip():
             raise DomainError("idempotency_key é obrigatória.")
         if not isinstance(self.payload, dict):
-            raise DomainError(f"payload deve ser um dict, recebido: {type(self.payload).__name__}")
+            raise DomainError(f"payload deve ser um dict, recebido: '{type(self.payload).__name__}'")
         if self.status not in ("pending", "processing", "published", "failed"):
             raise DomainError(f"status inválido para OutboxEvent: '{self.status}'")
 
@@ -63,3 +65,7 @@ class OutboxEvent:
             validate_utc_datetime(self.next_retry_at, "next_retry_at")
         if self.published_at is not None:
             validate_utc_datetime(self.published_at, "published_at")
+        if self.claimed_at is not None:
+            validate_utc_datetime(self.claimed_at, "claimed_at")
+        if self.claim_expires_at is not None:
+            validate_utc_datetime(self.claim_expires_at, "claim_expires_at")

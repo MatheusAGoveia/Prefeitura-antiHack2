@@ -790,9 +790,10 @@ class PostgresOutboxRepository(OutboxRepository):
         return self._to_entity(model)
 
     async def fetch_pending_and_claim(
-        self, limit: int = 100, lock_for_update: bool = True
+        self, limit: int = 100, lease_seconds: int = 30, lock_for_update: bool = True
     ) -> list[OutboxEvent]:
         now = datetime.now(timezone.utc)
+        expires_at = now + timedelta(seconds=lease_seconds)
         stmt = (
             select(OutboxEventModel)
             .where(
@@ -801,6 +802,10 @@ class PostgresOutboxRepository(OutboxRepository):
                     and_(
                         OutboxEventModel.status == "failed",
                         OutboxEventModel.next_retry_at <= now,
+                    ),
+                    and_(
+                        OutboxEventModel.status == "processing",
+                        OutboxEventModel.claim_expires_at <= now,
                     ),
                 )
             )
@@ -816,7 +821,11 @@ class PostgresOutboxRepository(OutboxRepository):
 
         claimed_entities: list[OutboxEvent] = []
         for model in models:
+            if model.status == "processing":
+                model.retry_count += 1
             model.status = "processing"
+            model.claimed_at = now
+            model.claim_expires_at = expires_at
             claimed_entities.append(self._to_entity(model))
 
         await self.session.flush()
@@ -829,6 +838,7 @@ class PostgresOutboxRepository(OutboxRepository):
         if model:
             model.status = "published"
             model.published_at = datetime.now(timezone.utc)
+            model.claim_expires_at = None
             await self.session.flush()
 
     async def mark_failed(
@@ -845,6 +855,7 @@ class PostgresOutboxRepository(OutboxRepository):
             model.retry_count += 1
             sanitized_err = error_message[:1024]
             model.last_error = sanitized_err
+            model.claim_expires_at = None
             if model.retry_count >= max_retries:
                 model.status = "failed"
                 model.next_retry_at = None
@@ -868,16 +879,24 @@ class InMemoryOutboxRepository(OutboxRepository):
         return outbox_event
 
     async def fetch_pending_and_claim(
-        self, limit: int = 100, lock_for_update: bool = True
+        self, limit: int = 100, lease_seconds: int = 30, lock_for_update: bool = True
     ) -> list[OutboxEvent]:
         now = datetime.now(timezone.utc)
+        expires_at = now + timedelta(seconds=lease_seconds)
         claimed: list[OutboxEvent] = []
         for evt in list(self.events.values()):
             if len(claimed) >= limit:
                 break
-            if evt.status == "pending" or (
+            is_pending = evt.status == "pending"
+            is_failed_eligible = (
                 evt.status == "failed" and evt.next_retry_at and evt.next_retry_at <= now
-            ):
+            )
+            is_lease_expired = (
+                evt.status == "processing" and evt.claim_expires_at and evt.claim_expires_at <= now
+            )
+
+            if is_pending or is_failed_eligible or is_lease_expired:
+                new_retries = evt.retry_count + 1 if is_lease_expired else evt.retry_count
                 updated_evt = OutboxEvent(
                     outbox_event_id=evt.outbox_event_id,
                     tenant_id=evt.tenant_id,
@@ -887,8 +906,10 @@ class InMemoryOutboxRepository(OutboxRepository):
                     payload=evt.payload,
                     idempotency_key=evt.idempotency_key,
                     status="processing",
-                    retry_count=evt.retry_count,
+                    retry_count=new_retries,
                     next_retry_at=evt.next_retry_at,
+                    claimed_at=now,
+                    claim_expires_at=expires_at,
                     created_at=evt.created_at,
                     published_at=evt.published_at,
                     last_error=evt.last_error,
@@ -911,6 +932,8 @@ class InMemoryOutboxRepository(OutboxRepository):
                 status="published",
                 retry_count=evt.retry_count,
                 next_retry_at=evt.next_retry_at,
+                claimed_at=evt.claimed_at,
+                claim_expires_at=None,
                 created_at=evt.created_at,
                 published_at=datetime.now(timezone.utc),
                 last_error=evt.last_error,
@@ -945,6 +968,8 @@ class InMemoryOutboxRepository(OutboxRepository):
                 status="failed",
                 retry_count=new_retries,
                 next_retry_at=next_retry,
+                claimed_at=evt.claimed_at,
+                claim_expires_at=None,
                 created_at=evt.created_at,
                 published_at=evt.published_at,
                 last_error=sanitized_err,

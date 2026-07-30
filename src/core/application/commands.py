@@ -128,7 +128,7 @@ class IngestSecurityEventCommand(Command):
             else str(occurred_at),
             "received_at": received_at.isoformat()
             if isinstance(received_at, datetime)
-            else str(received_at),
+            else None,
             "idempotency_key": idempotency_key,
             "payload": payload,
             "service_name": service_name,

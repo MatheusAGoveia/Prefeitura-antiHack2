@@ -88,11 +88,12 @@
 | **2026-07-30** | Validação Estrita de Timestamps UTC | Implementado o helper `_validate_utc_datetime` no domínio M3.0, exigindo estritamente datetimes timezone-aware no fuso UTC (+00:00) em todos os contratos (Asset, SecurityEvent, UnresolvedAssetEvent, Incident, IncidentEvidence, IncidentStatusChange). |
 | **2026-07-30** | Sprint M3.1: Persistência Assíncrona & Idempotência PostgreSQL | Implementadas as migrações Alembic `0005_create_m3_assets_security_events`, modelos SQLAlchemy, repositórios PostgreSQL assíncronos, handler CQRS `IngestSecurityEventHandler` com idempotência atômica, publicação `SecurityEventReceivedEvent` pós-commit e script de seed local. |
 | **2026-07-30** | Correção de Bloqueadores M3.1 (Integridade & Transação) | Corregida a FK composta `(tenant_id, asset_id)` para impedir violação cross-tenant, sincronizados modelos ORM e Alembic 0005, ajustada a publicação no broker estritamente pós-commit, eliminada duplicidade de auditoria em replays, adicionada validação estrita de severidade sem fallback silencioso, estendida validação UTC a `CorrelationRuleVersion` e exigida validação de `--tenant-id` ativo no seed. |
+| **2026-07-30** | Correção Final M3.1 (Outbox Lease, CLI Worker & Asset Model) | Implementado o padrão Transactional Outbox com lease (`claimed_at`, `claim_expires_at`) para mensagens presas em `processing`, ajustado `received_at` opcional no comando sem converter para `"None"`, criado o worker CLI `outbox_worker.py` com relatórios de saúde, ajustado `AssetModel` e a migração 0006 com índice único parcial em `is_active = true` (sem supressão de exceções) e adicionados testes de migração 0005->0006 real. |
 
 ---
 
 ## 📌 Registros Recentes & Próximos Passos
-- **Sprint M3.1 Concluída & Auditada:** Todas as correções de bloqueadores de M3.1 foram integradas. A suíte conta com 141/141 testes aprovados, ruff 0 erros, mypy 0 erros em 111 arquivos, bandit 0 avisos de segurança, compileall 0 erros e git diff --check OK.
+- **Sprint M3.1 Totalmente Concluída & Auditada:** Todas as correções da Sprint M3.1 foram validadas com 145/145 testes aprovados, ruff 0 erros, mypy 0 erros em 117 arquivos, bandit 0 avisos de segurança, compileall 0 erros e 8 serviços do Docker Compose dev healthy.
 - **Próximos Passos (Sprint M3.2):**
   - Criar migrações Alembic e modelos SQLAlchemy para `incidents`, `incident_evidence`, `incident_event_links` e histórico de status.
   - Implementar motor de correlação determinístico e criação de incidentes.

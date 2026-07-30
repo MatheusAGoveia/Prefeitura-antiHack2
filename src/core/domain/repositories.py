@@ -205,11 +205,12 @@ class OutboxRepository(ABC):
 
     @abstractmethod
     async def fetch_pending_and_claim(
-        self, limit: int = 100, lock_for_update: bool = True
+        self, limit: int = 100, lease_seconds: int = 30, lock_for_update: bool = True
     ) -> list[OutboxEvent]:
         """
-        Busca mensagens elegíveis ('pending' ou 'failed' com next_retry_at <= now)
-        e atualiza o status para 'processing' com garantia concorrencial.
+        Busca mensagens elegíveis ('pending', 'failed' com next_retry_at <= now,
+        ou 'processing' com claim_expires_at <= now) e atualiza o status para 'processing'
+        com o lease estipulado e garantia concorrencial.
         """
         pass
 

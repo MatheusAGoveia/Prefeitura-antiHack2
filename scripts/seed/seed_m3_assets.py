@@ -10,7 +10,7 @@ import argparse
 import asyncio
 import logging
 import sys
-from typing import Any
+from typing import Any, Protocol
 from uuid import UUID
 
 from src.core.domain.entities import TenantStatus
@@ -23,9 +23,21 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger("seed_m3_assets")
 
 
+class SeedUnitOfWorkProtocol(Protocol):
+    """Protocol tipado para injeção de UnitOfWork na rotina de seed."""
+
+    @property
+    def tenants(self) -> Any: ...
+
+    @property
+    def assets(self) -> Any: ...
+
+    async def commit(self) -> None: ...
+
+
 async def seed_dev_assets(
     tenant_id: UUID,
-    uow: Any = None,
+    uow: SeedUnitOfWorkProtocol | None = None,
     env_override: str | None = None,
 ) -> Asset:
     current_env = env_override if env_override is not None else settings.GOVSEC_ENV
@@ -48,7 +60,7 @@ async def seed_dev_assets(
         return await _execute_seed_with_uow(tenant_id, uow_impl)
 
 
-async def _execute_seed_with_uow(tenant_id: UUID, uow: Any) -> Asset:
+async def _execute_seed_with_uow(tenant_id: UUID, uow: SeedUnitOfWorkProtocol) -> Asset:
     # Trava de Segurança 2: Validar que o tenant informado existe e está ATIVO no banco
     tenant = await uow.tenants.get_by_id(tenant_id)
     if not tenant:

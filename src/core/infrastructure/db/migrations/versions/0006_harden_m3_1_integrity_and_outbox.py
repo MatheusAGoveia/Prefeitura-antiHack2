@@ -6,7 +6,6 @@ Create Date: 2026-07-30 11:00:00.000000
 
 """
 
-import contextlib
 from collections.abc import Sequence
 from typing import Any
 
@@ -25,6 +24,7 @@ def upgrade(op_ctx: Operations | None = None) -> None:
     op_impl = op_ctx if op_ctx is not None else op
     bind = op_ctx.get_bind() if op_ctx is not None else op.get_bind()
     dialect_name = bind.dialect.name
+    inspector = sa.inspect(bind)
 
     uuid_type: sa.types.TypeEngine[Any] = (
         postgresql.UUID(as_uuid=True) if dialect_name == "postgresql" else sa.String(length=36)
@@ -34,9 +34,13 @@ def upgrade(op_ctx: Operations | None = None) -> None:
     )
 
     # 1. Ajustar índice único de ativos para considerar apenas ativos ativos (is_active = true)
-    with op_impl.batch_alter_table("assets") as batch_op, contextlib.suppress(Exception):
-        batch_op.drop_constraint("uq_assets_tenant_service_env", type_="unique")
+    # Inspeção explícita de constraints sem supressão de exceção
+    existing_uqs = inspector.get_unique_constraints("assets")
+    has_old_uq = any(uq["name"] == "uq_assets_tenant_service_env" for uq in existing_uqs)
 
+    if has_old_uq:
+        with op_impl.batch_alter_table("assets") as batch_op:
+            batch_op.drop_constraint("uq_assets_tenant_service_env", type_="unique")
 
     if dialect_name == "postgresql":
         op_impl.create_index(
@@ -55,7 +59,7 @@ def upgrade(op_ctx: Operations | None = None) -> None:
             sqlite_where=sa.text("is_active = 1"),
         )
 
-    # 2. Criar tabela outbox_events
+    # 2. Criar tabela outbox_events com lease para resiliência de mensagens presas em processing
     op_impl.create_table(
         "outbox_events",
         sa.Column("outbox_event_id", uuid_type, primary_key=True, nullable=False),
@@ -72,6 +76,8 @@ def upgrade(op_ctx: Operations | None = None) -> None:
             "retry_count", sa.Integer(), nullable=False, server_default=sa.text("0")
         ),
         sa.Column("next_retry_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("claimed_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("claim_expires_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("published_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("last_error", sa.String(length=1024), nullable=True),
@@ -82,6 +88,9 @@ def upgrade(op_ctx: Operations | None = None) -> None:
     op_impl.create_index("idx_outbox_tenant", "outbox_events", ["tenant_id"])
     op_impl.create_index(
         "idx_outbox_status_next_retry", "outbox_events", ["status", "next_retry_at"]
+    )
+    op_impl.create_index(
+        "idx_outbox_status_claim_expires", "outbox_events", ["status", "claim_expires_at"]
     )
 
 

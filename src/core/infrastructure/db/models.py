@@ -16,6 +16,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy import Enum as SQLEnum
 from sqlalchemy.dialects.postgresql import JSONB
@@ -89,8 +90,13 @@ class AssetModel(Base):
     __tablename__ = "assets"
     __table_args__ = (
         UniqueConstraint("tenant_id", "asset_id", name="uq_assets_tenant_asset"),
-        UniqueConstraint(
-            "tenant_id", "service_name", "environment", name="uq_assets_tenant_service_env"
+        Index(
+            "idx_assets_active_service_env_unique",
+            "tenant_id",
+            "service_name",
+            "environment",
+            unique=True,
+            postgresql_where=text("is_active = true"),
         ),
         Index("idx_assets_tenant_id", "tenant_id"),
         Index("idx_assets_tenant_service_env", "tenant_id", "service_name", "environment"),
@@ -181,6 +187,7 @@ class OutboxEventModel(Base):
     __table_args__ = (
         UniqueConstraint("tenant_id", "idempotency_key", name="uq_outbox_events_idempotency"),
         Index("idx_outbox_status_next_retry", "status", "next_retry_at"),
+        Index("idx_outbox_status_claim_expires", "status", "claim_expires_at"),
         Index("idx_outbox_tenant", "tenant_id"),
     )
 
@@ -198,6 +205,10 @@ class OutboxEventModel(Base):
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
     retry_count: Mapped[int] = mapped_column(default=0, nullable=False)
     next_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    claim_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
     )

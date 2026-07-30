@@ -98,6 +98,97 @@ def test_alembic_migration_chain_upgrade_downgrade_real() -> None:
         sync_engine.dispose()
 
 
+def test_alembic_step_by_step_0005_to_0006_real() -> None:
+    """
+    Valida a migração passo-a-passo da revisão 0005 para a 0006 em SQLite real descartável:
+    1. Upgrade até 0005.
+    2. Upgrade para 0006.
+    3. Confirma remoção da restrição antiga, criação do índice parcial e aceite de 2 ativos inativos.
+    4. Confirma rejeição de 2 ativos ativos com mesmo (tenant_id, service_name, environment).
+    5. Confirma FK composta e colunas de lease em outbox_events.
+    """
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        tmp_db_path = Path(tmp_dir) / "test_migration_0005_0006.db"
+        sqlite_url = f"sqlite:///{tmp_db_path.as_posix()}"
+
+        alembic_cfg = Config("alembic.ini")
+        alembic_cfg.set_main_option("sqlalchemy.url", sqlite_url)
+
+        # 1. Executa upgrade até 0005
+        command.upgrade(alembic_cfg, "0005_create_m3_assets_security_events")
+
+        # 2. Executa upgrade para 0006
+        command.upgrade(alembic_cfg, "0006_harden_m3_1_integrity_and_outbox")
+
+        # 3. Inspeciona o schema e comportamento no banco
+        from sqlalchemy import create_engine, text
+        sync_engine = create_engine(sqlite_url, echo=False)
+
+        with sync_engine.connect() as conn:
+            inspector = inspect(conn)
+
+            # Restrição antiga removida
+            asset_uqs = inspector.get_unique_constraints("assets")
+            has_old_uq = any(uq["name"] == "uq_assets_tenant_service_env" for uq in asset_uqs)
+            assert not has_old_uq, "A restrição antiga uq_assets_tenant_service_env não deveria existir na 0006"
+
+            # Índice parcial e colunas do outbox
+            asset_indexes = inspector.get_indexes("assets")
+            has_partial_idx = any(idx["name"] == "idx_assets_active_service_env_unique" for idx in asset_indexes)
+            assert has_partial_idx, "Índice parcial idx_assets_active_service_env_unique não foi encontrado"
+
+            outbox_cols = [c["name"] for c in inspector.get_columns("outbox_events")]
+            assert "claimed_at" in outbox_cols
+            assert "claim_expires_at" in outbox_cols
+
+            # Teste comportamental real no banco: 2 ativos INATIVOS equivalentes SÃO ACEITOS
+            tenant_id = str(uuid4())
+            asset_1 = str(uuid4())
+            asset_2 = str(uuid4())
+            now_iso = datetime.now(timezone.utc).isoformat()
+
+            conn.execute(
+                text(
+                    "INSERT INTO assets (asset_id, tenant_id, name, asset_type, service_name, environment, criticality, is_active, created_at, updated_at) "
+                    "VALUES (:a1, :tid, 'Asset 1', 'service', 'core-api', 'dev', 'HIGH', 0, :now, :now)"
+                ),
+                {"a1": asset_1, "tid": tenant_id, "now": now_iso},
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO assets (asset_id, tenant_id, name, asset_type, service_name, environment, criticality, is_active, created_at, updated_at) "
+                    "VALUES (:a2, :tid, 'Asset 2', 'service', 'core-api', 'dev', 'HIGH', 0, :now, :now)"
+                ),
+                {"a2": asset_2, "tid": tenant_id, "now": now_iso},
+            )
+            conn.commit()
+
+            # Teste comportamental real no banco: 2 ativos ATIVOS equivalentes SÃO REJEITADOS
+            asset_active_1 = str(uuid4())
+            asset_active_2 = str(uuid4())
+            conn.execute(
+                text(
+                    "INSERT INTO assets (asset_id, tenant_id, name, asset_type, service_name, environment, criticality, is_active, created_at, updated_at) "
+                    "VALUES (:a1, :tid, 'Active 1', 'service', 'core-api', 'dev', 'HIGH', 1, :now, :now)"
+                ),
+                {"a1": asset_active_1, "tid": tenant_id, "now": now_iso},
+            )
+            conn.commit()
+
+            with pytest.raises(Exception) as exc_info:
+                conn.execute(
+                    text(
+                        "INSERT INTO assets (asset_id, tenant_id, name, asset_type, service_name, environment, criticality, is_active, created_at, updated_at) "
+                        "VALUES (:a2, :tid, 'Active 2', 'service', 'core-api', 'dev', 'HIGH', 1, :now, :now)"
+                    ),
+                    {"a2": asset_active_2, "tid": tenant_id, "now": now_iso},
+                )
+                conn.commit()
+            assert "UNIQUE constraint failed" in str(exc_info.value) or "unique" in str(exc_info.value).lower()
+
+        sync_engine.dispose()
+
+
 @pytest.mark.asyncio
 async def test_cross_tenant_asset_event_constraint_violation(async_session: AsyncSession) -> None:
     """Valida que o banco de dados rejeita via FK composta associar SecurityEvent do Tenant A a Ativo do Tenant B."""

@@ -307,8 +307,8 @@ async def test_seed_script_direct_evaluations() -> None:
         security_events=uow.security_events,
         logs=uow.logs,
         outbox=uow.outbox,
+        tenants=tenant_repo,
     )
-    uow_mock._tenants = tenant_repo  # type: ignore[attr-defined]
 
     # Ambiente production recusado
     with pytest.raises(RuntimeError) as exc_prod:
@@ -391,3 +391,115 @@ def test_domain_layer_m3_1_zero_infrastructure_imports() -> None:
             elif isinstance(node, ast.ImportFrom) and node.module:
                 pkg = node.module.split(".")[0]
                 assert pkg not in forbidden, f"Arquivo '{file_path.name}' importou '{pkg}'"
+
+
+@pytest.mark.asyncio
+async def test_command_received_at_optional_defaults_to_utc_now() -> None:
+    """Valida que quando received_at é omitido no comando, não vira string 'None' e assume UTC now."""
+    uow = InMemorySecurityEventUnitOfWork()
+    handler = IngestSecurityEventHandler(uow=uow)
+    tenant_id = uuid4()
+    now = datetime.now(timezone.utc)
+
+    asset = Asset(
+        tenant_id=tenant_id,
+        name="GovSec Core API",
+        asset_type="service",
+        service_name="govsec-core-api",
+        environment="development",
+        criticality="HIGH",
+    )
+    await uow.assets.save(asset)
+
+    cmd = IngestSecurityEventCommand(
+        tenant_id=tenant_id,
+        source="Alertmanager",
+        event_type="DiskFull",
+        severity="HIGH",
+        occurred_at=now,
+        idempotency_key="idemp-no-recv-001",
+        received_at=None,
+        payload={"disk": "/dev/sda1"},
+        service_name="govsec-core-api",
+        environment="development",
+    )
+
+    assert cmd.payload["received_at"] is None
+
+    res = await handler.handle(cmd)
+    assert res.is_duplicate_suppressed is False
+    saved = await uow.security_events.list(tenant_id=tenant_id)
+    assert len(saved) == 1
+    assert saved[0].received_at is not None
+    assert saved[0].received_at.tzinfo == timezone.utc
+
+
+@pytest.mark.asyncio
+async def test_outbox_lease_recovery_stuck_processing_message() -> None:
+    """Valida a recuperação de mensagens presas em 'processing' com lease expirado."""
+    from datetime import timedelta
+
+    uow = InMemorySecurityEventUnitOfWork()
+    tenant_id = uuid4()
+    now = datetime.now(timezone.utc)
+
+    stuck_event = OutboxEvent(
+        tenant_id=tenant_id,
+        aggregate_type="SecurityEvent",
+        aggregate_id=uuid4(),
+        event_type="SecurityEventReceivedEvent",
+        payload={"tenant_id": str(tenant_id)},
+        idempotency_key="idemp-stuck-001",
+        status="processing",
+        retry_count=1,
+        claimed_at=now - timedelta(seconds=120),
+        claim_expires_at=now - timedelta(seconds=60),
+    )
+    await uow.outbox.save(stuck_event)
+
+    claimed = await uow.outbox.fetch_pending_and_claim(limit=10, lease_seconds=30)
+    assert len(claimed) == 1
+    reclaimed = claimed[0]
+    assert reclaimed.outbox_event_id == stuck_event.outbox_event_id
+    assert reclaimed.status == "processing"
+    assert reclaimed.retry_count == 2
+    assert reclaimed.claim_expires_at is not None
+    assert reclaimed.claim_expires_at > now
+
+
+@pytest.mark.asyncio
+async def test_outbox_worker_cli_execution() -> None:
+    """Valida a execução do worker CLI do OutboxDispatcher e relatórios de saúde."""
+    from src.core.infrastructure.cli.outbox_worker import (
+        inspect_outbox_health,
+        run_outbox_worker_loop,
+    )
+
+    uow = InMemorySecurityEventUnitOfWork()
+    publisher = MockEventPublisher()
+
+    health = await inspect_outbox_health(uow)
+    assert health["pending_count"] == 0
+
+    evt = OutboxEvent(
+        tenant_id=uuid4(),
+        aggregate_type="SecurityEvent",
+        aggregate_id=uuid4(),
+        event_type="SecurityEventReceivedEvent",
+        payload={
+            "tenant_id": str(uuid4()),
+            "source": "Alertmanager",
+            "event_type": "Test",
+            "occurred_at": datetime.now(timezone.utc).isoformat(),
+        },
+        idempotency_key="k-cli-001",
+    )
+    await uow.outbox.save(evt)
+
+    processed = await run_outbox_worker_loop(
+        uow_factory=lambda: uow,
+        event_publisher=publisher,
+        run_once=True,
+    )
+    # Retorna 0 quando Kafka não está configurado
+    assert processed == 0
