@@ -6,8 +6,8 @@
 
 ## 📌 Estado Atual do Projeto
 - **Repositório:** `MatheusAGoveia/Prefeitura-antiHack2`
-- **Branch Ativa:** `feature/core-platform`
-- **Data da Última Atualização:** 2026-07-29T18:44:00Z
+- **Branch Ativa:** `feature/m3-correlation-incidents`
+- **Data da Última Atualização:** 2026-07-30T12:26:00Z
 - **Responsável:** IA Assistente (Arquiteto Principal GovSec Shield)
 
 ---
@@ -84,9 +84,15 @@
 | **2026-07-29** | Limpeza de Imports de Revogação JWT | Removidos os imports não utilizados `InMemoryTokenRevocationStore` e `RedisTokenRevocationStore` de `src/core/infrastructure/security/jwt.py`, mantendo `BaseTokenRevocationStore` e `get_token_revocation_store`. |
 | **2026-07-29** | Validação Integrada M2 Aprovada | Execução estrita do pipeline de 5 passos com 116 testes aprovados, ruff 0 erros, mypy 0 erros, bandit 0 avisos, compileall 0 erros, 8 serviços dev healthy, fire drill OK e preflights de produção OK. |
 | **2026-07-29** | Remoção de Ofuscação & Isolação de Estado em Testes | Removidas todas as concatenações artificiais de strings. Adicionada fixture pytest `in_memory_revocation_store` com `try/finally` para isolar e restaurar o estado global de `JWTHandler._revocation_store`. |
+| **2026-07-30** | ADR-005: Fundação do M3 | Aprovação da ADR 005 congelando a arquitetura de correlação determinística, isolamento por tenant_id UUID, persistência transacional antes do Kafka e contratos puros de domínio. |
 
 ---
 
 ## 📌 Registros Recentes & Próximos Passos
-- **Limpeza de Código & Isolação de Testes:** Todas as strings ofuscadas foram substituídas por literais explícitos. O estado global do manipulador JWT é devidamente isolado e restaurado via fixture do pytest.
-- **Validação Integrada M2:** Todos os 5 passos da validação foram executados na ordem estrita e aprovados com 100% de sucesso (116/116 testes passando).
+- **Sprint M3.0 Concluída:** Criada a branch `feature/m3-correlation-incidents`, elaborada a ADR 005, definidos os contratos de domínio de incidentes/correlação e adicionados 9 testes de unidade/arquitetura. Suite de testes aprovada com 125/125 testes passando, ruff 0 erros, mypy 0 erros, bandit 0 avisos de média/alta severidade e compileall 0 erros.
+- **Próximos Passos (Sprint M3.1+):**
+  - Implementar migrações Alembic e modelos SQLAlchemy para `incidents`, `security_events` e `incident_evidences`.
+  - Criar rotas FastAPI REST para gestão de incidentes.
+  - Integrar Webhook do Alertmanager.
+  - Desenvolver Event Inbox e Incident Center no dashboard Next.js.
+
