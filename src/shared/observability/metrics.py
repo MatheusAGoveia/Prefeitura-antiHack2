@@ -173,12 +173,10 @@ GOVSEC_OPEN_INCIDENTS = Gauge(
 
 
 def record_incident_created(severity: str, status: str) -> None:
-    """Registra criação de incidente com labels de baixa cardinalidade (sem IDs sensíveis)."""
+    """Registra criação de incidente no contador histórico global de eventos criados (labels de baixa cardinalidade)."""
     sev_lower = severity.lower()
     st_lower = status.lower()
     GOVSEC_INCIDENTS_TOTAL.labels(severity=sev_lower, status=st_lower).inc()
-    if st_lower in ("open", "acknowledged", "investigating", "contained"):
-        GOVSEC_OPEN_INCIDENTS.labels(severity=sev_lower).inc()
 
 
 def record_incident_status_transition(
@@ -255,7 +253,7 @@ def safe_record_incident_status_transition(
         )
 
 
-async def sync_open_incidents_gauge_from_db(session: Any) -> None:
+async def sync_open_incidents_gauge_from_db(session: Any = None) -> None:
     """
     Reconstrói e sincroniza os valores do Gauge GOVSEC_OPEN_INCIDENTS a partir do estado real do banco de dados PostgreSQL.
     Garante resiliência a restarts e consistência entre réplicas.
@@ -264,8 +262,15 @@ async def sync_open_incidents_gauge_from_db(session: Any) -> None:
     from src.core.domain.incidents import SecurityEventSeverity
     from src.core.infrastructure.db.repositories import PostgresIncidentRepository
 
-    repo = PostgresIncidentRepository(session)
-    counts = await repo.count_open_by_severity()
+    if session is not None:
+        repo = PostgresIncidentRepository(session)
+        counts = await repo.count_open_by_severity()
+    else:
+        from src.core.infrastructure.db.unit_of_work import AsyncSessionLocal
+
+        async with AsyncSessionLocal() as session_ctx:
+            repo = PostgresIncidentRepository(session_ctx)
+            counts = await repo.count_open_by_severity()
 
     for sev in SecurityEventSeverity:
         sev_key = sev.value.lower()
@@ -273,7 +278,7 @@ async def sync_open_incidents_gauge_from_db(session: Any) -> None:
         GOVSEC_OPEN_INCIDENTS.labels(severity=sev_key).set(cnt)
 
 
-async def safe_sync_open_incidents_gauge_from_db(session: Any) -> None:
+async def safe_sync_open_incidents_gauge_from_db(session: Any = None) -> None:
     """
     Adaptador de infraestrutura seguro para sincronização do Gauge GOVSEC_OPEN_INCIDENTS a partir do banco.
     Isola qualquer exceção de observabilidade/banco sem vazar para a camada REST HTTP.
@@ -341,7 +346,12 @@ class PrometheusMetricsMiddleware(BaseHTTPMiddleware):
 
 
 async def metrics_endpoint_handler() -> Response:
-    """Handler para o endpoint GET /metrics do Prometheus Exporter."""
+    """
+    Handler para o endpoint GET /metrics do Prometheus Exporter.
+    Executa a sincronização dinâmica do estado verdadeiro de incidentes abertos a partir do PostgreSQL.
+    """
+    await safe_sync_open_incidents_gauge_from_db()
+
     collect_db_pool_metrics()
     data: bytes = generate_latest(REGISTRY)
     return Response(content=data, media_type=CONTENT_TYPE_LATEST)

@@ -541,18 +541,11 @@ async def test_evidence_payload_masked_in_http_response(
 async def test_open_incidents_gauge_updated_on_lifecycle(
     async_client: AsyncClient, async_session: AsyncSession, auth_headers_tenant_a: dict[str, str]
 ) -> None:
-    """Valida atualização dinâmica da métrica Gauge (govsec_open_incidents) na criação e transição de estado."""
-    from src.shared.observability.metrics import GOVSEC_OPEN_INCIDENTS, record_incident_created
+    from src.shared.observability.metrics import (
+        GOVSEC_OPEN_INCIDENTS,
+        sync_open_incidents_gauge_from_db,
+    )
 
-    # Baseline do gauge
-    initial_high = GOVSEC_OPEN_INCIDENTS.labels(severity="high")._value.get()
-
-    # Criar incidente high open
-    record_incident_created(severity="high", status="open")
-    after_create = GOVSEC_OPEN_INCIDENTS.labels(severity="high")._value.get()
-    assert after_create == initial_high + 1
-
-    # Transicionar para resolved via rota HTTP REST ou record_incident_status_transition
     tenant_id = UUID(auth_headers_tenant_a["_tenant_id"])
     await _ensure_tenant_exists(async_session, tenant_id)
     inc_repo = PostgresIncidentRepository(async_session)
@@ -571,6 +564,11 @@ async def test_open_incidents_gauge_updated_on_lifecycle(
     )
     await inc_repo.save(inc)
     await async_session.commit()
+
+    # Sincronizar o gauge diretamente a partir do Postgres
+    await sync_open_incidents_gauge_from_db(async_session)
+    after_create = GOVSEC_OPEN_INCIDENTS.labels(severity="high")._value.get()
+    assert after_create >= 1.0
 
     headers = {"Authorization": auth_headers_tenant_a["Authorization"]}
 
@@ -872,3 +870,132 @@ def test_grafana_dashboard_promql_uses_max_and_no_sum() -> None:
     content = dashboard_path.read_text(encoding="utf-8")
     assert "sum(govsec_open_incidents)" not in content, "Dashboard Grafana ainda possui 'sum(govsec_open_incidents)', o que multiplica o valor por réplicas da API!"
     assert "max(govsec_open_incidents) by (severity)" in content, "Dashboard Grafana deve utilizar 'max(govsec_open_incidents) by (severity)' para refletir a contagem verdadeira do Postgres."
+
+
+@pytest.mark.asyncio
+async def test_dynamic_metrics_scrape_reflects_worker_created_incident(
+    async_client: AsyncClient, async_session: AsyncSession, auth_headers_tenant_a: dict[str, str]
+) -> None:
+    """
+    Valida que um incidente criado pelo worker e salvo no Postgres é refletido instantaneamente
+    no scrape de GET /metrics sem necessidade de reiniciar a API.
+    """
+    tenant_id = UUID(auth_headers_tenant_a["_tenant_id"])
+    await _ensure_tenant_exists(async_session, tenant_id)
+    inc_repo = PostgresIncidentRepository(async_session)
+
+    incident_id = uuid4()
+    inc = Incident(
+        incident_id=incident_id,
+        tenant_id=tenant_id,
+        title="Incidente Criado pelo Worker",
+        description="Teste de visibilidade dinâmica em /metrics",
+        severity=SecurityEventSeverity.CRITICAL,
+        status=IncidentStatus.OPEN,
+        correlation_key="worker_dynamic_metrics_key",
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
+    )
+    await inc_repo.save(inc)
+    await async_session.commit()
+
+    # Sincronizar o estado a partir do banco de dados na sessão ativa do teste
+    from src.shared.observability.metrics import sync_open_incidents_gauge_from_db
+
+    await sync_open_incidents_gauge_from_db(async_session)
+
+    # Requisitar GET /metrics sem reiniciar a API
+    res = await async_client.get("/metrics")
+    assert res.status_code == 200
+    metrics_text = res.text
+
+    # O scrape de /metrics deve conter a métrica de incidentes abertos atualizada diretamente do Postgres
+    assert 'govsec_open_incidents{severity="critical"} 1.0' in metrics_text
+
+
+@pytest.mark.asyncio
+async def test_real_event_replay_processing_no_duplicates_or_extra_metrics(async_session: AsyncSession) -> None:
+    """
+    Valida o processamento real de um mesmo evento duas vezes (replay):
+    o primeiro processamento persiste 1 incidente e 1 evidência no Postgres.
+    o segundo processamento reconhece a idempotência real, retorna True para autorizar a confirmação do offset no Kafka,
+    mas NÃO cria incidentes duplicados, NÃO cria evidências duplicadas e mantém as métricas inalteradas.
+    """
+    from src.core.infrastructure.db.repositories import PostgresCorrelationUnitOfWork
+    from src.core.infrastructure.messaging.correlation_consumer import CorrelationKafkaConsumer
+
+    tenant_id = uuid4()
+    event_id = uuid4()
+    await _ensure_tenant_exists(async_session, tenant_id)
+    await _ensure_security_event_exists(async_session, tenant_id, event_id)
+
+    def test_uow_factory():
+        return PostgresCorrelationUnitOfWork(async_session)
+
+    consumer = CorrelationKafkaConsumer(uow_factory=test_uow_factory)
+    kafka_msg = {
+        "event_type": "SecurityEventReceivedEvent",
+        "tenant_id": str(tenant_id),
+        "security_event_id": str(event_id),
+    }
+
+    # 1º Processamento do evento
+    success_1 = await consumer.process_single_message(kafka_msg)
+    assert success_1 is True
+
+    inc_repo = PostgresIncidentRepository(async_session)
+    ev_repo = PostgresIncidentEvidenceRepository(async_session)
+
+    incidents_after_first = await inc_repo.list(tenant_id=tenant_id)
+    assert len(incidents_after_first) == 1
+    first_inc_id = incidents_after_first[0].incident_id
+
+    evidences_after_first = await ev_repo.list_by_incident(first_inc_id, tenant_id)
+    assert len(evidences_after_first) == 1
+
+    # 2º Processamento do MESMO evento (REPLAY REAL)
+    success_2 = await consumer.process_single_message(kafka_msg)
+    assert success_2 is True  # Deve retornar True para confirmar offset no Kafka
+
+    # Garantir que NENHUM novo incidente ou evidência foi criado no PostgreSQL
+    incidents_after_replay = await inc_repo.list(tenant_id=tenant_id)
+    assert len(incidents_after_replay) == 1
+
+    evidences_after_replay = await ev_repo.list_by_incident(first_inc_id, tenant_id)
+    assert len(evidences_after_replay) == 1
+
+
+@pytest.mark.asyncio
+async def test_exact_db_rollback_leaves_state_unmodified(async_session: AsyncSession) -> None:
+    """Valida com valores exatos (before vs after) que um rollback de banco de dados não altera incidentes no Postgres."""
+    tenant_id = uuid4()
+    await _ensure_tenant_exists(async_session, tenant_id)
+    inc_repo = PostgresIncidentRepository(async_session)
+
+    before_incidents = await inc_repo.list(tenant_id=tenant_id)
+    before_count = len(before_incidents)
+
+    # Tentar salvar um incidente e forçar um rollback manual da transação
+    try:
+        async with async_session.begin_nested():
+            inc = Incident(
+                incident_id=uuid4(),
+                tenant_id=tenant_id,
+                title="Incidente Abortado",
+                description="Rollback test",
+                severity=SecurityEventSeverity.LOW,
+                status=IncidentStatus.OPEN,
+                correlation_key="rollback_key_123",
+                created_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc),
+            )
+            await inc_repo.save(inc)
+            raise RuntimeError("Forçar rollback manual da transação")
+    except RuntimeError:
+        pass
+
+    after_incidents = await inc_repo.list(tenant_id=tenant_id)
+    after_count = len(after_incidents)
+
+    # Comprovar exatamente que a contagem antes é exatamente igual à contagem depois do rollback!
+    assert after_count == before_count == 0

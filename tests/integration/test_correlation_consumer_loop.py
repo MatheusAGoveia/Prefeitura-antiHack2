@@ -1,6 +1,9 @@
 """
-Suíte de Testes do Loop do Consumidor Kafka (M3.3)
-Valida rigorosamente a ordem entre commit no DB, instrumentação segura de observabilidade e confirmação do offset Kafka (consumer.commit).
+Suíte de Testes Reais do Loop do Consumidor Kafka (M3.3)
+Valida a execução do método run(), do cliente AIOKafkaConsumer mockado (getmany/commit) e a ordem exata entre:
+  1. uow.commit() (PostgreSQL)
+  2. observabilidade segura
+  3. consumer._consumer.commit({topic_partition: offset + 1}) (Kafka Offset)
 """
 
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -12,29 +15,79 @@ from sqlalchemy.exc import SQLAlchemyError
 from src.core.infrastructure.messaging.correlation_consumer import CorrelationKafkaConsumer
 
 
+class DummyKafkaMessage:
+    """Mensagem Kafka dummy com atributos imutáveis reais (sem comportamentos indesejados de MagicMock)."""
+
+    def __init__(self, value: dict, offset: int):
+        self.value = value
+        self.offset = offset
+
+
+class DummyAsyncUoW:
+    """Helper de teste que implementa perfeitamente o protocolo AsyncContextManager do UoW."""
+
+    def __init__(self, commit_side_effect=None):
+        self.commit = AsyncMock(side_effect=commit_side_effect)
+        self.correlation_rules = MagicMock()
+        self.correlation_rules.list_active = AsyncMock(return_value=[])
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        pass
+
+
 @pytest.mark.asyncio
-async def test_scenario_1_full_success_loop_calls_uow_and_consumer_commit() -> None:
+async def test_run_loop_full_success_calls_consumer_commit_with_exact_offset_and_order() -> None:
     """
-    Cenário 1 — Sucesso completo:
-    processar evento → uow.commit() → registrar métricas → consumer.commit()
-    Comprova a ordem exata e execução do commit do offset Kafka.
+    Testa o loop run() com sucesso completo:
+    getmany() -> uow.commit() -> metrics -> consumer.commit({topic_partition: offset + 1})
     """
     execution_order: list[str] = []
-
-    mock_uow = MagicMock()
-    mock_uow.correlation_rules.list_active = AsyncMock(return_value=[])
 
     async def fake_uow_commit():
         execution_order.append("uow.commit")
 
-    mock_uow.commit = AsyncMock(side_effect=fake_uow_commit)
+    mock_uow = DummyAsyncUoW(commit_side_effect=fake_uow_commit)
 
-    def uow_factory():
-        return mock_uow
+    consumer = CorrelationKafkaConsumer(uow_factory=lambda: mock_uow)
 
-    consumer = CorrelationKafkaConsumer(uow_factory=uow_factory)
+    # Mockar consumidor Kafka (AIOKafkaConsumer)
+    mock_kafka_consumer = AsyncMock()
+    consumer._consumer = mock_kafka_consumer
+    consumer._running = True
 
-    # Mockar a correlação de mensagens para simular evento correlacionado com novo incidente
+    topic_partition = "govsec.events-0"
+    tenant_id = str(uuid4())
+    event_id = str(uuid4())
+
+    mock_msg = DummyKafkaMessage(
+        value={
+            "event_type": "SecurityEventReceivedEvent",
+            "tenant_id": tenant_id,
+            "security_event_id": event_id,
+        },
+        offset=105,
+    )
+
+    getmany_call_count = 0
+
+    async def fake_getmany(timeout_ms, max_records):
+        nonlocal getmany_call_count
+        getmany_call_count += 1
+        if getmany_call_count == 1:
+            return {topic_partition: [mock_msg]}
+        consumer._running = False
+        return {}
+
+    mock_kafka_consumer.getmany = AsyncMock(side_effect=fake_getmany)
+
+    async def fake_kafka_commit(offset_dict):
+        execution_order.append("consumer.commit")
+
+    mock_kafka_consumer.commit = AsyncMock(side_effect=fake_kafka_commit)
+
     mock_result_item = MagicMock()
     mock_result_item.is_new_incident = False
     mock_result_item.is_new_evidence = True
@@ -43,125 +96,129 @@ async def test_scenario_1_full_success_loop_calls_uow_and_consumer_commit() -> N
     mock_corr_result = MagicMock()
     mock_corr_result.items = [mock_result_item]
 
+    mock_handler = AsyncMock()
+    mock_handler.handle = AsyncMock(return_value=mock_corr_result)
+
     with (
         patch(
-            "src.core.infrastructure.messaging.correlation_consumer.CorrelateSecurityEventHandler.handle",
-            new=AsyncMock(return_value=mock_corr_result),
+            "src.core.infrastructure.messaging.correlation_consumer.CorrelateSecurityEventHandler",
+            return_value=mock_handler,
         ),
         patch(
             "src.shared.observability.metrics.safe_record_incident_evidence_added",
             side_effect=lambda rule_id: execution_order.append("metrics"),
         ),
     ):
-        kafka_msg = {
-            "event_type": "SecurityEventReceivedEvent",
-            "tenant_id": str(uuid4()),
-            "security_event_id": str(uuid4()),
-        }
-        success = await consumer.process_single_message(kafka_msg)
+        await consumer.run()
 
-    assert success is True
+    # Confirmar que a ordem foi uow.commit -> metrics -> consumer.commit
+    assert execution_order == ["uow.commit", "metrics", "consumer.commit"]
     mock_uow.commit.assert_called_once()
-    assert execution_order == ["uow.commit", "metrics"]
+    mock_kafka_consumer.commit.assert_called_once_with({topic_partition: 106})
 
 
 @pytest.mark.asyncio
-async def test_scenario_2_metrics_failure_post_commit_still_calls_consumer_commit() -> None:
+async def test_run_loop_metrics_failure_post_commit_still_executes_consumer_commit() -> None:
     """
-    Cenário 2 — Falha de instrumentação após o commit:
-    processar evento → uow.commit() bem-sucedido → métrica lança erro → adaptador registra warning seguro → consumer.commit() ainda é executado
+    Testa o loop run() onde a instrumentação de métrica falha pós-commit:
+    uow.commit() tem sucesso, métrica lança exceção (capturada no adaptador safe_*), e o consumer.commit() É EXECUTADO NORMALMENTE.
     """
-    mock_uow = MagicMock()
-    mock_uow.commit = AsyncMock()
-    mock_uow.correlation_rules.list_active = AsyncMock(return_value=[])
+    mock_uow = DummyAsyncUoW()
 
-    def uow_factory():
-        return mock_uow
+    consumer = CorrelationKafkaConsumer(uow_factory=lambda: mock_uow)
 
-    consumer = CorrelationKafkaConsumer(uow_factory=uow_factory)
+    mock_kafka_consumer = AsyncMock()
+    consumer._consumer = mock_kafka_consumer
+    consumer._running = True
+
+    topic_partition = "govsec.events-0"
+    mock_msg = DummyKafkaMessage(
+        value={
+            "event_type": "SecurityEventReceivedEvent",
+            "tenant_id": str(uuid4()),
+            "security_event_id": str(uuid4()),
+        },
+        offset=200,
+    )
+
+    getmany_call_count = 0
+
+    async def fake_getmany(timeout_ms, max_records):
+        nonlocal getmany_call_count
+        getmany_call_count += 1
+        if getmany_call_count == 1:
+            return {topic_partition: [mock_msg]}
+        consumer._running = False
+        return {}
+
+    mock_kafka_consumer.getmany = AsyncMock(side_effect=fake_getmany)
 
     mock_result_item = MagicMock()
     mock_result_item.is_new_evidence = True
-    mock_result_item.rule_id = "test_rule"
 
     mock_corr_result = MagicMock()
     mock_corr_result.items = [mock_result_item]
+
+    mock_handler = AsyncMock()
+    mock_handler.handle = AsyncMock(return_value=mock_corr_result)
 
     with (
         patch(
-            "src.core.infrastructure.messaging.correlation_consumer.CorrelateSecurityEventHandler.handle",
-            new=AsyncMock(return_value=mock_corr_result),
+            "src.core.infrastructure.messaging.correlation_consumer.CorrelateSecurityEventHandler",
+            return_value=mock_handler,
         ),
         patch(
             "src.shared.observability.metrics.record_incident_evidence_added",
-            side_effect=RuntimeError("Prometheus Registry Failure"),
+            side_effect=RuntimeError("Prometheus Crash"),
         ),
     ):
-        kafka_msg = {
-            "event_type": "SecurityEventReceivedEvent",
-            "tenant_id": str(uuid4()),
-            "security_event_id": str(uuid4()),
-        }
-        success = await consumer.process_single_message(kafka_msg)
+        await consumer.run()
 
-    # uow.commit() foi executado
     mock_uow.commit.assert_called_once()
-    # O consumidor retorna True, autorizando o consumer.commit() do offset Kafka no loop run()!
-    assert success is True
+    mock_kafka_consumer.commit.assert_called_once_with({topic_partition: 201})
 
 
 @pytest.mark.asyncio
-async def test_scenario_3_processing_failure_before_commit_aborts_consumer_commit() -> None:
+async def test_run_loop_db_commit_failure_aborts_consumer_commit() -> None:
     """
-    Cenário 3 — Falha antes do commit:
-    processamento falha → banco não confirma → consumer.commit() não é chamado
+    Testa o loop run() quando uow.commit() lança exceção:
+    uow.commit() falha -> métrica não é chamada -> consumer.commit() NUNCA É CHAMADO.
     """
-    mock_uow = MagicMock()
-    mock_uow.commit = AsyncMock()
-    mock_uow.correlation_rules.list_active = AsyncMock(return_value=[])
+    mock_uow = DummyAsyncUoW(commit_side_effect=SQLAlchemyError("PostgreSQL connection error"))
 
-    def uow_factory():
-        return mock_uow
+    consumer = CorrelationKafkaConsumer(uow_factory=lambda: mock_uow)
 
-    consumer = CorrelationKafkaConsumer(uow_factory=uow_factory)
+    mock_kafka_consumer = AsyncMock()
+    consumer._consumer = mock_kafka_consumer
+    consumer._running = True
 
-    # Simular falha na regra de negócio/handler antes do commit no banco
-    with patch(
-        "src.core.infrastructure.messaging.correlation_consumer.CorrelateSecurityEventHandler.handle",
-        side_effect=ValueError("Invalid Security Event"),
-    ):
-        kafka_msg = {
+    topic_partition = "govsec.events-0"
+    mock_msg = DummyKafkaMessage(
+        value={
             "event_type": "SecurityEventReceivedEvent",
             "tenant_id": str(uuid4()),
             "security_event_id": str(uuid4()),
-        }
-        success = await consumer.process_single_message(kafka_msg)
+        },
+        offset=300,
+    )
 
-    # Retorna False → uow.commit() NÃO é chamado e offset Kafka NÃO é confirmado!
-    assert success is False
-    mock_uow.commit.assert_not_called()
+    getmany_call_count = 0
 
+    async def fake_getmany(timeout_ms, max_records):
+        nonlocal getmany_call_count
+        getmany_call_count += 1
+        if getmany_call_count == 1:
+            return {topic_partition: [mock_msg]}
+        consumer._running = False
+        return {}
 
-@pytest.mark.asyncio
-async def test_scenario_4_db_commit_failure_aborts_metrics_and_consumer_commit() -> None:
-    """
-    Cenário 4 — Falha do commit do banco:
-    uow.commit() falha → métrica não é registrada → consumer.commit() não é chamado
-    """
-    mock_uow = MagicMock()
-    mock_uow.commit = AsyncMock(side_effect=SQLAlchemyError("PostgreSQL connection lost"))
-    mock_uow.correlation_rules.list_active = AsyncMock(return_value=[])
-
-    def uow_factory():
-        return mock_uow
-
-    consumer = CorrelationKafkaConsumer(uow_factory=uow_factory)
-
-    mock_result_item = MagicMock()
-    mock_result_item.is_new_evidence = True
+    mock_kafka_consumer.getmany = AsyncMock(side_effect=fake_getmany)
 
     mock_corr_result = MagicMock()
-    mock_corr_result.items = [mock_result_item]
+    mock_corr_result.items = [MagicMock(is_new_evidence=True)]
+
+    mock_handler = AsyncMock()
+    mock_handler.handle = AsyncMock(return_value=mock_corr_result)
 
     metrics_called = False
 
@@ -171,70 +228,66 @@ async def test_scenario_4_db_commit_failure_aborts_metrics_and_consumer_commit()
 
     with (
         patch(
-            "src.core.infrastructure.messaging.correlation_consumer.CorrelateSecurityEventHandler.handle",
-            new=AsyncMock(return_value=mock_corr_result),
+            "src.core.infrastructure.messaging.correlation_consumer.CorrelateSecurityEventHandler",
+            return_value=mock_handler,
         ),
         patch(
             "src.shared.observability.metrics.safe_record_incident_evidence_added",
             side_effect=fake_metrics,
         ),
     ):
-        kafka_msg = {
-            "event_type": "SecurityEventReceivedEvent",
-            "tenant_id": str(uuid4()),
-            "security_event_id": str(uuid4()),
-        }
-        success = await consumer.process_single_message(kafka_msg)
+        await consumer.run()
 
-    # Falha no commit do banco de dados aborta o processo e retorna False
-    assert success is False
     mock_uow.commit.assert_called_once()
     assert metrics_called is False
+    # O offset no Kafka NÃO foi confirmado!
+    mock_kafka_consumer.commit.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_scenario_5_replay_idempotency_confirms_offset_without_duplicate_metrics() -> None:
+async def test_run_loop_processing_failure_before_db_aborts_commit_and_consumer_commit() -> None:
     """
-    Cenário 5 — Replay após processamento confirmado:
-    comprova que o replay reconhece idempotência, não cria duplicatas e confirma o offset normalmente.
+    Testa o loop run() quando ocorre falha antes da transação de banco:
+    process_single_message falha -> uow.commit() não é chamado -> consumer.commit() NÃO É CHAMADO.
     """
-    mock_uow = MagicMock()
-    mock_uow.commit = AsyncMock()
-    mock_uow.correlation_rules.list_active = AsyncMock(return_value=[])
+    mock_uow = DummyAsyncUoW()
 
-    def uow_factory():
-        return mock_uow
+    consumer = CorrelationKafkaConsumer(uow_factory=lambda: mock_uow)
 
-    consumer = CorrelationKafkaConsumer(uow_factory=uow_factory)
+    mock_kafka_consumer = AsyncMock()
+    consumer._consumer = mock_kafka_consumer
+    consumer._running = True
 
-    # Em caso de replay de evento já correlacionado, o handler retorna items vazios (0 novos incidentes/evidências)
-    mock_corr_result = MagicMock()
-    mock_corr_result.items = []
-
-    metrics_count = 0
-
-    def count_metrics(*args, **kwargs):
-        nonlocal metrics_count
-        metrics_count += 1
-
-    with (
-        patch(
-            "src.core.infrastructure.messaging.correlation_consumer.CorrelateSecurityEventHandler.handle",
-            new=AsyncMock(return_value=mock_corr_result),
-        ),
-        patch(
-            "src.shared.observability.metrics.safe_record_incident_evidence_added",
-            side_effect=count_metrics,
-        ),
-    ):
-        kafka_msg = {
+    topic_partition = "govsec.events-0"
+    mock_msg = DummyKafkaMessage(
+        value={
             "event_type": "SecurityEventReceivedEvent",
             "tenant_id": str(uuid4()),
             "security_event_id": str(uuid4()),
-        }
-        success = await consumer.process_single_message(kafka_msg)
+        },
+        offset=400,
+    )
 
-    # Replay idempotente é processado com sucesso (retorna True para liberar offset) sem incrementar contadores
-    assert success is True
-    assert metrics_count == 0
-    mock_uow.commit.assert_called_once()
+    getmany_call_count = 0
+
+    async def fake_getmany(timeout_ms, max_records):
+        nonlocal getmany_call_count
+        getmany_call_count += 1
+        if getmany_call_count == 1:
+            return {topic_partition: [mock_msg]}
+        consumer._running = False
+        return {}
+
+    mock_kafka_consumer.getmany = AsyncMock(side_effect=fake_getmany)
+
+    mock_handler = AsyncMock()
+    mock_handler.handle = AsyncMock(side_effect=ValueError("Invalid Security Payload"))
+
+    with patch(
+        "src.core.infrastructure.messaging.correlation_consumer.CorrelateSecurityEventHandler",
+        return_value=mock_handler,
+    ):
+        await consumer.run()
+
+    mock_uow.commit.assert_not_called()
+    mock_kafka_consumer.commit.assert_not_called()
