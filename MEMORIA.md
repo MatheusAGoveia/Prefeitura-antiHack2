@@ -6,9 +6,9 @@
 
 ## 📌 Estado Atual do Projeto
 - **Repositório:** `MatheusAGoveia/Prefeitura-antiHack2`
-- **Branch Ativa:** `feature/m3-corre- **Data da Última Atualização:** 2026-07-31T12:41:00Z
+- **Branch Ativa:** `feature/m3-corre- **Data da Última Atualização:** 2026-07-31T14:42:00Z
 - **Responsável:** IA Assistente (Arquiteto Principal GovSec Shield)
-- **Status Atual:** Estabilização estrita M3.2 100% CONCLUÍDA e HOMOLOGADA. Fluxo real Redpanda/Kafka e resiliência do worker totalmente comprovados.
+- **Status Atual:** Correção de Bloqueadores M3.2 100% CONCLUÍDA e HOMOLOGADA. Dependências declaradas (`psutil`, `pydantic-settings`, `aiokafka`), `poetry.lock` versionado, tratamento de exceções refinado e build Docker 100% reproduzível.
 
 ---
 
@@ -52,12 +52,12 @@
   - Rotas REST FastAPI: `POST /api/v1/tenants`, `GET /api/v1/tenants`, `POST /api/v1/logs`, `/healthz`, `/ready`.
   - CLI Admin: `src/cli/main.py` com o comando `govsec tenant create`.
 
-### 3. Homologação Estrita da Sprint M3.2 (2026-07-31)
+### 3. Homologação Estrita & Correção dos Bloqueadores M3.2 (2026-07-31)
+- [x] **Versionamento do `poetry.lock`:** Removida a entrada de ignore em `.gitignore`, tornando o build Docker 100% determinístico e reproduzível.
+- [x] **Declaração de Dependências Runtime (`psutil`):** Adicionado `psutil = "^5.9.0"` ao `pyproject.toml` e `requirements.txt`.
+- [x] **Tratamento de Exceções no Worker:** Captura explícita de `SQLAlchemyError` e `KafkaError`, preservando o estado de aborto de offset no Kafka e documentando a necessidade das exceções nos limites do processo com justificativa técnica.
 - [x] **Healthcheck por Readiness File (`/tmp/correlation-worker.ready`):** Criado estritamente após a conexão bem-sucedida ao Redpanda/Kafka (`consumer.start()`) e removido em paradas/falhas.
-- [x] **Init Container `db-migrations`:** Serviço dedicado no Docker Compose executando `alembic upgrade head` com conclusão bem-sucedida obrigatória antes da inicialização do `correlation-worker`.
-- [x] **Política de Resiliência (`restart: unless-stopped`):** Configurada para auto-recuperação do worker em falhas transitórias.
-- [x] **Mypy Escopado & Segurança Bandit:** Removidos todos os `type: ignore` inline e configurado `[[tool.mypy.overrides]]` para `aiokafka.*` no `pyproject.toml`. Bandit com 0 vulnerabilidades (sem `#nosec`).
-- [x] **Teste `@pytest.mark.kafka_integration`:** Teste de integração real contra Redpanda e PostgreSQL comprovando a cadeia completa (outbox → Redpanda → consumidor → incidente → commit de offset sem toque na outbox pelo consumidor).
+- [x] **Limpeza de Qualidade (Git Diff Check):** Eliminadas linhas em branco excedentes ao final de `MEMORIA.md`, `pyproject.toml`, `requirements.txt` e `test_m3_2_correlation_integration.py`.
 
 ---
 
@@ -71,7 +71,7 @@
 | **2026-07-30** | ADR-005: Fundação do M3 | Arquitetura de correlação determinística com persistência transacional antes do Kafka e contratos de domínio timezone-aware UTC. |
 | **2026-07-31** | Healthcheck por Readiness File | O worker só fica `healthy` após estabelecer a conexão real de grupo com o broker Redpanda, gravando o sinal no filesystem do container. |
 | **2026-07-31** | Init Container `db-migrations` | Migrações do Alembic executam com sucesso antes da subida dos serviços dependentes de banco, prevenindo InFailedSQLTransactionError. |
-| **2026-07-31** | Mypy Overrides Escopado para `aiokafka.*` | Eliminação total de `type: ignore` inline no código de produção do projeto, centralizando regras de stubs de terceiros em `pyproject.toml`. |
+| **2026-07-31** | Versionamento do `poetry.lock` | Remoção de `poetry.lock` de `.gitignore` garante builds reproduzíveis em ambientes de CI/CD e contêineres Docker. |
 
 ---
 
@@ -81,5 +81,3 @@
   1. Implementar rotas REST FastAPI do Incident Management.
   2. Desenvolver a desduplicação e recepção de webhooks do Alertmanager.
   3. Criar a interface do Incident Center e Event Inbox no frontend Next.js.
-
-

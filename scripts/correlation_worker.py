@@ -53,6 +53,10 @@ async def main() -> None:
     try:
         await run_worker()
     except Exception as exc:
+        # Justificativa Técnica: Exceções fatais não tratadas na inicialização ou no ciclo de vida principal
+        # do worker devem ser capturadas no limite do processo para log estruturado com traceback e
+        # encerramento com código não-zero (sys.exit(1)), garantindo que o orquestrador (Docker Compose/K8s)
+        # detecte a falha e aplique a política de reinício (restart: unless-stopped).
         logger.error("Erro fatal no worker de correlação: %s", exc, exc_info=True)
         sys.exit(1)
     finally:

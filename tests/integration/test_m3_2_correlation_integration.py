@@ -688,4 +688,3 @@ async def test_handler_failure_returns_false_and_does_not_commit_offset() -> Non
 
     success = await consumer.process_single_message(kafka_msg_value)
     assert success is False, "Se o DB/handler falhar, process_single_message deve retornar False para abortar commit de offset."
-

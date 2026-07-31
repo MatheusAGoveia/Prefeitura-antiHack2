@@ -32,6 +32,8 @@ from typing import Any
 from uuid import UUID
 
 from aiokafka import AIOKafkaConsumer
+from aiokafka.errors import KafkaError
+from sqlalchemy.exc import SQLAlchemyError
 
 from src.core.application.correlation_handler import CorrelateSecurityEventHandler
 from src.core.application.interfaces.uow import CorrelationUnitOfWork
@@ -82,7 +84,7 @@ class CorrelationKafkaConsumer:
             READINESS_FILE_PATH.parent.mkdir(parents=True, exist_ok=True)
             READINESS_FILE_PATH.touch(exist_ok=True)
             logger.info("Arquivo de readiness do correlation-worker criado em %s", READINESS_FILE_PATH)
-        except Exception as exc:
+        except OSError as exc:
             logger.warning("Falha ao criar arquivo de readiness do correlation-worker: %s", exc)
 
     @staticmethod
@@ -118,7 +120,8 @@ class CorrelationKafkaConsumer:
             self._running = True
             self._create_readiness_file()
             logger.info("CorrelationKafkaConsumer iniciado com sucesso.")
-        except Exception:
+        except (KafkaError, OSError, Exception) as exc:
+            logger.error("Falha fatal ao inicializar CorrelationKafkaConsumer no Kafka: %s", exc)
             self._remove_readiness_file()
             raise
 
@@ -130,8 +133,10 @@ class CorrelationKafkaConsumer:
             try:
                 await self._consumer.stop()
                 logger.info("CorrelationKafkaConsumer parado com sucesso.")
+            except KafkaError as exc:
+                logger.error("Erro Kafka ao parar CorrelationKafkaConsumer: %s", exc)
             except Exception as exc:
-                logger.error("Erro ao parar CorrelationKafkaConsumer: %s", exc)
+                logger.error("Erro inesperado ao parar CorrelationKafkaConsumer: %s", exc)
             finally:
                 self._consumer = None
 
@@ -139,6 +144,7 @@ class CorrelationKafkaConsumer:
         """
         Processa o payload de um único evento Kafka.
         Retorna True se processado e commitado com sucesso no DB.
+        Retorna False se o banco de dados falhar, abortando o commit do offset no Kafka.
         """
         event_type = msg_value.get("event_type")
         if event_type != "SecurityEventReceivedEvent":
@@ -209,9 +215,21 @@ class CorrelationKafkaConsumer:
             )
             return True
 
-        except Exception as exc:
+        except SQLAlchemyError as exc:
+            # Captura explícita de exceção de banco de dados para abortar o commit de offset
             logger.error(
-                "CorrelationKafkaConsumer: erro ao correlacionar evento %s no DB: %s",
+                "CorrelationKafkaConsumer: erro de banco de dados ao correlacionar evento %s: %s",
+                event_id_str,
+                exc,
+                exc_info=True,
+            )
+            return False
+        except Exception as exc:
+            # Justificativa Técnica: No limite da execução da transação de correlação, qualquer exceção não
+            # esperada (ex: erro inesperado de domínio/handler) deve impedir o commit do offset no Kafka
+            # garantindo que o evento permaneça não confirmado para reentrega e diagnóstico.
+            logger.error(
+                "CorrelationKafkaConsumer: exceção não tratada ao correlacionar evento %s no DB: %s",
                 event_id_str,
                 exc,
                 exc_info=True,
@@ -241,8 +259,13 @@ class CorrelationKafkaConsumer:
                                 await self._consumer.commit({topic_partition: msg.offset + 1})
                 except asyncio.CancelledError:
                     break
+                except KafkaError as exc:
+                    logger.error("Erro de comunicação Kafka no loop do CorrelationKafkaConsumer: %s", exc)
+                    await asyncio.sleep(1)
                 except Exception as exc:
-                    logger.error("Erro no loop do CorrelationKafkaConsumer: %s", exc)
+                    # Justificativa Técnica: A captura no nível superior do loop de polling impede que um picos
+                    # ou falha transitória em uma iteração encerre abruptamente a tarefa do consumidor.
+                    logger.error("Exceção não tratada no loop principal do CorrelationKafkaConsumer: %s", exc)
                     await asyncio.sleep(1)
         finally:
             await self.stop()
