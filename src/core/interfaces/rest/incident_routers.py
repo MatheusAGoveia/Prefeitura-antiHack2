@@ -17,6 +17,7 @@ Regras de segurança & arquitetura:
   - Incidente de outro tenant → HTTP 404 (não vaza existência).
 """
 
+import logging
 from datetime import datetime, timedelta
 from uuid import UUID
 
@@ -44,7 +45,8 @@ from src.core.infrastructure.db.repositories import (
 from src.core.infrastructure.db.unit_of_work import get_db_session
 from src.core.infrastructure.security.kernel import AuthenticatedUser
 from src.core.interfaces.rest.dependencies import get_current_user
-from src.shared.observability.metrics import record_incident_status_transition
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/incidents", tags=["Incidents"])
 
@@ -435,12 +437,22 @@ async def change_incident_status(
             incident_id=saved.incident_id, tenant_id=tenant_id
         )
 
-        # Incrementar métrica Prometheus de transição auditada (M3.3) pós-commit da transação
-        record_incident_status_transition(
+        # Incrementar métrica Prometheus de transição auditada (M3.3) PÓS-COMMIT (com adaptador seguro de infraestrutura)
+        from src.shared.observability.metrics import (
+            safe_record_incident_status_transition,
+            sync_open_incidents_gauge_from_db,
+        )
+
+        safe_record_incident_status_transition(
             from_status=old_status,
             to_status=new_status,
             severity=saved.severity.value,
         )
+        try:
+            await sync_open_incidents_gauge_from_db(session)
+        except Exception as exc:
+            # Justificativa Técnica: Isolamento de falha de observabilidade pós-commit HTTP.
+            logger.warning("Falha ao sincronizar gauge no pós-commit HTTP status: %s", exc)
 
     return IncidentResponseDTO(
         incident_id=saved.incident_id,

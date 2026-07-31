@@ -218,20 +218,20 @@ class CorrelationKafkaConsumer:
                 # Commit no Banco de Dados
                 await uow.commit()
 
-                # REGISTRO DE MÉTRICAS PROMETHEUS PÓS-COMMIT BEM-SUCEDIDO
+                # REGISTRO DE MÉTRICAS PROMETHEUS PÓS-COMMIT BEM-SUCEDIDO (ISOLADO DE FALHAS DE OBSERVABILIDADE)
                 from src.shared.observability.metrics import (
-                    record_incident_created,
-                    record_incident_evidence_added,
+                    safe_record_incident_created,
+                    safe_record_incident_evidence_added,
                 )
 
                 for item in result.items:
                     if item.is_new_incident:
-                        record_incident_created(
+                        safe_record_incident_created(
                             severity=item.incident.severity.value,
                             status=item.incident.status.value,
                         )
                     if item.is_new_evidence:
-                        record_incident_evidence_added(rule_id=item.rule_id)
+                        safe_record_incident_evidence_added(rule_id=item.rule_id)
 
             logger.info(
                 "CorrelationKafkaConsumer: evento correlacionado e commitado no DB. "

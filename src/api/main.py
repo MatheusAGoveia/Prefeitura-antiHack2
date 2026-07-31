@@ -4,6 +4,7 @@ GovSec Shield — API App
 """
 
 import asyncio
+import logging
 import os
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager, suppress
@@ -13,6 +14,7 @@ from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
+from sqlalchemy.exc import SQLAlchemyError
 
 from src.api.dashboard_api import router as dashboard_router
 from src.api.middleware.auth import AuthenticationMiddleware
@@ -40,6 +42,8 @@ setup_structured_logging()
 # 2. Inicializar OpenTelemetry Tracing & Propagação W3C
 setup_tracing()
 
+logger = logging.getLogger(__name__)
+
 
 @asynccontextmanager
 async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
@@ -48,17 +52,21 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
     Inicia e encerra graciosamente o coletor de métricas de sistema.
     """
     # Garantir criação de tabelas se necessário
-    with suppress(Exception):
+    try:
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
+    except (SQLAlchemyError, OSError) as exc:
+        logger.warning("Inicialização de schema/tabelas no startup: %s", exc)
 
     # Startup: reconstruir o estado dos incidentes abertos a partir do PostgreSQL
-    with suppress(Exception):
+    try:
         from src.core.infrastructure.db.unit_of_work import AsyncSessionLocal
         from src.shared.observability.metrics import sync_open_incidents_gauge_from_db
 
         async with AsyncSessionLocal() as session:
             await sync_open_incidents_gauge_from_db(session)
+    except (SQLAlchemyError, OSError) as exc:
+        logger.warning("Falha ao reconstruir o gauge de incidentes abertos no startup: %s", exc)
 
     # Startup: iniciar coleta periódica de métricas de sistema (CPU, RAM, Disco)
     metrics_task = asyncio.create_task(
@@ -72,6 +80,7 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
         metrics_task.cancel()
         with suppress(asyncio.CancelledError):
             await metrics_task
+
 
 
 app = FastAPI(

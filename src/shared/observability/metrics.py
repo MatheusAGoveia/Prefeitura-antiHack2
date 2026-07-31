@@ -3,6 +3,7 @@ Métricas Prometheus e Middleware FastAPI
 GovSec Shield — Shared Observability
 """
 
+import logging
 import time
 from collections.abc import Callable
 from typing import Any
@@ -19,6 +20,8 @@ from prometheus_client import (
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from src.core.infrastructure.config import settings
+
+logger = logging.getLogger(__name__)
 
 # Contador Total de Requisições HTTP
 HTTP_REQUESTS_TOTAL = Counter(
@@ -199,17 +202,75 @@ def record_incident_evidence_added(rule_id: str = "default") -> None:
     GOVSEC_INCIDENT_EVIDENCES_TOTAL.labels(rule_id=rule_id).inc()
 
 
+def safe_record_incident_created(severity: str, status: str) -> None:
+    """
+    Adaptador de infraestrutura seguro: registra métrica Prometheus de incidente criado.
+    Captura e loga falhas de observabilidade sem permitir que exceções da instrumentação
+    afetem transações ou confirmações de offsets.
+    """
+    try:
+        record_incident_created(severity=severity, status=status)
+    except Exception as exc:
+        # Justificativa Técnica: No limite da infraestrutura de observabilidade, uma falha na instrumentação
+        # (ex: erro no client Prometheus ou travamento do registry) deve ser registrada como warning e
+        # não pode interromper a transação do banco ou a confirmação de offset no Kafka.
+        logger.warning(
+            "Falha de instrumentação ao registrar métrica de incidente criado. severity=%s status=%s err=%s",
+            severity,
+            status,
+            exc,
+        )
+
+
+def safe_record_incident_evidence_added(rule_id: str = "default") -> None:
+    """
+    Adaptador de infraestrutura seguro: registra métrica Prometheus de evidência adicionada.
+    """
+    try:
+        record_incident_evidence_added(rule_id=rule_id)
+    except Exception as exc:
+        # Justificativa Técnica: Isolamento de falha de observabilidade pós-commit.
+        logger.warning(
+            "Falha de instrumentação ao registrar métrica de evidência adicionada. rule_id=%s err=%s",
+            rule_id,
+            exc,
+        )
+
+
+def safe_record_incident_status_transition(
+    from_status: str, to_status: str, severity: str | None = None
+) -> None:
+    """
+    Adaptador de infraestrutura seguro: registra métrica Prometheus de transição de status.
+    """
+    try:
+        record_incident_status_transition(from_status=from_status, to_status=to_status, severity=severity)
+    except Exception as exc:
+        # Justificativa Técnica: Isolamento de falha de observabilidade pós-commit.
+        logger.warning(
+            "Falha de instrumentação ao registrar métrica de transição de status. from=%s to=%s err=%s",
+            from_status,
+            to_status,
+            exc,
+        )
+
+
 async def sync_open_incidents_gauge_from_db(session: Any) -> None:
     """
     Reconstrói e sincroniza os valores do Gauge GOVSEC_OPEN_INCIDENTS a partir do estado real do banco de dados PostgreSQL.
     Garante resiliência a restarts e consistência entre réplicas.
+    Severidades com 0 incidentes abertos são explicitamente zeradas no Gauge para não manter séries estagnadas.
     """
+    from src.core.domain.incidents import SecurityEventSeverity
     from src.core.infrastructure.db.repositories import PostgresIncidentRepository
 
     repo = PostgresIncidentRepository(session)
     counts = await repo.count_open_by_severity()
-    for severity, count in counts.items():
-        GOVSEC_OPEN_INCIDENTS.labels(severity=severity).set(count)
+
+    for sev in SecurityEventSeverity:
+        sev_key = sev.value.lower()
+        cnt = counts.get(sev_key, 0)
+        GOVSEC_OPEN_INCIDENTS.labels(severity=sev_key).set(cnt)
 
 
 def collect_db_pool_metrics() -> None:

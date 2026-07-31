@@ -116,32 +116,32 @@ def sanitize_string_content(text: str) -> str:
     return _CREDENTIAL_PATTERN.sub(_sanitize_match, text)
 
 
+def _sanitize_value(value: Any) -> Any:
+    """
+    Sanitiza recursivamente um valor arbitrário em qualquer nível de profundidade.
+    Dicionários, listas, tuplas, conjuntos e strings são sanitizados de forma transparente.
+    """
+    if isinstance(value, dict):
+        return sanitize_payload(value)
+    if isinstance(value, list | tuple | set):
+        return [_sanitize_value(item) for item in value]
+    if isinstance(value, str):
+        return sanitize_string_content(value)
+    return value
+
+
 def sanitize_payload(payload: dict[str, Any]) -> dict[str, Any]:
     """
     Sanitiza recursivamente um payload mascarando chaves sensíveis e valores em strings.
-    Garante Zero Trust e previne vazamento de dados confidenciais em dicts, listas e tuplas.
+    Garante Zero Trust e previne vazamento de dados confidenciais em dicts, listas e tuplas em qualquer profundidade.
     """
     sanitized: dict[str, Any] = {}
     for key, value in payload.items():
         key_lower = str(key).lower().replace("-", "_")
         if any(sensitive in key_lower for sensitive in SENSITIVE_KEYS):
             sanitized[key] = "[REDACTED]"
-        elif isinstance(value, dict):
-            sanitized[key] = sanitize_payload(value)
-        elif isinstance(value, list | tuple):
-            items: list[Any] = []
-            for item in value:
-                if isinstance(item, dict):
-                    items.append(sanitize_payload(item))
-                elif isinstance(item, str):
-                    items.append(sanitize_string_content(item))
-                else:
-                    items.append(item)
-            sanitized[key] = items
-        elif isinstance(value, str):
-            sanitized[key] = sanitize_string_content(value)
         else:
-            sanitized[key] = value
+            sanitized[key] = _sanitize_value(value)
     return sanitized
 
 

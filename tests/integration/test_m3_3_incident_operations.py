@@ -686,3 +686,177 @@ async def test_prometheus_labels_strict_security_audit() -> None:
             sample_labels = set(sample.labels.keys())
             violating = sample_labels.intersection(forbidden_labels)
             assert not violating, f"Violação de segurança: métrica '{metric.name}' expõe labels proibidas: {violating}"
+
+
+@pytest.mark.asyncio
+async def test_deeply_nested_list_of_lists_masking_in_http_serialized_response(
+    async_client: AsyncClient, async_session: AsyncSession, auth_headers_tenant_a: dict[str, str]
+) -> None:
+    """Valida que listas dentro de listas contendo segredos são recursivamente mascaradas e inspecionadas no content/text/json serializado."""
+    tenant_id = UUID(auth_headers_tenant_a["_tenant_id"])
+    await _ensure_tenant_exists(async_session, tenant_id)
+    inc_repo = PostgresIncidentRepository(async_session)
+    evidence_repo = PostgresIncidentEvidenceRepository(async_session)
+
+    incident_id = uuid4()
+    event_id = uuid4()
+    await _ensure_security_event_exists(async_session, tenant_id, event_id)
+
+    inc = Incident(
+        incident_id=incident_id,
+        tenant_id=tenant_id,
+        title="Incidente Lista de Listas",
+        description="Teste deep list",
+        severity=SecurityEventSeverity.CRITICAL,
+        status=IncidentStatus.OPEN,
+        correlation_key="mask_deep_list_key",
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
+    )
+    await inc_repo.save(inc)
+
+    nested_payload = {
+        "items": [
+            [
+                {
+                    "message": "Authorization: Bearer super-secret-deep-token-999",
+                    "cookie": "session=secret_cookie_val",
+                }
+            ]
+        ]
+    }
+
+    ev = IncidentEvidence(
+        evidence_id=uuid4(),
+        incident_id=incident_id,
+        event_id=event_id,
+        tenant_id=tenant_id,
+        evidence_hash="hash_deep_list",
+        added_at=datetime.now(timezone.utc),
+        description="Evidência aninhada profunda",
+        raw_payload_masked=sanitize_payload(nested_payload),
+    )
+    await evidence_repo.save(ev)
+    await async_session.commit()
+
+    headers = {"Authorization": auth_headers_tenant_a["Authorization"]}
+
+    res = await async_client.get(f"/api/v1/incidents/{incident_id}/evidences", headers=headers)
+    assert res.status_code == 200
+
+    # Inspecionar serialização bruta (content, text e json) para garantir que segredos não vazam
+    assert "super-secret-deep-token-999" not in res.text
+    assert "secret_cookie_val" not in res.text
+    assert b"super-secret-deep-token-999" not in res.content
+
+    ev_data = res.json()["items"][0]["raw_payload_masked"]
+    assert ev_data["items"][0][0]["message"] == "Authorization: Bearer [REDACTED]"
+    assert ev_data["items"][0][0]["cookie"] == "[REDACTED]"
+
+
+@pytest.mark.asyncio
+async def test_metrics_failure_post_commit_kafka_consumer_succeeds(async_session: AsyncSession) -> None:
+    """Valida que falha de observabilidade/Prometheus pós-commit NÃO impede o sucesso do consumidor Kafka nem a confirmação de offset."""
+    from unittest.mock import patch
+
+    from src.core.infrastructure.db.repositories import PostgresCorrelationUnitOfWork
+    from src.core.infrastructure.messaging.correlation_consumer import CorrelationKafkaConsumer
+
+    tenant_id = uuid4()
+    event_id = uuid4()
+    await _ensure_tenant_exists(async_session, tenant_id)
+    await _ensure_security_event_exists(async_session, tenant_id, event_id)
+
+    def test_uow_factory():
+        return PostgresCorrelationUnitOfWork(async_session)
+
+    consumer = CorrelationKafkaConsumer(uow_factory=test_uow_factory)
+
+    kafka_msg = {
+        "event_type": "SecurityEventReceivedEvent",
+        "tenant_id": str(tenant_id),
+        "security_event_id": str(event_id),
+    }
+
+    # Simular falha na instrumentação de métricas pós-commit (record_incident_created falha com erro de registry)
+    with patch(
+        "src.shared.observability.metrics.record_incident_created",
+        side_effect=RuntimeError("Prometheus Registry Error"),
+    ):
+        success = await consumer.process_single_message(kafka_msg)
+
+    # O consumidor deve retornar True para autorizar o commit de offset no Kafka mesmo se a métrica falhar!
+    assert success is True
+
+    # Confirmar que o incidente foi salvo com sucesso no PostgreSQL
+    repo = PostgresIncidentRepository(async_session)
+    incidents = await repo.list(tenant_id=tenant_id)
+    assert len(incidents) == 1
+
+
+@pytest.mark.asyncio
+async def test_metrics_failure_post_commit_http_patch_status_returns_200(
+    async_client: AsyncClient, async_session: AsyncSession, auth_headers_tenant_a: dict[str, str]
+) -> None:
+    """Valida que falha de observabilidade pós-commit na rota REST PATCH status retorna HTTP 200 (sucesso)."""
+    from unittest.mock import patch
+
+    tenant_id = UUID(auth_headers_tenant_a["_tenant_id"])
+    await _ensure_tenant_exists(async_session, tenant_id)
+    inc_repo = PostgresIncidentRepository(async_session)
+
+    incident_id = uuid4()
+    inc = Incident(
+        incident_id=incident_id,
+        tenant_id=tenant_id,
+        title="Incidente Status Post Commit Metric Failure",
+        description="Teste HTTP 200 on metric error",
+        severity=SecurityEventSeverity.HIGH,
+        status=IncidentStatus.OPEN,
+        correlation_key="metric_fail_key",
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
+    )
+    await inc_repo.save(inc)
+    await async_session.commit()
+
+    headers = {"Authorization": auth_headers_tenant_a["Authorization"]}
+
+    # Simular falha no cliente Prometheus durante a gravação da transição
+    with patch(
+        "src.shared.observability.metrics.record_incident_status_transition",
+        side_effect=RuntimeError("Prometheus Client Failure"),
+    ):
+        res = await async_client.patch(
+            f"/api/v1/incidents/{incident_id}/status",
+            json={"new_status": "acknowledged", "reason": "Análise iniciada"},
+            headers=headers,
+        )
+
+    # Resposta HTTP deve ser 200 OK
+    assert res.status_code == 200
+    assert res.json()["status"] == "acknowledged"
+
+    # Confirmar alteração no banco
+    reloaded = await inc_repo.get_by_id(incident_id, tenant_id)
+    assert reloaded is not None
+    assert reloaded.status == IncidentStatus.ACKNOWLEDGED
+
+
+@pytest.mark.asyncio
+async def test_zero_count_severity_resets_gauge_to_zero(async_session: AsyncSession) -> None:
+    """Valida que sync_open_incidents_gauge_from_db zera explicitamente no Gauge severidades que possuem 0 incidentes abertos no Postgres."""
+    from src.shared.observability.metrics import (
+        GOVSEC_OPEN_INCIDENTS,
+        sync_open_incidents_gauge_from_db,
+    )
+
+    # Forçar o gauge a ter um valor antigo positivo (ex: 5)
+    GOVSEC_OPEN_INCIDENTS.labels(severity="critical").set(5)
+
+    # Sincronizar com banco de dados limpo sem incidentes
+    await sync_open_incidents_gauge_from_db(async_session)
+
+    # Verificar que o gauge para critical foi zerado no Prometheus
+    assert GOVSEC_OPEN_INCIDENTS.labels(severity="critical")._value.get() == 0.0
+    assert GOVSEC_OPEN_INCIDENTS.labels(severity="high")._value.get() == 0.0
