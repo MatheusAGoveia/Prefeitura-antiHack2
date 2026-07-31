@@ -291,3 +291,72 @@ async def test_run_loop_processing_failure_before_db_aborts_commit_and_consumer_
 
     mock_uow.commit.assert_not_called()
     mock_kafka_consumer.commit.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_run_loop_scenario_5_replay_confirms_offset_without_duplicate_metrics() -> None:
+    """
+    Cenário 5 — Replay dentro do loop run():
+    Evento já correlacionado é reentregue pelo Kafka.
+    O handler reconhece a idempotência e retorna items vazios (0 novos incidentes/evidências).
+    O consumidor confirma o offset no Kafka, uow.commit() é chamado, mas NENHUMA métrica histórica é incrementada.
+    """
+    mock_uow = DummyAsyncUoW()
+
+    consumer = CorrelationKafkaConsumer(uow_factory=lambda: mock_uow)
+
+    mock_kafka_consumer = AsyncMock()
+    consumer._consumer = mock_kafka_consumer
+    consumer._running = True
+
+    topic_partition = "govsec.events-0"
+    mock_msg = DummyKafkaMessage(
+        value={
+            "event_type": "SecurityEventReceivedEvent",
+            "tenant_id": str(uuid4()),
+            "security_event_id": str(uuid4()),
+        },
+        offset=500,
+    )
+
+    getmany_call_count = 0
+
+    async def fake_getmany(timeout_ms, max_records):
+        nonlocal getmany_call_count
+        getmany_call_count += 1
+        if getmany_call_count == 1:
+            return {topic_partition: [mock_msg]}
+        consumer._running = False
+        return {}
+
+    mock_kafka_consumer.getmany = AsyncMock(side_effect=fake_getmany)
+
+    # Em caso de replay idempotente, o handler retorna items vazios (0 novas evidências/incidentes)
+    mock_corr_result = MagicMock()
+    mock_corr_result.items = []
+
+    mock_handler = AsyncMock()
+    mock_handler.handle = AsyncMock(return_value=mock_corr_result)
+
+    metrics_called = False
+
+    def fake_metrics(rule_id):
+        nonlocal metrics_called
+        metrics_called = True
+
+    with (
+        patch(
+            "src.core.infrastructure.messaging.correlation_consumer.CorrelateSecurityEventHandler",
+            return_value=mock_handler,
+        ),
+        patch(
+            "src.shared.observability.metrics.safe_record_incident_evidence_added",
+            side_effect=fake_metrics,
+        ),
+    ):
+        await consumer.run()
+
+    # No replay: transação DB é confirmada, offset no Kafka É CONFIRMADO, mas métricas NÃO SÃO INCREMENTADAS!
+    mock_uow.commit.assert_called_once()
+    mock_kafka_consumer.commit.assert_called_once_with({topic_partition: 501})
+    assert metrics_called is False

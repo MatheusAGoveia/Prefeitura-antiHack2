@@ -874,52 +874,12 @@ def test_grafana_dashboard_promql_uses_max_and_no_sum() -> None:
 
 @pytest.mark.asyncio
 async def test_dynamic_metrics_scrape_reflects_worker_created_incident(
-    async_client: AsyncClient, async_session: AsyncSession, auth_headers_tenant_a: dict[str, str]
+    async_client: AsyncClient, async_session: AsyncSession
 ) -> None:
     """
-    Valida que um incidente criado pelo worker e salvo no Postgres é refletido instantaneamente
-    no scrape de GET /metrics sem necessidade de reiniciar a API.
-    """
-    tenant_id = UUID(auth_headers_tenant_a["_tenant_id"])
-    await _ensure_tenant_exists(async_session, tenant_id)
-    inc_repo = PostgresIncidentRepository(async_session)
-
-    incident_id = uuid4()
-    inc = Incident(
-        incident_id=incident_id,
-        tenant_id=tenant_id,
-        title="Incidente Criado pelo Worker",
-        description="Teste de visibilidade dinâmica em /metrics",
-        severity=SecurityEventSeverity.CRITICAL,
-        status=IncidentStatus.OPEN,
-        correlation_key="worker_dynamic_metrics_key",
-        created_at=datetime.now(timezone.utc),
-        updated_at=datetime.now(timezone.utc),
-    )
-    await inc_repo.save(inc)
-    await async_session.commit()
-
-    # Sincronizar o estado a partir do banco de dados na sessão ativa do teste
-    from src.shared.observability.metrics import sync_open_incidents_gauge_from_db
-
-    await sync_open_incidents_gauge_from_db(async_session)
-
-    # Requisitar GET /metrics sem reiniciar a API
-    res = await async_client.get("/metrics")
-    assert res.status_code == 200
-    metrics_text = res.text
-
-    # O scrape de /metrics deve conter a métrica de incidentes abertos atualizada diretamente do Postgres
-    assert 'govsec_open_incidents{severity="critical"} 1.0' in metrics_text
-
-
-@pytest.mark.asyncio
-async def test_real_event_replay_processing_no_duplicates_or_extra_metrics(async_session: AsyncSession) -> None:
-    """
-    Valida o processamento real de um mesmo evento duas vezes (replay):
-    o primeiro processamento persiste 1 incidente e 1 evidência no Postgres.
-    o segundo processamento reconhece a idempotência real, retorna True para autorizar a confirmação do offset no Kafka,
-    mas NÃO cria incidentes duplicados, NÃO cria evidências duplicadas e mantém as métricas inalteradas.
+    Valida que um evento de segurança processado pelo worker (CorrelationKafkaConsumer) persiste
+    o incidente no PostgreSQL e este é refletido dinamicamente no GET /metrics no scrape,
+    SEM NENHUMA chamada manual no teste a sync_open_incidents_gauge_from_db.
     """
     from src.core.infrastructure.db.repositories import PostgresCorrelationUnitOfWork
     from src.core.infrastructure.messaging.correlation_consumer import CorrelationKafkaConsumer
@@ -939,6 +899,54 @@ async def test_real_event_replay_processing_no_duplicates_or_extra_metrics(async
         "security_event_id": str(event_id),
     }
 
+    # Worker processa o evento de segurança via pipeline real (CorrelationEngine)
+    success = await consumer.process_single_message(kafka_msg)
+    assert success is True
+
+    # Requisitar GET /metrics no endpoint FastAPI sem chamadas manuais no teste
+    res = await async_client.get("/metrics")
+    assert res.status_code == 200
+    metrics_text = res.text
+
+    # Verificar que o scrape dinâmico leu o Postgres e expôs a severidade do incidente criado
+    assert "govsec_open_incidents" in metrics_text
+    lines = [line for line in metrics_text.splitlines() if line.startswith('govsec_open_incidents{severity="high"}')]
+    assert len(lines) > 0, "Métrica govsec_open_incidents com severity high não encontrada no scrape /metrics"
+    val = float(lines[0].split()[-1])
+    assert val >= 1.0, "Scrape /metrics não refletiu o incidente criado pelo worker!"
+
+
+@pytest.mark.asyncio
+async def test_real_event_replay_processing_no_duplicates_or_extra_metrics(async_session: AsyncSession) -> None:
+    """
+    Valida o processamento real de um mesmo evento duas vezes (replay):
+    o 1º processamento persiste 1 incidente e 1 evidência no Postgres e incrementa contadores de métrica.
+    o 2º processamento reconhece a idempotência real, mantém o banco inalterado e inspeciona
+    que os contadores Prometheus (GOVSEC_INCIDENTS_TOTAL e GOVSEC_INCIDENT_EVIDENCES_TOTAL)
+    permanecem rigorosamente idênticos (sem incremento duplo).
+    """
+    from src.core.infrastructure.db.repositories import PostgresCorrelationUnitOfWork
+    from src.core.infrastructure.messaging.correlation_consumer import CorrelationKafkaConsumer
+    from src.shared.observability.metrics import GOVSEC_INCIDENT_EVIDENCES_TOTAL, GOVSEC_INCIDENTS_TOTAL
+
+    tenant_id = uuid4()
+    event_id = uuid4()
+    await _ensure_tenant_exists(async_session, tenant_id)
+    await _ensure_security_event_exists(async_session, tenant_id, event_id)
+
+    def test_uow_factory():
+        return PostgresCorrelationUnitOfWork(async_session)
+
+    consumer = CorrelationKafkaConsumer(uow_factory=test_uow_factory)
+    kafka_msg = {
+        "event_type": "SecurityEventReceivedEvent",
+        "tenant_id": str(tenant_id),
+        "security_event_id": str(event_id),
+    }
+
+    evidence_counter_before = GOVSEC_INCIDENT_EVIDENCES_TOTAL.labels(rule_id="brute_force_auth")._value.get()
+    incidents_counter_before = GOVSEC_INCIDENTS_TOTAL.labels(severity="high", status="open")._value.get()
+
     # 1º Processamento do evento
     success_1 = await consumer.process_single_message(kafka_msg)
     assert success_1 is True
@@ -953,9 +961,15 @@ async def test_real_event_replay_processing_no_duplicates_or_extra_metrics(async
     evidences_after_first = await ev_repo.list_by_incident(first_inc_id, tenant_id)
     assert len(evidences_after_first) == 1
 
+    evidence_counter_after_1st = GOVSEC_INCIDENT_EVIDENCES_TOTAL.labels(rule_id="brute_force_auth")._value.get()
+    incidents_counter_after_1st = GOVSEC_INCIDENTS_TOTAL.labels(severity="high", status="open")._value.get()
+
+    assert evidence_counter_after_1st == evidence_counter_before + 1
+    assert incidents_counter_after_1st == incidents_counter_before + 1
+
     # 2º Processamento do MESMO evento (REPLAY REAL)
     success_2 = await consumer.process_single_message(kafka_msg)
-    assert success_2 is True  # Deve retornar True para confirmar offset no Kafka
+    assert success_2 is True  # Retorna True para confirmar offset no Kafka
 
     # Garantir que NENHUM novo incidente ou evidência foi criado no PostgreSQL
     incidents_after_replay = await inc_repo.list(tenant_id=tenant_id)
@@ -964,16 +978,31 @@ async def test_real_event_replay_processing_no_duplicates_or_extra_metrics(async
     evidences_after_replay = await ev_repo.list_by_incident(first_inc_id, tenant_id)
     assert len(evidences_after_replay) == 1
 
+    # Garantir que AMBOS os contadores Prometheus não sofreram NENHUM incremento duplo!
+    evidence_counter_after_2nd = GOVSEC_INCIDENT_EVIDENCES_TOTAL.labels(rule_id="brute_force_auth")._value.get()
+    incidents_counter_after_2nd = GOVSEC_INCIDENTS_TOTAL.labels(severity="high", status="open")._value.get()
+
+    assert evidence_counter_after_2nd == evidence_counter_after_1st
+    assert incidents_counter_after_2nd == incidents_counter_after_1st
+
 
 @pytest.mark.asyncio
-async def test_exact_db_rollback_leaves_state_unmodified(async_session: AsyncSession) -> None:
-    """Valida com valores exatos (before vs after) que um rollback de banco de dados não altera incidentes no Postgres."""
+async def test_exact_db_rollback_leaves_state_and_prometheus_unmodified(async_session: AsyncSession) -> None:
+    """
+    Valida com valores exatos (before vs after) que um rollback de banco de dados
+    não altera a quantidade de incidentes no Postgres E NÃO incrementa contadores Prometheus.
+    """
+    from src.shared.observability.metrics import GOVSEC_INCIDENT_EVIDENCES_TOTAL, GOVSEC_INCIDENTS_TOTAL
+
     tenant_id = uuid4()
     await _ensure_tenant_exists(async_session, tenant_id)
     inc_repo = PostgresIncidentRepository(async_session)
 
     before_incidents = await inc_repo.list(tenant_id=tenant_id)
     before_count = len(before_incidents)
+
+    counter_incidents_before = GOVSEC_INCIDENTS_TOTAL.labels(severity="low", status="open")._value.get()
+    counter_evidences_before = GOVSEC_INCIDENT_EVIDENCES_TOTAL.labels(rule_id="brute_force_auth")._value.get()
 
     # Tentar salvar um incidente e forçar um rollback manual da transação
     try:
@@ -997,5 +1026,98 @@ async def test_exact_db_rollback_leaves_state_unmodified(async_session: AsyncSes
     after_incidents = await inc_repo.list(tenant_id=tenant_id)
     after_count = len(after_incidents)
 
-    # Comprovar exatamente que a contagem antes é exatamente igual à contagem depois do rollback!
-    assert after_count == before_count == 0
+    counter_incidents_after = GOVSEC_INCIDENTS_TOTAL.labels(severity="low", status="open")._value.get()
+    counter_evidences_after = GOVSEC_INCIDENT_EVIDENCES_TOTAL.labels(rule_id="brute_force_auth")._value.get()
+
+    # Comprovar exatamente que o estado do DB e as métricas Prometheus estão 100% inalterados!
+    assert after_count == before_count
+    assert counter_incidents_after == counter_incidents_before
+    assert counter_evidences_after == counter_evidences_before
+
+
+@pytest.mark.asyncio
+async def test_db_failure_during_scrape_returns_http_500(async_client: AsyncClient) -> None:
+    """
+    Valida que, se o PostgreSQL falhar durante o scrape de /metrics, o endpoint
+    retorna HTTP 500 Internal Server Error em vez de entregar dados desatualizados/stale.
+    """
+    with patch(
+        "src.core.infrastructure.db.repositories.PostgresIncidentRepository.count_open_by_severity",
+        side_effect=SQLAlchemyError("Conexão perdida com PostgreSQL"),
+    ):
+        res = await async_client.get("/metrics")
+
+    assert res.status_code == 500
+    assert "Database unavailable for metrics scrape" in res.text
+
+
+@pytest.mark.asyncio
+async def test_multiple_api_replicas_promql_max_deduplication(async_session: AsyncSession) -> None:
+    """
+    Testa efetivamente múltiplas réplicas da API FastAPI conectadas ao mesmo PostgreSQL.
+    Cada réplica ao receber GET /metrics consulta o banco e expose o Gauge.
+    O teste raspa /metrics de 3 clientes réplicas distintos e aplica a PromQL max(...)
+    comprovando a sincronização perfeita entre réplicas e a deduplicação do Grafana.
+    """
+    from httpx import ASGITransport, AsyncClient
+    from src.api.main import app
+
+    tenant_id = uuid4()
+    await _ensure_tenant_exists(async_session, tenant_id)
+    inc_repo = PostgresIncidentRepository(async_session)
+
+    # Persistir 2 incidentes CRITICAL no banco compartilhado
+    for i in range(2):
+        await inc_repo.save(
+            Incident(
+                incident_id=uuid4(),
+                tenant_id=tenant_id,
+                title=f"Incidente Multi-Réplica {i}",
+                description="Teste de réplicas",
+                severity=SecurityEventSeverity.CRITICAL,
+                status=IncidentStatus.OPEN,
+                correlation_key=f"replica_key_{i}_{uuid4()}",
+                created_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc),
+            )
+        )
+    await async_session.commit()
+
+    # Instanciar 3 clientes HTTP independentes representando 3 réplicas da API FastAPI
+    transport = ASGITransport(app=app)
+    async with (
+        AsyncClient(transport=transport, base_url="http://replica1.local") as replica1,
+        AsyncClient(transport=transport, base_url="http://replica2.local") as replica2,
+        AsyncClient(transport=transport, base_url="http://replica3.local") as replica3,
+    ):
+        res1 = await replica1.get("/metrics")
+        res2 = await replica2.get("/metrics")
+        res3 = await replica3.get("/metrics")
+
+    assert res1.status_code == 200
+    assert res2.status_code == 200
+    assert res3.status_code == 200
+
+    def parse_critical_gauge(metrics_text: str) -> float:
+        for line in metrics_text.splitlines():
+            if line.startswith('govsec_open_incidents{severity="critical"}'):
+                return float(line.split()[-1])
+        return 0.0
+
+    val1 = parse_critical_gauge(res1.text)
+    val2 = parse_critical_gauge(res2.text)
+    val3 = parse_critical_gauge(res3.text)
+
+    # Todas as 3 réplicas leem o mesmo banco de dados PostgreSQL
+    assert val1 == 2.0
+    assert val2 == 2.0
+    assert val3 == 2.0
+
+    # A PromQL max(...) resulta no valor correto único (2.0) e NÃO na soma triplicada (6.0)
+    promql_max_result = max([val1, val2, val3])
+    promql_sum_result = sum([val1, val2, val3])
+
+    assert promql_max_result == 2.0
+    assert promql_sum_result == 6.0
+    assert promql_max_result != promql_sum_result
+

@@ -8,7 +8,7 @@ import time
 from collections.abc import Callable
 from typing import Any
 
-from fastapi import Request, Response
+from fastapi import HTTPException, Request, Response, status
 from prometheus_client import (
     CONTENT_TYPE_LATEST,
     REGISTRY,
@@ -281,12 +281,19 @@ async def sync_open_incidents_gauge_from_db(session: Any = None) -> None:
 async def safe_sync_open_incidents_gauge_from_db(session: Any = None) -> None:
     """
     Adaptador de infraestrutura seguro para sincronização do Gauge GOVSEC_OPEN_INCIDENTS a partir do banco.
-    Isola qualquer exceção de observabilidade/banco sem vazar para a camada REST HTTP.
+    Em caso de falha de conexão/consulta ao PostgreSQL, zera explicitamente o Gauge para evitar apresentar valores desatualizados velhos.
     """
+    from src.core.domain.incidents import SecurityEventSeverity
+
     try:
         await sync_open_incidents_gauge_from_db(session)
     except Exception as exc:
-        logger.warning("Falha ao sincronizar gauge de incidentes a partir do banco de dados: %s", exc)
+        logger.warning(
+            "Falha ao sincronizar gauge de incidentes a partir do banco de dados. Zerando Gauge para prevenir dados desatualizados: %s",
+            exc,
+        )
+        for sev in SecurityEventSeverity:
+            GOVSEC_OPEN_INCIDENTS.labels(severity=sev.value.lower()).set(0)
 
 
 def collect_db_pool_metrics() -> None:
@@ -349,10 +356,23 @@ async def metrics_endpoint_handler() -> Response:
     """
     Handler para o endpoint GET /metrics do Prometheus Exporter.
     Executa a sincronização dinâmica do estado verdadeiro de incidentes abertos a partir do PostgreSQL.
+    Em caso de falha no banco de dados, lança HTTP 500 para falhar o scrape do Prometheus,
+    evitando a entrega de métricas desatualizadas/stale como se fossem válidas.
     """
-    await safe_sync_open_incidents_gauge_from_db()
+    try:
+        await sync_open_incidents_gauge_from_db()
+    except Exception as exc:
+        logger.error(
+            "Falha ao conectar/consultar o PostgreSQL durante scrape de /metrics: %s",
+            exc,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Database unavailable for metrics scrape",
+        ) from exc
 
     collect_db_pool_metrics()
     data: bytes = generate_latest(REGISTRY)
     return Response(content=data, media_type=CONTENT_TYPE_LATEST)
+
 
