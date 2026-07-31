@@ -13,10 +13,15 @@ Cobre:
 """
 
 from datetime import datetime, timezone
+from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
 
 import pytest
 
+from src.core.application.correlation_handler import (
+    CorrelateSecurityEventHandler,
+    _compute_time_bucket,
+)
 from src.core.domain.correlation import CorrelationKey
 from src.core.domain.exceptions import DomainError
 from src.core.domain.incidents import (
@@ -33,11 +38,6 @@ from src.core.infrastructure.correlation.rules import (
     AuthBruteForceRule,
     InfraAvailabilityRule,
 )
-from src.core.application.correlation_handler import (
-    CorrelateSecurityEventHandler,
-    _compute_time_bucket,
-)
-
 
 # ---------------------------------------------------------------------------
 # Fixtures compartilhadas
@@ -409,9 +409,6 @@ class TestSanitizePayload:
 # ---------------------------------------------------------------------------
 # CorrelateSecurityEventHandler — Inelegibilidade e Regra Inativa (Mock UoW)
 # ---------------------------------------------------------------------------
-
-
-from unittest.mock import AsyncMock, MagicMock
 
 
 class TestCorrelateSecurityEventHandlerUnit:

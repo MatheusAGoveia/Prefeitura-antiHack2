@@ -1,6 +1,5 @@
 import hashlib
 from datetime import datetime, timedelta, timezone
-from typing import Any
 from uuid import UUID, uuid4
 
 from sqlalchemy import and_, desc, or_, select

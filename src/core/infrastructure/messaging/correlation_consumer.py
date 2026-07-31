@@ -7,7 +7,7 @@ Ele consome eventos SecurityEventReceivedEvent publicados no Kafka/Redpanda e ac
 o CorrelateSecurityEventHandler.
 
 Fluxo:
-  1. aiokafka.AIOKafkaConsumer subscreve no tópico 'govsec.security-events'.
+  1. aiokafka.AIOKafkaConsumer subscreve no tópico 'govsec.events'.
   2. Consumer Group: 'govsec-correlation-group' (configurável por env var).
   3. Para cada mensagem:
      a. Abre uma transação isolada de banco de dados (CorrelationUnitOfWork).
@@ -25,9 +25,10 @@ import asyncio
 import json
 import logging
 from collections.abc import Callable
+from typing import Any
 from uuid import UUID
 
-from aiokafka import AIOKafkaConsumer
+from aiokafka import AIOKafkaConsumer  # type: ignore[import-untyped]
 
 from src.core.application.correlation_handler import CorrelateSecurityEventHandler
 from src.core.application.interfaces.uow import CorrelationUnitOfWork
@@ -36,6 +37,14 @@ from src.core.infrastructure.config import settings
 from src.core.infrastructure.correlation.rules import get_rules_for_tenant
 
 logger = logging.getLogger(__name__)
+
+
+def default_correlation_uow_factory() -> CorrelationUnitOfWork:
+    """Fábrica padrão síncrona que instancia uma CorrelationUnitOfWork pronta para uso em gerenciador de contexto assíncrono."""
+    from src.core.infrastructure.db.repositories import PostgresCorrelationUnitOfWork
+    from src.core.infrastructure.db.unit_of_work import AsyncSessionLocal
+
+    return PostgresCorrelationUnitOfWork(AsyncSessionLocal())
 
 
 class CorrelationKafkaConsumer:
@@ -56,7 +65,7 @@ class CorrelationKafkaConsumer:
         self._group_id = group_id or settings.GOVSEC_KAFKA_CORRELATION_GROUP_ID
         prefix = settings.GOVSEC_KAFKA_TOPIC_PREFIX
         self._topic = topic or f"{prefix}.events"
-        self._uow_factory = uow_factory
+        self._uow_factory = uow_factory or default_correlation_uow_factory
         self._rules_factory = rules_factory or get_rules_for_tenant
         self._window_seconds = window_seconds
         self._consumer: AIOKafkaConsumer | None = None
@@ -99,7 +108,7 @@ class CorrelationKafkaConsumer:
             finally:
                 self._consumer = None
 
-    async def process_single_message(self, msg_value: dict) -> bool:
+    async def process_single_message(self, msg_value: dict[str, Any]) -> bool:
         """
         Processa o payload de um único evento Kafka.
         Retorna True se processado e commitado com sucesso no DB.
@@ -125,20 +134,15 @@ class CorrelationKafkaConsumer:
             logger.error("CorrelationKafkaConsumer: UUIDs inválidos no payload Kafka: %s", exc)
             return True
 
-        if self._uow_factory is None:
-            from src.core.infrastructure.db.repositories import PostgresCorrelationUnitOfWork
-            from src.core.infrastructure.db.unit_of_work import async_session_factory
-
-            def default_uow_factory() -> PostgresCorrelationUnitOfWork:
-                return PostgresCorrelationUnitOfWork(async_session_factory())
-
-            uow_factory = default_uow_factory
-        else:
-            uow_factory = self._uow_factory
-
         # Execução isolada em transação DB
         try:
-            async with uow_factory() as uow:
+            uow_or_coro = self._uow_factory()
+            if asyncio.iscoroutine(uow_or_coro):
+                uow = await uow_or_coro
+            else:
+                uow = uow_or_coro
+
+            async with uow:
                 # Carregar regras de correlação ativas para o tenant
                 rules = self._rules_factory(tenant_id)
                 active_rules: list[CorrelationRule] = []
@@ -192,7 +196,8 @@ class CorrelationKafkaConsumer:
         if self._consumer is None:
             await self.start()
 
-        assert self._consumer is not None
+        if self._consumer is None:
+            raise RuntimeError("Consumidor Kafka não foi inicializado com sucesso.")
 
         logger.info("CorrelationKafkaConsumer: iniciando loop de consumo de eventos Kafka...")
         try:

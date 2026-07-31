@@ -8,6 +8,7 @@ Uso:
 """
 
 import asyncio
+import contextlib
 import logging
 import signal
 import sys
@@ -39,11 +40,8 @@ async def main() -> None:
         stop_event.set()
 
     for sig in (signal.SIGINT, signal.SIGTERM):
-        try:
+        with contextlib.suppress(NotImplementedError):
             loop.add_signal_handler(sig, handle_signal, sig.name)
-        except NotImplementedError:
-            # Em sistemas Windows, add_signal_handler não é suportado no ProactorEventLoop
-            pass
 
     async def run_worker() -> None:
         await consumer.start()

@@ -173,7 +173,7 @@ services:
       context: ../..
       dockerfile: Dockerfile
     container_name: govsec-correlation-worker
-    command: ["poetry", "run", "python", "scripts/correlation_worker.py"]
+    command: ["/app/.venv/bin/python", "scripts/correlation_worker.py"]
     environment:
       GOVSEC_ENV: dev
       GOVSEC_DB_URL: postgresql+asyncpg://govsec:govsec@postgres:5432/govsec
@@ -184,6 +184,13 @@ services:
         condition: service_healthy
       redpanda:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/app/.venv/bin/python", "-c", "import os; exit(0 if any('correlation_worker' in open(f'/proc/{p}/cmdline').read() for p in os.listdir('/proc') if p.isdigit() and os.path.exists(f'/proc/{p}/cmdline')) else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
 
 volumes:
   postgres_data:

@@ -6,10 +6,9 @@
 
 ## 📌 Estado Atual do Projeto
 - **Repositório:** `MatheusAGoveia/Prefeitura-antiHack2`
-- **Branch Ativa:** `feature/m3-correlation-incidents`
-- **Data da Última Atualização:** 2026-07-30T14:41:00Z
+- **Branch Ativa:** `feature/m3-corre- **Data da Última Atualização:** 2026-07-31T12:12:00Z
 - **Responsável:** IA Assistente (Arquiteto Principal GovSec Shield)
-- **Status Atual:** Sprint M3.1 100% Concluída e Aprovada com aiokafka ^0.11.0, asyncpg ^0.29.0, poetry.lock versionado e Bandit 100% limpo sem skips.
+- **Status Atual:** Estabilização dos bloqueadores M3.2 100% CONCLUÍDA e APROVADA. Sistema 100% estável e pronto para a Sprint M3.3.
 
 ---
 
@@ -90,13 +89,14 @@
 | **2026-07-30** | Sprint M3.1: Persistência Assíncrona & Idempotência PostgreSQL | Implementadas as migrações Alembic `0005_create_m3_assets_security_events`, modelos SQLAlchemy, repositórios PostgreSQL assíncronos, handler CQRS `IngestSecurityEventHandler` com idempotência atômica, publicação `SecurityEventReceivedEvent` pós-commit e script de seed local. |
 | **2026-07-30** | Correção de Bloqueadores M3.1 (Integridade & Transação) | Corregida a FK composta `(tenant_id, asset_id)` para impedir violação cross-tenant, sincronizados modelos ORM e Alembic 0005, ajustada a publicação no broker estritamente pós-commit, eliminada duplicidade de auditoria em replays, adicionada validação estrita de severidade sem fallback silencioso, estendida validação UTC a `CorrelationRuleVersion` e exigida validação de `--tenant-id` ativo no seed. |
 | **2026-07-30** | Correção Final M3.1 (Empacotamento, Lockfile & Segurança Bandit) | Restauradas dependências `aiokafka = "^0.11.0"` e `asyncpg = "^0.29.0"` no `pyproject.toml`, gerado e versionado `poetry.lock` (gravando `aiokafka 0.11.0` e `asyncpg 0.29.0`), removida a seção `[tool.bandit]` (skips B105/B106) e resolvidas todas as 7 ocorrências na origem sem `#nosec` ou `#noqa`, alcançando 100% de aprovação no Bandit, Ruff, Mypy e 148/148 testes no Pytest. |
+| **2026-07-31** | Resolução Total dos Bloqueadores Operacionais da M3.2 | Tópico canônico unificado para `govsec.events`, factory padrão síncrona de UoW no consumidor com tratamento de exceção runtime no DB, `pydantic-settings` adicionado ao `pyproject.toml`/`poetry.lock`, healthcheck nativo stdlib Python e execução Docker via virtualenv `/app/.venv/bin/python`. 200 testes Pytest aprovados, Ruff 0 erros, Mypy 0 erros, Bandit 0 avisos sem skips/nosec, contêineres Docker Redpanda e correlation-worker saudáveis (healthy). |
 
 ---
 
 ## 📌 Registros Recentes & Próximos Passos
-- **Sprint M3.1 Totalmente Concluída & Auditada:** Validação estrita concluída com 148/148 testes aprovados no Pytest, `ruff` 0 erros, `mypy` 0 erros em 117 arquivos, `bandit` 0 vulnerabilidades (sem skips/nosec) em 6.632 linhas de código, `compileall` 0 erros e `poetry.lock` travado e versionado no Git.
-- **Próximos Passos (Sprint M3.2):**
-  - Criar migrações Alembic e modelos SQLAlchemy para `incidents`, `incident_evidence`, `incident_event_links` e histórico de status.
-  - Implementar motor de correlação determinístico e criação de incidentes.
-  - Criar rotas FastAPI REST para incidentes e webhook do Alertmanager.
-  - Desenvolver Event Inbox e Incident Center no dashboard Next.js.
+- **Estabilização M3.2 Finalizada com Éxito:** Todos os 4 problemas resolvidos e validados pelo pipeline de 9 etapas.
+- **Próximos Passos (Início da Sprint M3.3):**
+  1. Desenvolver as rotas REST FastAPI do módulo de Incidentes (`GET /api/v1/incidents`, `POST /api/v1/incidents/{id}/status`, `GET /api/v1/incidents/{id}/evidences`).
+  2. Implementar o webhook de recepção e desduplicação de alertas do Alertmanager.
+  3. Desenvolver os componentes frontend do Event Inbox e Incident Center no dashboard Next.js.
+

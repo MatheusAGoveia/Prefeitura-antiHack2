@@ -14,6 +14,8 @@ Cobre:
   - Transição inválida levanta InvalidStatusTransitionError
 """
 
+import asyncio
+import hashlib
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -23,38 +25,30 @@ import pytest
 import pytest_asyncio
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import create_engine, inspect, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from src.core.application.correlation_handler import CorrelateSecurityEventHandler
-from src.core.domain.correlation import CorrelationRuleVersion
 from src.core.domain.incidents import (
-    Incident,
-    IncidentEvidence,
     IncidentStatus,
     InvalidStatusTransitionError,
-    SecurityEvent,
-    SecurityEventSeverity,
 )
 from src.core.infrastructure.config import settings
 from src.core.infrastructure.correlation.rules import (
     InfraAvailabilityRule,
 )
 from src.core.infrastructure.db.models import (
-    AssetModel,
     Base,
     CorrelationRuleVersionModel,
-    IncidentEvidenceModel,
-    IncidentModel,
-    IncidentStatusHistoryModel,
+    OutboxEventModel,
     SecurityEventModel,
 )
 from src.core.infrastructure.db.repositories import (
     PostgresCorrelationUnitOfWork,
     PostgresIncidentEvidenceRepository,
     PostgresIncidentRepository,
-    PostgresSecurityEventRepository,
 )
+from src.core.infrastructure.messaging.correlation_consumer import CorrelationKafkaConsumer
 
 # Usa o banco de dados configurado no ambiente de teste
 TEST_DATABASE_URL = settings.GOVSEC_DB_URL
@@ -89,7 +83,6 @@ def _make_security_event_model(
     occurred_at: datetime | None = None,
 ) -> SecurityEventModel:
     event_id = uuid4()
-    import hashlib
     evidence_hash = hashlib.sha256(str(event_id).encode()).hexdigest()
     return SecurityEventModel(
         event_id=event_id,
@@ -208,9 +201,9 @@ async def test_ineligible_event_creates_no_incident(async_session: AsyncSession)
 
     # Verificar elegibilidade diretamente na regra (sem passar pelo handler)
     rule = InfraAvailabilityRule()
-    from src.core.domain.incidents import SecurityEvent, SecurityEventSeverity
     from datetime import datetime, timezone
-    from src.core.domain.incidents import SecurityEvent
+
+    from src.core.domain.incidents import SecurityEvent, SecurityEventSeverity
     event_domain = SecurityEvent(
         tenant_id=tenant_id,
         source="test_source",
@@ -458,9 +451,6 @@ async def test_invalid_status_transition_raises_domain_error(async_session: Asyn
 # ---------------------------------------------------------------------------
 
 
-import asyncio
-
-
 @pytest.mark.asyncio
 async def test_concurrent_executions_single_incident() -> None:
     """
@@ -508,12 +498,6 @@ async def test_concurrent_executions_single_incident() -> None:
 # ---------------------------------------------------------------------------
 # Testes do Consumidor Kafka e Garantias de Arquitetura M3.2
 # ---------------------------------------------------------------------------
-
-
-from unittest.mock import AsyncMock, MagicMock
-from src.core.infrastructure.messaging.correlation_consumer import CorrelationKafkaConsumer
-from src.core.infrastructure.messaging.kafka_event_bus import KafkaEventBus
-from src.core.domain.outbox import OutboxEvent
 
 
 @pytest.mark.asyncio
@@ -630,3 +614,78 @@ async def test_repository_count_and_stable_sorting(async_session: AsyncSession) 
 
     listed = await repo.list(tenant_id=tenant_id, skip=0, limit=10)
     assert len(listed) == 3
+
+
+@pytest.mark.asyncio
+async def test_ineligible_event_does_not_create_incident(async_session: AsyncSession) -> None:
+    """Valida que evento inelegível (ex: tipo de evento ignorado) não cria incidente."""
+    tenant_id = uuid4()
+    def test_uow_factory() -> PostgresCorrelationUnitOfWork:
+        return PostgresCorrelationUnitOfWork(async_session)
+
+    consumer = CorrelationKafkaConsumer(uow_factory=test_uow_factory)
+    kafka_msg_value = {
+        "event_type": "OtherUnrelatedEvent",
+        "tenant_id": str(tenant_id),
+        "security_event_id": str(uuid4()),
+    }
+
+    success = await consumer.process_single_message(kafka_msg_value)
+    assert success is True
+
+    repo = PostgresIncidentRepository(async_session)
+    incidents = await repo.list(tenant_id=tenant_id)
+    assert len(incidents) == 0, "Evento inelegível não deve criar incidentes."
+
+
+@pytest.mark.asyncio
+async def test_replay_does_not_duplicate_incident_or_evidence(async_session: AsyncSession) -> None:
+    """Valida que reprocessar (replay) a mesma mensagem Kafka não duplica incidentes nem evidências."""
+    tenant_id = uuid4()
+    event_model = _make_security_event_model(tenant_id=tenant_id, event_type="service_down")
+    async_session.add(event_model)
+    await async_session.commit()
+
+    def test_uow_factory() -> PostgresCorrelationUnitOfWork:
+        return PostgresCorrelationUnitOfWork(async_session)
+
+    consumer = CorrelationKafkaConsumer(uow_factory=test_uow_factory)
+    kafka_msg_value = {
+        "event_type": "SecurityEventReceivedEvent",
+        "tenant_id": str(tenant_id),
+        "security_event_id": str(event_model.event_id),
+    }
+
+    # Primeira execução (Original)
+    res1 = await consumer.process_single_message(kafka_msg_value)
+    assert res1 is True
+
+    # Segunda execução (Replay)
+    res2 = await consumer.process_single_message(kafka_msg_value)
+    assert res2 is True
+
+    repo = PostgresIncidentRepository(async_session)
+    incidents = await repo.list(tenant_id=tenant_id)
+    assert len(incidents) == 1, "Replay não deve criar segundo incidente."
+
+    evidence_repo = PostgresIncidentEvidenceRepository(async_session)
+    evidences = await evidence_repo.list_by_incident(tenant_id=tenant_id, incident_id=incidents[0].incident_id)
+    assert len(evidences) == 1, "Replay não deve duplicar evidência."
+
+
+@pytest.mark.asyncio
+async def test_handler_failure_returns_false_and_does_not_commit_offset() -> None:
+    """Valida que se o handler ou a fábrica de UoW falharem com erro no banco, o consumidor retorna False."""
+    def broken_uow_factory() -> PostgresCorrelationUnitOfWork:
+        raise RuntimeError("Falha de conexão com o banco de dados")
+
+    consumer = CorrelationKafkaConsumer(uow_factory=broken_uow_factory)
+    kafka_msg_value = {
+        "event_type": "SecurityEventReceivedEvent",
+        "tenant_id": str(uuid4()),
+        "security_event_id": str(uuid4()),
+    }
+
+    success = await consumer.process_single_message(kafka_msg_value)
+    assert success is False, "Se o DB/handler falhar, process_single_message deve retornar False para abortar commit de offset."
+

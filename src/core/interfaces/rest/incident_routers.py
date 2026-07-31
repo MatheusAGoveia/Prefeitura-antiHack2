@@ -23,10 +23,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.application.dto import (
+    VALID_INCIDENT_STATUSES,
     ChangeIncidentStatusDTO,
     IncidentListResponseDTO,
     IncidentResponseDTO,
-    VALID_INCIDENT_STATUSES,
 )
 from src.core.domain.exceptions import DomainError
 from src.core.domain.incidents import IncidentStatus, InvalidStatusTransitionError

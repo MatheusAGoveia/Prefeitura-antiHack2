@@ -11,7 +11,6 @@ Cada regra é:
 """
 
 from collections.abc import Sequence
-from datetime import datetime, timezone
 from uuid import UUID
 
 from src.core.domain.correlation import CorrelationKey, CorrelationRule
