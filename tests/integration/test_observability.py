@@ -9,11 +9,16 @@ from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID
 
 import pytest
+import pytest_asyncio
 from fastapi.testclient import TestClient
+from httpx import ASGITransport, AsyncClient
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from src.api.main import app
 from src.core.application.commands import Command, CommandMetadata
 from src.core.application.queries import GetTenantByIdQuery, TenantQueryHandler
+from src.core.infrastructure.config import settings
+from src.core.infrastructure.db.models import Base
 from src.core.infrastructure.messaging.command_bus import CommandBus
 from src.shared.observability.logging import GovSecJSONFormatter
 
@@ -23,12 +28,36 @@ def client() -> TestClient:
     return TestClient(app)
 
 
-def test_metrics_endpoint(client: TestClient) -> None:
-    """Valida a exposição e formato do endpoint GET /metrics do Prometheus Exporter."""
-    # Fazer uma requisição prévia para registrar tráfego
-    client.get("/healthz")
+@pytest_asyncio.fixture
+async def async_session_obs():
+    """Sessão DB isolada para testes de observabilidade que requerem acesso ao banco."""
+    engine = create_async_engine(settings.GOVSEC_DB_URL, echo=False)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with factory() as session:
+        yield session
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
+    await engine.dispose()
 
-    response = client.get("/metrics")
+
+@pytest.mark.asyncio
+async def test_metrics_endpoint(async_session_obs: AsyncSession) -> None:
+    """Valida a exposição e formato do endpoint GET /metrics do Prometheus Exporter."""
+    from src.core.infrastructure.db.unit_of_work import get_db_session
+
+    async def _override_get_db_session():
+        yield async_session_obs
+
+    app.dependency_overrides[get_db_session] = _override_get_db_session
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            await ac.get("/healthz")  # Registrar tráfego antes do scrape
+            response = await ac.get("/metrics")
+    finally:
+        app.dependency_overrides.pop(get_db_session, None)
+
     assert response.status_code == 200
     assert "text/plain" in response.headers["content-type"] or "version=0.0.4" in response.headers["content-type"]
 

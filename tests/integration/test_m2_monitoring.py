@@ -9,12 +9,16 @@ from typing import TYPE_CHECKING
 from uuid import uuid4
 
 import pytest
+import pytest_asyncio
 import yaml
 from fastapi.testclient import TestClient
+from httpx import ASGITransport, AsyncClient
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from src.api.main import app
 from src.core.domain.entities import AlertAcknowledgement, AuditLog
-from src.core.infrastructure.config import Settings
+from src.core.infrastructure.config import Settings, settings
+from src.core.infrastructure.db.models import Base
 from src.core.infrastructure.db.repositories import (
     InMemoryAlertAcknowledgementRepository,
     InMemoryLogRepository,
@@ -32,6 +36,20 @@ if TYPE_CHECKING:
 @pytest.fixture
 def client() -> TestClient:
     return TestClient(app)
+
+
+@pytest_asyncio.fixture
+async def async_session_m2():
+    """Sessão DB isolada para testes de métricas de M2 que requerem acesso ao banco."""
+    engine = create_async_engine(settings.GOVSEC_DB_URL, echo=False)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with factory() as session:
+        yield session
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
+    await engine.dispose()
 
 
 # -----------------------------------------------------------------------------
@@ -144,10 +162,22 @@ async def test_in_memory_and_postgres_log_repository_flow():
 # 4. Métricas Prometheus e Pool DB (Section 7)
 # -----------------------------------------------------------------------------
 
-def test_prometheus_metrics_endpoint_contains_m2_gauges(client: TestClient):
+@pytest.mark.asyncio
+async def test_prometheus_metrics_endpoint_contains_m2_gauges(async_session_m2: AsyncSession) -> None:
     """Valida exposição de métricas operacionais de M2 no endpoint /metrics."""
-    collect_db_pool_metrics()
-    response = client.get("/metrics")
+    from src.core.infrastructure.db.unit_of_work import get_db_session
+
+    async def _override_get_db_session():
+        yield async_session_m2
+
+    app.dependency_overrides[get_db_session] = _override_get_db_session
+    try:
+        collect_db_pool_metrics()
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            response = await ac.get("/metrics")
+    finally:
+        app.dependency_overrides.pop(get_db_session, None)
+
     assert response.status_code == 200
     content = response.text
 

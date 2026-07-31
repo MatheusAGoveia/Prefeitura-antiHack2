@@ -905,6 +905,14 @@ async def test_dynamic_metrics_scrape_reflects_worker_created_incident(
     success = await consumer.process_single_message(kafka_msg)
     assert success is True
 
+    inc_repo = PostgresIncidentRepository(async_session)
+
+    # Consultar o estado real do banco APÓS o worker ter processado o evento
+    # Esta é a fonte de verdade que o /metrics deve refletir exatamente
+    counts_from_db = await inc_repo.count_open_by_severity()
+    expected_high = float(counts_from_db.get("high", 0))
+    assert expected_high >= 1.0, "O worker deve ter criado pelo menos 1 incidente de severidade high"
+
     # Requisitar GET /metrics no endpoint FastAPI sem chamadas manuais no teste
     res = await async_client.get("/metrics")
     assert res.status_code == 200
@@ -915,7 +923,12 @@ async def test_dynamic_metrics_scrape_reflects_worker_created_incident(
     lines = [line for line in metrics_text.splitlines() if line.startswith('govsec_open_incidents{severity="high"}')]
     assert len(lines) > 0, "Métrica govsec_open_incidents com severity high não encontrada no scrape /metrics"
     val = float(lines[0].split()[-1])
-    assert val >= 1.0, "Scrape /metrics não refletiu o incidente criado pelo worker!"
+
+    # Comparação exata: o valor do Gauge via /metrics deve ser idêntico ao count_open_by_severity() do Postgres
+    assert val == expected_high, (
+        f"Scrape /metrics retornou {val} mas PostgreSQL count_open_by_severity retornou {expected_high}. "
+        "O Gauge deve refletir exatamente o estado do banco!"
+    )
 
 
 @pytest.mark.asyncio
@@ -931,6 +944,7 @@ async def test_real_event_replay_processing_no_duplicates_or_extra_metrics(async
     from src.core.infrastructure.messaging.correlation_consumer import CorrelationKafkaConsumer
     from src.shared.observability.metrics import (
         GOVSEC_INCIDENT_EVIDENCES_TOTAL,
+        GOVSEC_INCIDENTS_TOTAL,
     )
 
     tenant_id = uuid4()
@@ -948,7 +962,9 @@ async def test_real_event_replay_processing_no_duplicates_or_extra_metrics(async
         "security_event_id": str(event_id),
     }
 
+    # Capturar ambos os contadores ANTES do 1º processamento
     evidence_counter_before = GOVSEC_INCIDENT_EVIDENCES_TOTAL.labels(rule_id="R-INFRA-001")._value.get()
+    incidents_counter_before = GOVSEC_INCIDENTS_TOTAL.labels(severity="high", status="open")._value.get()
 
     # 1º Processamento do evento
     success_1 = await consumer.process_single_message(kafka_msg)
@@ -964,8 +980,14 @@ async def test_real_event_replay_processing_no_duplicates_or_extra_metrics(async
     evidences_after_first = await ev_repo.list_by_incident(first_inc_id, tenant_id)
     assert len(evidences_after_first) == 1
 
+    # GOVSEC_INCIDENT_EVIDENCES_TOTAL é incrementado pelo pipeline de correlação pós-commit
     evidence_counter_after_1st = GOVSEC_INCIDENT_EVIDENCES_TOTAL.labels(rule_id="R-INFRA-001")._value.get()
     assert evidence_counter_after_1st == evidence_counter_before + 1
+
+    # GOVSEC_INCIDENTS_TOTAL é incrementado apenas pelos handlers REST (não pelo pipeline de correlação)
+    # Capturar valor atual após 1º processamento para usar como baseline no replay
+    incidents_counter_after_1st = GOVSEC_INCIDENTS_TOTAL.labels(severity="high", status="open")._value.get()
+    assert incidents_counter_after_1st == incidents_counter_before  # não é incrementado pelo pipeline
 
     # 2º Processamento do MESMO evento (REPLAY REAL)
     success_2 = await consumer.process_single_message(kafka_msg)
@@ -978,9 +1000,16 @@ async def test_real_event_replay_processing_no_duplicates_or_extra_metrics(async
     evidences_after_replay = await ev_repo.list_by_incident(first_inc_id, tenant_id)
     assert len(evidences_after_replay) == 1
 
-    # Garantir que o contador Prometheus não sofreu NENHUM incremento duplo no replay!
+    # AMBOS os contadores Prometheus devem permanecer rigorosamente idênticos após o replay
     evidence_counter_after_2nd = GOVSEC_INCIDENT_EVIDENCES_TOTAL.labels(rule_id="R-INFRA-001")._value.get()
-    assert evidence_counter_after_2nd == evidence_counter_after_1st
+    incidents_counter_after_2nd = GOVSEC_INCIDENTS_TOTAL.labels(severity="high", status="open")._value.get()
+
+    assert evidence_counter_after_2nd == evidence_counter_after_1st, (
+        f"GOVSEC_INCIDENT_EVIDENCES_TOTAL incrementou no replay! {evidence_counter_after_1st} -> {evidence_counter_after_2nd}"
+    )
+    assert incidents_counter_after_2nd == incidents_counter_after_1st, (
+        f"GOVSEC_INCIDENTS_TOTAL incrementou no replay! {incidents_counter_after_1st} -> {incidents_counter_after_2nd}"
+    )
 
 
 @pytest.mark.asyncio
@@ -1037,39 +1066,44 @@ async def test_exact_db_rollback_leaves_state_and_prometheus_unmodified(async_se
 
 
 @pytest.mark.asyncio
-async def test_db_failure_during_scrape_preserves_gauge_without_false_zero_state(async_session: AsyncSession) -> None:
+async def test_db_failure_during_scrape_returns_http_500(async_client: AsyncClient) -> None:
     """
-    Valida que, se o PostgreSQL falhar durante safe_sync_open_incidents_gauge_from_db,
-    a função registra warning no log e NÃO zera as severidades publicando um estado falso.
+    Valida que, se o PostgreSQL falhar durante o scrape autoritativo de /metrics, o endpoint
+    retorna HTTP 500 Internal Server Error em vez de entregar dados stale como se fossem válidos.
+
+    Justificativa Arquitetural:
+    O scrape Prometheus é autoritativo. Quando o banco está indisponível, o Prometheus deve
+    registrar a raspagem como falha (up=0) e acionar alertas de indisponibilidade, não consumir
+    silenciosamente dados desatualizados que podem mascarar incidentes críticos.
     """
-    from src.shared.observability.metrics import (
-        GOVSEC_OPEN_INCIDENTS,
-        safe_sync_open_incidents_gauge_from_db,
-    )
-
-    # Forçar gauge inicial com valor positivo (ex: 3)
-    GOVSEC_OPEN_INCIDENTS.labels(severity="critical").set(3.0)
-
-    # Simular falha de conexão com o banco
-    mock_failing_session = AsyncMock()
-
     with patch(
         "src.core.infrastructure.db.repositories.PostgresIncidentRepository.count_open_by_severity",
+        new_callable=AsyncMock,
         side_effect=SQLAlchemyError("Conexão perdida com PostgreSQL"),
     ):
-        await safe_sync_open_incidents_gauge_from_db(mock_failing_session)
+        res = await async_client.get("/metrics")
 
-    # O Gauge NÃO foi zerado para publicar um estado falso (manteve 3.0)
-    assert GOVSEC_OPEN_INCIDENTS.labels(severity="critical")._value.get() == 3.0
+    assert res.status_code == 500, (
+        f"Esperado HTTP 500 quando PostgreSQL falha no scrape de /metrics, obtido {res.status_code}"
+    )
+    assert "Database unavailable for metrics scrape" in res.text
 
 
 @pytest.mark.asyncio
 async def test_multiple_api_replicas_promql_max_deduplication(async_session: AsyncSession) -> None:
     """
-    Simula 3 réplicas independentes da API FastAPI, cada uma com seu próprio CollectorRegistry e
-    instância isolada do Gauge GOVSEC_OPEN_INCIDENTS, lendo o mesmo banco de dados PostgreSQL.
-    Valida que a raspagem de cada réplica produz séries Prometheus independentes e que a PromQL
-    max(govsec_open_incidents) by (severity) calcula o estado verdadeiro único (2.0) deduplicando as réplicas.
+    SIMULAÇÃO matemática com CollectorRegistry isolados (não réplicas HTTP reais).
+
+    Este teste comprova o comportamento da PromQL para o caso de múltiplas réplicas:
+      - 3 CollectorRegistry totalmente isolados em memória representam 3 séries Prometheus
+        independentes, cada uma correspondendo a uma réplica da API.
+      - Cada série lê o mesmo PostgreSQL e produz o mesmo valor (2.0 para CRITICAL).
+      - max(2.0, 2.0, 2.0) = 2.0 deduplica corretamente o estado real do banco.
+      - sum(2.0, 2.0, 2.0) = 6.0 confirma que sum() seria incorrecto para réplicas.
+
+    Limitação: Este teste não valida réplicas HTTP Docker distintas nem scraping real
+    pelo servidor Prometheus. Para validação com réplicas Docker reais, consulte:
+    docs/multi_replica_prometheus_validation.md
     """
     from prometheus_client import CollectorRegistry, Gauge, generate_latest
 

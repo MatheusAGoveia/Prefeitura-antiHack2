@@ -8,7 +8,7 @@ import time
 from collections.abc import Callable
 from typing import Any
 
-from fastapi import Depends, Request, Response
+from fastapi import Depends, HTTPException, Request, Response
 from prometheus_client import (
     CONTENT_TYPE_LATEST,
     REGISTRY,
@@ -17,6 +17,7 @@ from prometheus_client import (
     Histogram,
     generate_latest,
 )
+from starlette import status as http_status
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from src.core.infrastructure.config import settings
@@ -346,12 +347,29 @@ class PrometheusMetricsMiddleware(BaseHTTPMiddleware):
 
 async def metrics_endpoint_handler(session: Any = Depends(get_db_session)) -> Response:
     """
-    Handler para o endpoint GET /metrics do Prometheus Exporter.
-    Executa a sincronização dinâmica do estado verdadeiro de incidentes abertos a partir do PostgreSQL.
-    Caso o banco esteja indisponível, safe_sync_open_incidents_gauge_from_db registra warning
-    sem publicar estados zerados falsos.
+    Handler autoritativo para o endpoint GET /metrics do Prometheus Exporter.
+
+    Justificativa Arquitetural:
+    O scrape de métricas é autoritativo — não deve retornar dados stale quando o banco
+    está indisponível. Por isso, usa sync_open_incidents_gauge_from_db() (sem adaptador
+    safe_*) e propaga a falha como HTTP 500. Isso permite que o Prometheus registre
+    a raspagem como falha (up=0) ao invés de consumir dados desatualizados silenciosamente.
+
+    O adaptador safe_sync_open_incidents_gauge_from_db() permanece disponível para
+    fluxos nos quais a falha de observabilidade NÃO deve interromper o processamento
+    (ex: pós-commit no consumidor Kafka).
     """
-    await safe_sync_open_incidents_gauge_from_db(session)
+    try:
+        await sync_open_incidents_gauge_from_db(session)
+    except Exception as exc:
+        logger.error(
+            "Falha ao consultar PostgreSQL no scrape autoritativo de /metrics: %s",
+            exc,
+        )
+        raise HTTPException(
+            status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Database unavailable for metrics scrape",
+        ) from exc
 
     collect_db_pool_metrics()
     data: bytes = generate_latest(REGISTRY)
