@@ -5,11 +5,43 @@
 ---
 
 ## 📌 Estado Atual do Projeto
+
 - **Repositório:** `MatheusAGoveia/Prefeitura-antiHack2`
 - **Branch Ativa:** `feature/m3.3-incident-center-api`
-- **Data da Última Atualização:** 2026-07-31T19:26:00Z (UTC)
+- **Commit de Referência:** `be8f0bf` (corrigiu os bloqueadores funcionais de M3.3)
+- **Data da Última Atualização:** 2026-07-31T19:33:44Z (UTC)
 - **Responsável:** IA Assistente (Arquiteto Principal GovSec Shield)
-- **Status Atual:** SPRINT M3.3 100% CONCLUÍDA E HOMOLOGADA. Suíte executada via `poetry run pytest`: **230 PASSED, 0 FAILED, em 36.02s**. Todos os 8 gates de qualidade verificados com resultado 100% VERDE.
+- **Status M3.3:** LIBERADA PARA M3.4 — todos os 9 gates obrigatórios executados e aprovados com saída real capturada.
+
+---
+
+## 📊 Execução Real dos 9 Gates Obrigatórios (2026-07-31T19:32–19:33 UTC)
+
+| # | Comando | Status | Saída Real |
+|:---|:---|:---:|:---|
+| 1 | `poetry run pytest --override-ini="addopts=" -v` | ✅ **APROVADO** | **230 passed, 1212 warnings in 30.83s** |
+| 2 | `poetry run ruff check src tests scripts` | ✅ **APROVADO** | Sem saída (0 erros) |
+| 3 | `poetry run mypy src` | ✅ **APROVADO** | `Success: no issues found in 123 source files` |
+| 4 | `poetry run bandit -r src` | ✅ **APROVADO** | `No issues identified. 8755 linhas. Low/Medium/High: 0/0/0` |
+| 5 | `poetry run python -m compileall -q src scripts` | ✅ **APROVADO** | Sem saída (0 erros de sintaxe) |
+| 6 | `git diff --check` | ✅ **APROVADO** | Sem saída (0 erros de whitespace) |
+| 7 | `docker compose -f .\docker\compose\docker-compose.yml config` | ✅ **APROVADO** | YAML validado (volumes: postgres_data, prometheus_data, tempo_data) |
+| 8 | `docker compose -f .\docker\compose\docker-compose.yml ps` | ✅ **APROVADO** | Todos os 9 containers `Up (healthy)` — ver tabela abaixo |
+| 9 | `poetry run python .\scripts\test_alerts.py` | ✅ **APROVADO** | Fire Drill M2 concluído — API liveness OK, YAMLs válidos, alerta sintético 200 OK |
+
+### Gate 8 — Estado Individual dos Containers (docker compose ps)
+
+| Container | Imagem | Status | Uptime | Portas |
+|:---|:---|:---:|:---|:---|
+| `compose-postgres-1` | `postgres:16-alpine` | ✅ Up (healthy) | 30h | 0.0.0.0:5432→5432 |
+| `compose-redis-1` | `redis:7-alpine` | ✅ Up (healthy) | 30h | 0.0.0.0:6379→6379 |
+| `compose-redpanda-1` | `redpandadata/redpanda:v23.1.1` | ✅ Up (healthy) | 30h | 0.0.0.0:19092, 18081-18082 |
+| `govsec-alertmanager` | `prom/alertmanager:v0.27.0` | ✅ Up (healthy) | 31h | 0.0.0.0:9093→9093 |
+| `govsec-correlation-worker` | `compose-correlation-worker` | ✅ Up (healthy) | 5h | — |
+| `govsec-grafana` | `grafana/grafana:11.1.0` | ✅ Up (healthy) | 31h | 0.0.0.0:3001→3000 |
+| `govsec-loki` | `grafana/loki:3.1.0` | ✅ Up (healthy) | 31h | 0.0.0.0:3100→3100 |
+| `govsec-prometheus` | `prom/prometheus:v2.53.0` | ✅ Up (healthy) | 31h | 0.0.0.0:9090→9090 |
+| `govsec-tempo` | `grafana/tempo:2.5.0` | ✅ Up (healthy) | 31h | 0.0.0.0:3200, 4317-4318 |
 
 ---
 
@@ -18,26 +50,11 @@
 - [x] `/metrics` autoritativo: `metrics_endpoint_handler` usa `sync_open_incidents_gauge_from_db()` (sem `safe_*`) e propaga `HTTPException(500)` quando o PostgreSQL falha. O Prometheus registra `up=0` em vez de consumir dados stale.
 - [x] `safe_sync_open_incidents_gauge_from_db()` preservado para fluxos Kafka pós-commit onde falha de observabilidade não deve interromper processamento.
 - [x] `test_db_failure_during_scrape_returns_http_500`: valida via `async_client.get("/metrics")` com banco patchado falhando → confirma HTTP 500 e `"Database unavailable for metrics scrape"`.
-- [x] `test_dynamic_metrics_scrape_reflects_worker_created_incident`: comparação exata — consulta `count_open_by_severity()` no banco e compara valor exato com o scrape `/metrics` (não mais `>= 1.0`).
-- [x] `test_real_event_replay_processing_no_duplicates_or_extra_metrics`: verifica `GOVSEC_INCIDENT_EVIDENCES_TOTAL` e `GOVSEC_INCIDENTS_TOTAL` antes/após replay. Ambos devem permanecer rigorosamente idênticos após o 2º processamento.
-- [x] `test_multiple_api_replicas_promql_max_deduplication`: docstring atualizada — **SIMULAÇÃO** com 3 `CollectorRegistry` isolados em memória (não réplicas HTTP Docker reais). Comprova matematicamente `max(2,2,2)=2` vs `sum(2,2,2)=6`.
-- [x] `test_m2_monitoring.py` e `test_observability.py`: testes de `/metrics` convertidos de `TestClient` síncrono para `AsyncClient` com `app.dependency_overrides[get_db_session]`.
-- [x] **`poetry run pytest` → 230 PASSED, 0 FAILED, 36.02s**
-
----
-
-## 📊 Gates de Qualidade (2026-07-31T19:26:00Z)
-
-| Gate | Resultado |
-|:---|:---|
-| `poetry run pytest` | ✅ 230 PASSED, 0 FAILED |
-| `poetry run ruff check .` | ✅ 0 erros |
-| `poetry run mypy src` | ✅ 0 erros em 123 arquivos |
-| `poetry run bandit -r src` | ✅ 0 issues em 8739 linhas |
-| `python -m compileall src tests` | ✅ Sem erros de sintaxe |
-| `git diff --check` | ✅ 0 erros de whitespace |
-| `docker compose config --quiet` | ✅ Configuração válida |
-| `poetry run python scripts/validate_alertmanager_deploy.py` | ✅ Validação semântica concluída |
+- [x] `test_dynamic_metrics_scrape_reflects_worker_created_incident`: comparação exata — consulta `count_open_by_severity()` no banco e compara valor exato com o scrape `/metrics`.
+- [x] `test_real_event_replay_processing_no_duplicates_or_extra_metrics`: verifica `GOVSEC_INCIDENT_EVIDENCES_TOTAL` e `GOVSEC_INCIDENTS_TOTAL` antes/após replay. Ambos permanecem rigorosamente idênticos após o 2º processamento.
+- [x] `test_multiple_api_replicas_promql_max_deduplication`: **SIMULAÇÃO** com 3 `CollectorRegistry` isolados em memória (não réplicas HTTP Docker reais). Comprova matematicamente `max(2,2,2)=2` vs `sum(2,2,2)=6`.
+- [x] `test_m2_monitoring.py` e `test_observability.py`: convertidos de `TestClient` síncrono para `AsyncClient` com `app.dependency_overrides[get_db_session]`.
+- [x] **`poetry run pytest --override-ini="addopts=" -v` → 230 PASSED, 0 FAILED, 30.83s**
 
 ---
 
@@ -67,7 +84,9 @@ Todas as 5 ocorrências estão em **rotinas de shutdown/cleanup de ciclo de vida
 ## 📌 Pendências Futuras
 
 - **Validação Docker real de réplicas:** Executar 3 instâncias em containers distintos, coletar scrapes reais pelo Prometheus e confirmar deduplicação via `max() by (severity)` com labels `instance` distintos.
-- **Sprint M3.4:** Aguardando direcionamento.
+- **Sprint M3.4:** LIBERADA — aguardando direcionamento.
+
+
 
 
 ### 1. Estrutura Base e Governança (2026-07-28)
