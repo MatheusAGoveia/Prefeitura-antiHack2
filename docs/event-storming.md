@@ -18,7 +18,10 @@ Este documento mapeia o **Event Storming** do GovSec Shield, estabelecendo a rel
 | **Asset Management** | `ScanPortsCommand` | `target_cidr`, `ports_range` | `PortScanCompletedEvent` | `govsec.asset.scan-completed` |
 | **Risk Engine** | `CalculateAssetRiskCommand` | `asset_id`, `cve_id`, `cvss_score` | `AssetRiskCalculatedEvent` | `govsec.risk.calculated` |
 | **Incident Response** | `CreateIncidentCommand` | `asset_id`, `severity`, `details` | `IncidentCreatedEvent` | `govsec.incident.created` |
+| **Incident Response** ✅ M3.2 | `ChangeIncidentStatusCommand` | `incident_id`, `to_status`, `actor_id`, `reason` | `IncidentStatusChangedEvent` | `govsec.incident.status-changed` |
+| **Incident Response** ✅ M3.2 | `LinkEvidenceCommand` | `incident_id`, `security_event_id`, `rule_id` | `EvidenceLinkedEvent` | `govsec.incident.evidence-linked` |
 | **Incident Response** | `ExecutePlaybookCommand` | `incident_id`, `playbook_name` | `PlaybookExecutedEvent` | `govsec.incident.playbook-executed` |
+| **Correlation Engine** ✅ M3.2 | (Consumidor Kafka) `SecurityEventReceivedEvent` | `tenant_id`, `security_event_id` | `IncidentCorrelatedEvent` \| `EvidenceLinkedEvent` | `govsec.correlation.security-events` |
 | **System Governance** | `RecordAuditLogCommand` | `actor_id`, `action`, `resource` | `AuditRecordCreatedEvent` | `govsec.system.audit-recorded` |
 
 ---
@@ -62,7 +65,51 @@ sequenceDiagram
 
 ---
 
-## 3. Envelope Canônico de Evento e Correlação de Dados (M0.7)
+## 3. Fluxo Operacional B: Correlação Determinística de Eventos → Incidente Aberto (M3.2 / M3.3) ✅
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Collector as 🖥️ Collector (Wazuh/Syslog)
+    participant API as ⚡ Core Platform API (FastAPI)
+    participant Broker as 🚀 Redpanda (Kafka Protocol)
+    participant Worker as ⚙️ CorrelationKafkaConsumer (Worker)
+    participant Engine as 🧮 CorrelationEngine (Domain)
+    participant PG as 🐘 PostgreSQL (Fonte de Verdade)
+    participant Prom as 📊 Prometheus (/metrics)
+
+    Collector->>API: POST /api/v1/logs (SecurityEvent)
+    API->>PG: Persiste SecurityEventModel (transactional outbox)
+    API->>Broker: Publica SecurityEventReceivedEvent (tenant_id, security_event_id)
+
+    Broker->>Worker: process_single_message(SecurityEventReceivedEvent)
+    Worker->>Engine: correlate(security_event)
+    Engine->>Engine: Aplica regras tipadas (R-INFRA-001, R-AUTH-001...)
+    Engine->>Engine: Gera CorrelationKey SHA-256 (tenant, rule_id, version, time_window)
+
+    alt Incidente novo (CorrelationKey não existe)
+        Engine->>PG: Persiste Incident(status=OPEN) + IncidentEvidence
+        Worker->>Worker: safe_record_incident_evidence_added(rule_id)
+        Worker-->>Broker: ACK (offset confirmado)
+    else Replay / Incidente já existente (idempotência)
+        Engine->>PG: Lê incidente existente, NÃO cria duplicata
+        Worker-->>Broker: ACK (sem alteração de estado ou métricas)
+    end
+
+    Prom->>API: GET /metrics (scrape autoritativo)
+    API->>PG: sync_open_incidents_gauge_from_db() → count_open_by_severity()
+    alt PostgreSQL disponível
+        PG-->>API: {high: 1, critical: 0, ...}
+        API-->>Prom: HTTP 200 + govsec_open_incidents{severity="high"} 1.0
+    else PostgreSQL indisponível
+        PG-->>API: SQLAlchemyError
+        API-->>Prom: HTTP 500 (up=0 — scrape falhou, sem dados stale)
+    end
+```
+
+---
+
+## 4. Envelope Canônico de Evento e Correlação de Dados (M0.7)
 
 Todo evento emitido na infraestrutura Redpanda Kafka obedece ao seguinte envelope JSON unificado:
 

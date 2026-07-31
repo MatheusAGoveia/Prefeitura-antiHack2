@@ -31,7 +31,7 @@ graph TD
 
 ## 2. Nível C2 — Diagrama de Contêineres (Containers Diagram)
 
-O Diagrama de Contêineres descreve a topologia interna das aplicações, barramentos de mensageria e bancos de dados que compõem o GovSec Shield.
+O Diagrama de Contêineres descreve a topologia interna das aplicações, barramentos de mensageria e bancos de dados que compõem o GovSec Shield, atualizado com os containers reais em execução (M3.3).
 
 ```mermaid
 graph TD
@@ -43,8 +43,20 @@ graph TD
         fastapi_app["⚡ Core Platform API<br/>[Python 3.12 / FastAPI / Uvicorn]<br/>API RESTful assíncrona e endpoints de ingestão"]
     end
 
+    subgraph WorkerLayer ["Layer 2b: Background Workers"]
+        corr_worker["⚙️ Correlation Worker<br/>[CorrelationKafkaConsumer]<br/>Consumidor Kafka de SecurityEventReceivedEvent<br/>Aplica regras determinísticas e persiste incidentes"]
+    end
+
     subgraph SecurityKernelLayer ["Layer 3: Security & Policies"]
         opa_container["🔒 OPA Engine<br/>[Open Policy Agent Container]<br/>Validador de políticas Rego (INV-005)"]
+    end
+
+    subgraph ObservabilityLayer ["Layer 3b: Observability Stack"]
+        prometheus["📊 Prometheus<br/>[prom/prometheus:v2.53.0]<br/>Coleta métricas via /metrics (scrape autoritativo)"]
+        grafana["📈 Grafana<br/>[grafana/grafana:11.1.0]<br/>Dashboard golden signals + incidentes abertos"]
+        loki["📋 Loki<br/>[grafana/loki:3.1.0]<br/>Agregação de logs estruturados JSON"]
+        tempo["🔍 Tempo<br/>[grafana/tempo:2.5.0]<br/>Rastreamento distribuído OpenTelemetry"]
+        alertmanager["🔔 Alertmanager<br/>[prom/alertmanager:v0.27.0]<br/>Roteamento de alertas críticos"]
     end
 
     subgraph BrokerLayer ["Layer 4: Message Broker"]
@@ -52,58 +64,67 @@ graph TD
     end
 
     subgraph StorageLayer ["Layer 5: Persistence & Cache"]
-        postgres_db[("🐘 PostgreSQL 16 DB<br/>[PostgreSQL + RLS Enabled]<br/>Banco OLTP transacional multi-tenant com RLS")]
-        redis_cache[("⚡ Redis 7 Cache<br/>[In-Memory Cache]<br/>Cache de sessões JWT e taxa de limite (Rate Limit)")]
+        postgres_db[("🐘 PostgreSQL 16 DB<br/>[PostgreSQL + RLS Enabled]<br/>Fonte de verdade para incidentes, evidências e métricas")]
+        redis_cache[("⚡ Redis 7 Cache<br/>[In-Memory Cache]<br/>Cache de sessões JWT e Rate Limit")]
     end
 
     dashboard_web -->|"Consome API via REST / JSON (HTTPS)"| fastapi_app
     fastapi_app -->|"Valida escopo e autorização (HTTP)"| opa_container
-    fastapi_app -->|"Publica e consome eventos de domínio (Kafka Protocol)"| redpanda_broker
-    fastapi_app -->|"Persiste entidades com RLS e Lock Otimista (AsyncPG)"| postgres_db
+    fastapi_app -->|"Publica SecurityEventReceivedEvent (Kafka Protocol)"| redpanda_broker
+    fastapi_app -->|"Persiste entidades com RLS (AsyncPG)"| postgres_db
     fastapi_app -->|"Armazena sessões e limites (RESP)"| redis_cache
+    fastapi_app -->|"Expõe GET /metrics (scrape autoritativo)"| prometheus
+    corr_worker -->|"Consome SecurityEventReceivedEvent"| redpanda_broker
+    corr_worker -->|"Persiste Incident + Evidence (transacional)"| postgres_db
+    prometheus -->|"Scrape /metrics → govsec_open_incidents"| fastapi_app
+    prometheus -->|"Dispara alertas (PromQL rules)"| alertmanager
+    grafana -->|"Consulta métricas (PromQL)"| prometheus
+    grafana -->|"Consulta logs (LogQL)"| loki
+    grafana -->|"Consulta traces (TraceQL)"| tempo
 ```
 
 ---
 
-## 3. Nível C3 — Diagrama de Componentes (Component Diagram: Core Platform)
+## 4. Nível C3 — Componentes M3.3: Incident API & Correlation Engine
 
-O Diagrama de Componentes detalha os módulos internos do **Core Platform** (`src/core/`), demonstrando o fluxo interno CQRS, Security Kernel e acesso a dados.
+Detalha o subsistema de Incidentes e Correlação implementado na Sprint M3.3.
 
 ```mermaid
 graph TD
-    subgraph CorePlatformAPI ["src/core/interfaces/rest/"]
-        rest_routers["API Routers<br/>[routers.py]<br/>Endpoints REST FastAPI"]
-        rest_deps["Dependency Container<br/>[dependencies.py]<br/>Injeção de dependências FastAPI"]
+    subgraph IncidentAPILayer ["src/core/interfaces/rest/"]
+        inc_router["incident_routers.py<br/>GET /api/v1/incidents<br/>GET /api/v1/incidents/{id}<br/>PATCH /api/v1/incidents/{id}/status<br/>GET /api/v1/incidents/{id}/evidences<br/>GET /api/v1/incidents/{id}/history"]
     end
 
-    subgraph SecurityKernelModule ["src/core/infrastructure/security/"]
-        sec_kernel["SecurityKernel<br/>[kernel.py]<br/>Autenticação JWT e RBAC Guard"]
-        jwt_utils["JWTUtils<br/>[jwt.py]<br/>Validador de assinaturas HMAC/RSA"]
+    subgraph MetricsLayer ["src/shared/observability/"]
+        metrics_ep["metrics_endpoint_handler<br/>GET /metrics<br/>sync_open_incidents_gauge_from_db()<br/>HTTP 500 se PostgreSQL indisponível"]
+        metrics_counters["Counters M3.3<br/>govsec_incidents_total<br/>govsec_incident_status_transitions_total<br/>govsec_incident_evidences_total<br/>govsec_open_incidents (Gauge)"]
     end
 
-    subgraph CQRSApplicationModule ["src/core/application/"]
-        command_bus["CommandBus<br/>[command_bus.py]<br/>Despachante de comandos CQRS com OPA Gate"]
-        event_bus["EventBus<br/>[event_bus.py]<br/>Publicador de eventos de domínio"]
-        tenant_handlers["Command Handlers<br/>[handlers.py]<br/>CreateTenantHandler / IngestLogHandler"]
-        query_handlers["TenantQueryHandler<br/>[queries.py]<br/>Processador de consultas de leitura"]
+    subgraph CorrelationWorkerLayer ["src/core/infrastructure/messaging/"]
+        consumer["CorrelationKafkaConsumer<br/>process_single_message()<br/>Consome SecurityEventReceivedEvent<br/>Idempotente por CorrelationKey"]
     end
 
-    subgraph InfrastructureDBModule ["src/core/infrastructure/db/"]
-        uow["UnitOfWork<br/>[unit_of_work.py]<br/>Gerenciador de transações assíncronas"]
-        tenant_repo["PostgresTenantRepository<br/>[repositories.py]<br/>Repositório de tenants no PostgreSQL com RLS"]
-        opa_client["OPAClient<br/>[opa_client.py]<br/>Cliente HTTP para validação de políticas OPA"]
+    subgraph CorrelationEngineLayer ["src/core/domain/ (Domain Layer)"]
+        engine["CorrelationEngine<br/>correlate(security_event)<br/>Aplica CorrelationRules tipadas"]
+        rules["CorrelationRules<br/>R-INFRA-001 (InfrastructureRule)<br/>R-AUTH-001 (AuthenticationRule)<br/>SHA-256 CorrelationKey"]
     end
 
-    rest_routers -->|"Autentica requisição"| sec_kernel
-    sec_kernel -->|"Valida Token Bearer"| jwt_utils
-    rest_routers -->|"Envia Command"| command_bus
-    rest_routers -->|"Executa Query"| query_handlers
-    
-    command_bus -->|"Consulta permissão OPA"| opa_client
-    command_bus -->|"Despacha Command validado"| tenant_handlers
-    
-    tenant_handlers -->|"Persiste estado via UoW"| uow
-    uow -->|"Opera sobre o repositório"| tenant_repo
-    tenant_handlers -->|"Publica evento de domínio"| event_bus
-    query_handlers -->|"Lê direto do repositório"| tenant_repo
+    subgraph RepositoriesLayer ["src/core/infrastructure/db/"]
+        inc_repo["PostgresIncidentRepository<br/>save(), list(), get_by_id()<br/>count_open_by_severity()"]
+        ev_repo["PostgresIncidentEvidenceRepository<br/>save(), list_by_incident()"]
+        hist_repo["PostgresIncidentStatusHistoryRepository<br/>save(), list_by_incident()"]
+        uow["PostgresCorrelationUnitOfWork<br/>__aenter__/__aexit__<br/>Transação atômica commit/rollback"]
+    end
+
+    inc_router -->|"Consulta/altera incidentes"| inc_repo
+    inc_router -->|"Consulta evidências"| ev_repo
+    inc_router -->|"Consulta histórico de status"| hist_repo
+    metrics_ep -->|"count_open_by_severity()"| inc_repo
+    metrics_ep -->|"atualiza"| metrics_counters
+    consumer -->|"correlate()"| engine
+    engine -->|"aplica"| rules
+    engine -->|"persiste via"| uow
+    uow -->|"save Incident"| inc_repo
+    uow -->|"save Evidence"| ev_repo
 ```
+

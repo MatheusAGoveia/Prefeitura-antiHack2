@@ -62,9 +62,29 @@ $$\text{OPEN} \longrightarrow \text{ACKNOWLEDGED} \longrightarrow \text{INVESTIG
 - **Sem IA ou Automação Autônoma:** Respostas a incidentes dependem obrigatoriamente de intervenção humana declarada (*Human-in-Control*).
 
 ## Itens Deliberadamente Adiados para M3.1–M3.5
-- Migrações Alembic e tabelas PostgreSQL (`incidents`, `security_events`, `incident_evidences`).
-- Endpoints REST FastAPI para listagem, criação e alteração de estado de incidentes.
+- Migrações Alembic e tabelas PostgreSQL (`incidents`, `security_events`, `incident_evidences`). ✅ **Implementado em M3.1**
+- Endpoints REST FastAPI para listagem, criação e alteração de estado de incidentes. ✅ **Implementado em M3.2**
 - Webhook de ingestão de alertas do Alertmanager para a API FastAPI.
 - Telas de Incident Center e Event Inbox no dashboard Next.js.
 - Regras adicionais de correlação determinísticas.
-- Métricas Prometheus para incidentes abertos/resolvidos.
+- Métricas Prometheus para incidentes abertos/resolvidos. ✅ **Implementado em M3.3**
+
+---
+
+## Entregue em M3.3 — Central Operacional de Incidentes e Observabilidade (2026-07-31)
+
+### Métricas Prometheus M3.3 Implementadas
+- `govsec_incidents_total` (Counter, labels: `severity`, `status`): total histórico de incidentes criados.
+- `govsec_incident_status_transitions_total` (Counter, labels: `from_status`, `to_status`): transições auditadas.
+- `govsec_incident_evidences_total` (Counter, label: `rule_id`): evidências vinculadas por regra de correlação.
+- `govsec_open_incidents` (Gauge, label: `severity`): incidentes abertos em tempo real. **PostgreSQL é a única fonte de verdade.** O Gauge é sincronizado exclusivamente pelo scrape autoritativo `/metrics`.
+
+### Decisão Arquitetural: Scrape Autoritativo com HTTP 500
+O endpoint `GET /metrics` usa `sync_open_incidents_gauge_from_db()` sem o adaptador `safe_*`. Quando o PostgreSQL está indisponível, o endpoint retorna `HTTP 500 Internal Server Error`, forçando o Prometheus a registrar a raspagem como falha (`up=0`) em vez de consumir dados stale. Ver **ADR-006** para detalhes.
+
+### Decisão Arquitetural: Separação `safe_*` vs. autoritativo
+- `safe_sync_open_incidents_gauge_from_db()`: para fluxos onde falha de observabilidade não deve interromper o processamento (ex: pós-commit no consumidor Kafka).
+- `sync_open_incidents_gauge_from_db()`: para o scrape autoritativo `/metrics` — propaga exceção.
+
+### 230 Testes Aprovados — 9 Gates Verificados (2026-07-31T19:32–19:33 UTC)
+Todos os 9 gates obrigatórios executados com saída real capturada e aprovados. Ver `MEMORIA.md`.
