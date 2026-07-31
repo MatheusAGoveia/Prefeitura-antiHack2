@@ -363,7 +363,13 @@ async def test_datetime_range_validation_utc(
     assert res2.status_code == 422
     assert "fuso horário" in res2.json()["detail"]
 
-    # 3. created_from > created_to -> 422
+    # 3. Data com offset local diferente de UTC zero (ex: -03:00) -> 422
+    offset_date = quote("2026-07-31T12:00:00-03:00")
+    res_off = await async_client.get(f"/api/v1/incidents?created_from={offset_date}", headers=headers)
+    assert res_off.status_code == 422
+    assert "UTC zero" in res_off.json()["detail"]
+
+    # 4. created_from > created_to -> 422
     from_date = quote((datetime.now(timezone.utc) + timedelta(hours=1)).isoformat())
     to_date = quote(datetime.now(timezone.utc).isoformat())
     res3 = await async_client.get(
@@ -373,7 +379,7 @@ async def test_datetime_range_validation_utc(
     assert res3.status_code == 422
     assert "não pode ser posterior" in res3.json()["detail"]
 
-    # 4. Limites exatos (created_from == created_to) -> 200 OK
+    # 5. Limites exatos (created_from == created_to) -> 200 OK
     res4 = await async_client.get(
         f"/api/v1/incidents?created_from={now_str}&created_to={now_str}",
         headers=headers,
@@ -596,3 +602,87 @@ async def test_open_incidents_gauge_updated_on_lifecycle(
 
     after_resolve = GOVSEC_OPEN_INCIDENTS.labels(severity="high")._value.get()
     assert after_resolve >= 0
+
+
+@pytest.mark.asyncio
+async def test_nested_string_masking_in_evidence_http_response(
+    async_client: AsyncClient, async_session: AsyncSession, auth_headers_tenant_a: dict[str, str]
+) -> None:
+    """Valida que segredos contidos dentro de strings genéricas em estruturas aninhadas são mascarados na resposta HTTP."""
+    tenant_id = UUID(auth_headers_tenant_a["_tenant_id"])
+    await _ensure_tenant_exists(async_session, tenant_id)
+    inc_repo = PostgresIncidentRepository(async_session)
+    evidence_repo = PostgresIncidentEvidenceRepository(async_session)
+
+    incident_id = uuid4()
+    event_id = uuid4()
+    await _ensure_security_event_exists(async_session, tenant_id, event_id)
+
+    inc = Incident(
+        incident_id=incident_id,
+        tenant_id=tenant_id,
+        title="Incidente Mascaramento de Texto",
+        description="Teste de strings em listas/dicts",
+        severity=SecurityEventSeverity.HIGH,
+        status=IncidentStatus.OPEN,
+        correlation_key="mask_text_key",
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
+    )
+    await inc_repo.save(inc)
+
+    complex_payload = {
+        "message": "Authorization: Bearer super-secret-jwt-token-12345",
+        "details": {
+            "items": [
+                {"description": "api_key=my_super_secret_api_key"},
+                {"log_line": "Basic dXNlcm5hbWU6cGFzc3dvcmQ="},
+            ]
+        },
+    }
+
+    ev = IncidentEvidence(
+        evidence_id=uuid4(),
+        incident_id=incident_id,
+        event_id=event_id,
+        tenant_id=tenant_id,
+        evidence_hash="hash_mask_text",
+        added_at=datetime.now(timezone.utc),
+        description="Evidência com textos",
+        raw_payload_masked=sanitize_payload(complex_payload),
+    )
+    await evidence_repo.save(ev)
+    await async_session.commit()
+
+    headers = {"Authorization": auth_headers_tenant_a["Authorization"]}
+
+    res = await async_client.get(f"/api/v1/incidents/{incident_id}/evidences", headers=headers)
+    assert res.status_code == 200
+    ev_data = res.json()["items"][0]["raw_payload_masked"]
+
+    assert ev_data["message"] == "Authorization: Bearer [REDACTED]"
+    assert ev_data["details"]["items"][0]["description"] == "api_key=[REDACTED]"
+    assert ev_data["details"]["items"][1]["log_line"] == "Basic [REDACTED]"
+
+
+@pytest.mark.asyncio
+async def test_prometheus_labels_strict_security_audit() -> None:
+    """Auditoria estrita de segurança: garante que NENHUMA label de métricas expostas contém identificadores sensíveis ou alta cardinalidade."""
+    from prometheus_client import REGISTRY
+
+    forbidden_labels = {
+        "incident_id",
+        "tenant_id",
+        "user_id",
+        "email",
+        "ip",
+        "token",
+        "payload",
+        "evidence_id",
+    }
+
+    for metric in REGISTRY.collect():
+        for sample in metric.samples:
+            sample_labels = set(sample.labels.keys())
+            violating = sample_labels.intersection(forbidden_labels)
+            assert not violating, f"Violação de segurança: métrica '{metric.name}' expõe labels proibidas: {violating}"

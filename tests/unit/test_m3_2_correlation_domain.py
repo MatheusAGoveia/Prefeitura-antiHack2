@@ -431,7 +431,7 @@ class TestCorrelateSecurityEventHandlerUnit:
 
         results = await handler.handle(tenant_id=tenant_id, security_event_id=event_id)
 
-        assert results == []
+        assert results.items == []
         uow.incidents.save.assert_not_called()
         uow.evidences.save.assert_not_called()
         uow.logs.save.assert_not_called()

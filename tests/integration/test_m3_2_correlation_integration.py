@@ -179,7 +179,8 @@ async def test_eligible_event_creates_incident(async_session: AsyncSession) -> N
     rule = InfraAvailabilityRule()
     handler = CorrelateSecurityEventHandler(uow=uow, rules=[rule], window_seconds=3600)
 
-    incidents = await handler.handle(tenant_id=tenant_id, security_event_id=event_model.event_id)
+    result = await handler.handle(tenant_id=tenant_id, security_event_id=event_model.event_id)
+    incidents = [item.incident for item in result.items]
 
     assert len(incidents) == 1
     inc = incidents[0]
@@ -244,13 +245,17 @@ async def test_replay_same_event_no_duplicate_incident(async_session: AsyncSessi
 
     # Primeira execução
     h1 = CorrelateSecurityEventHandler(uow=uow, rules=[rule], window_seconds=3600)
-    incidents1 = await h1.handle(tenant_id=tenant_id, security_event_id=event_model.event_id)
-    assert len(incidents1) == 1
+    res1 = await h1.handle(tenant_id=tenant_id, security_event_id=event_model.event_id)
+    assert len(res1.items) == 1
+    assert res1.items[0].is_new_incident is True
+    assert res1.items[0].is_new_evidence is True
 
     # Segunda execução (replay)
     h2 = CorrelateSecurityEventHandler(uow=uow, rules=[rule], window_seconds=3600)
-    incidents2 = await h2.handle(tenant_id=tenant_id, security_event_id=event_model.event_id)
-    assert len(incidents2) == 1
+    res2 = await h2.handle(tenant_id=tenant_id, security_event_id=event_model.event_id)
+    assert len(res2.items) == 1
+    assert res2.items[0].is_new_incident is False
+    assert res2.items[0].is_new_evidence is False
 
     # Verificar: ainda apenas 1 incidente e 1 evidência
     repo = PostgresIncidentRepository(async_session)
@@ -337,10 +342,12 @@ async def test_cross_tenant_events_never_correlate(async_session: AsyncSession) 
     rule = InfraAvailabilityRule()
 
     ha = CorrelateSecurityEventHandler(uow=uow, rules=[rule], window_seconds=3600)
-    incidents_a = await ha.handle(tenant_id=tenant_a, security_event_id=ea.event_id)
+    res_a = await ha.handle(tenant_id=tenant_a, security_event_id=ea.event_id)
+    incidents_a = [item.incident for item in res_a.items]
 
     hb = CorrelateSecurityEventHandler(uow=uow, rules=[rule], window_seconds=3600)
-    incidents_b = await hb.handle(tenant_id=tenant_b, security_event_id=eb.event_id)
+    res_b = await hb.handle(tenant_id=tenant_b, security_event_id=eb.event_id)
+    incidents_b = [item.incident for item in res_b.items]
 
     assert len(incidents_a) == 1
     assert len(incidents_b) == 1
@@ -372,7 +379,8 @@ async def test_incident_reopens_after_resolved_with_same_correlation_key(
 
     uow = PostgresCorrelationUnitOfWork(async_session)
     h1 = CorrelateSecurityEventHandler(uow=uow, rules=[InfraAvailabilityRule()], window_seconds=3600)
-    incidents1 = await h1.handle(tenant_id=tenant_id, security_event_id=e1.event_id)
+    res1 = await h1.handle(tenant_id=tenant_id, security_event_id=e1.event_id)
+    incidents1 = [item.incident for item in res1.items]
     assert len(incidents1) == 1
 
     # Fechar o incidente via transição de status
@@ -393,7 +401,8 @@ async def test_incident_reopens_after_resolved_with_same_correlation_key(
     await async_session.flush()
 
     h2 = CorrelateSecurityEventHandler(uow=uow, rules=[InfraAvailabilityRule()], window_seconds=3600)
-    incidents2 = await h2.handle(tenant_id=tenant_id, security_event_id=e2.event_id)
+    res2 = await h2.handle(tenant_id=tenant_id, security_event_id=e2.event_id)
+    incidents2 = [item.incident for item in res2.items]
     assert len(incidents2) == 1
 
     # Deve haver 2 incidentes no total: 1 CLOSED + 1 OPEN
@@ -419,8 +428,8 @@ async def test_status_change_persisted_and_retrievable(async_session: AsyncSessi
 
     uow = PostgresCorrelationUnitOfWork(async_session)
     h = CorrelateSecurityEventHandler(uow=uow, rules=[InfraAvailabilityRule()], window_seconds=3600)
-    incidents = await h.handle(tenant_id=tenant_id, security_event_id=event_model.event_id)
-    incident = incidents[0]
+    res = await h.handle(tenant_id=tenant_id, security_event_id=event_model.event_id)
+    incident = res.items[0].incident
 
     # Transicionar via domínio e salvar
     incident.transition_to(IncidentStatus.ACKNOWLEDGED, "analyst-99", "Revisão iniciada.")
@@ -445,8 +454,8 @@ async def test_invalid_status_transition_raises_domain_error(async_session: Asyn
 
     uow = PostgresCorrelationUnitOfWork(async_session)
     h = CorrelateSecurityEventHandler(uow=uow, rules=[InfraAvailabilityRule()], window_seconds=3600)
-    incidents = await h.handle(tenant_id=tenant_id, security_event_id=event_model.event_id)
-    incident = incidents[0]
+    res = await h.handle(tenant_id=tenant_id, security_event_id=event_model.event_id)
+    incident = res.items[0].incident
 
     with pytest.raises(InvalidStatusTransitionError):
         incident.transition_to(IncidentStatus.RESOLVED, "actor", "Skipping steps.")
@@ -547,10 +556,10 @@ async def test_correlation_does_not_modify_outbox_events(async_session: AsyncSes
 
     uow = PostgresCorrelationUnitOfWork(async_session)
     handler = CorrelateSecurityEventHandler(uow=uow, rules=[InfraAvailabilityRule()], window_seconds=3600)
-    incidents = await handler.handle(tenant_id=tenant_id, security_event_id=event_model.event_id)
+    res = await handler.handle(tenant_id=tenant_id, security_event_id=event_model.event_id)
     await uow.commit()
 
-    assert len(incidents) == 1
+    assert len(res.items) == 1
 
     # Verificar que o outbox_event permanece 'pending' e inalterado
     result = await async_session.execute(

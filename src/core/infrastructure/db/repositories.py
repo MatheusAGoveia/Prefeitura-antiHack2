@@ -1,7 +1,7 @@
 import hashlib
 from collections.abc import Sequence
 from datetime import datetime, timedelta, timezone
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from sqlalchemy import and_, asc, desc, or_, select
 from sqlalchemy.exc import IntegrityError
@@ -1123,17 +1123,23 @@ class PostgresIncidentRepository(IncidentRepository):
         # Persistir histórico de auditoria pendente na mesma transação
         if incident.audit_history:
             for change in incident.audit_history:
-                history_model = IncidentStatusHistoryModel(
-                    history_id=uuid4(),
-                    incident_id=incident.incident_id,
-                    tenant_id=incident.tenant_id,
-                    from_status=change.from_status.value,
-                    to_status=change.to_status.value,
-                    actor_id=change.actor_id,
-                    reason=change.reason,
-                    timestamp=change.timestamp,
+                # Verificar se este histórico já foi persistido no banco para evitar duplicatas em saves subsequentes
+                history_stmt = select(IncidentStatusHistoryModel).where(
+                    IncidentStatusHistoryModel.history_id == change.history_id
                 )
-                self.session.add(history_model)
+                res_h = await self.session.execute(history_stmt)
+                if res_h.scalar_one_or_none() is None:
+                    history_model = IncidentStatusHistoryModel(
+                        history_id=change.history_id,
+                        incident_id=incident.incident_id,
+                        tenant_id=incident.tenant_id,
+                        from_status=change.from_status.value,
+                        to_status=change.to_status.value,
+                        actor_id=change.actor_id,
+                        reason=change.reason,
+                        timestamp=change.timestamp,
+                    )
+                    self.session.add(history_model)
             await self.session.flush()
 
         return self._to_entity(model)
@@ -1253,6 +1259,38 @@ class PostgresIncidentRepository(IncidentRepository):
         )
         res = await self.session.execute(stmt)
         return {row[0]: row[1] for row in res.all()}
+
+    async def count_open_by_severity(
+        self, tenant_id: UUID | None = None
+    ) -> dict[str, int]:
+        """
+        Retorna a contagem de incidentes ativos/abertos agrupada por severidade no banco.
+        Usado para reconstrução/sincronização determinística do Gauge Prometheus (govsec_open_incidents).
+        """
+        from sqlalchemy import func
+
+        from src.core.domain.incidents import ACTIVE_INCIDENT_STATUSES, SecurityEventSeverity
+
+        active_status_values = [s.value.lower() for s in ACTIVE_INCIDENT_STATUSES]
+        stmt = (
+            select(
+                func.lower(IncidentModel.severity),
+                func.count(IncidentModel.incident_id),
+            )
+            .where(func.lower(IncidentModel.status).in_(active_status_values))
+        )
+        if tenant_id is not None:
+            stmt = stmt.where(IncidentModel.tenant_id == tenant_id)
+
+        stmt = stmt.group_by(func.lower(IncidentModel.severity))
+        res = await self.session.execute(stmt)
+
+        counts = {sev.value.lower(): 0 for sev in SecurityEventSeverity}
+        for row in res.all():
+            sev_key = str(row[0]).lower()
+            counts[sev_key] = int(row[1])
+
+        return counts
 
 
 class PostgresIncidentEvidenceRepository(IncidentEvidenceRepository):

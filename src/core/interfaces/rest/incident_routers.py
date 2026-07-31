@@ -17,7 +17,7 @@ Regras de segurança & arquitetura:
   - Incidente de outro tenant → HTTP 404 (não vaza existência).
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -134,17 +134,29 @@ async def list_incidents(
             detail=f"Direção de ordenação inválida: '{order}'. Permitidas: 'asc', 'desc'",
         )
 
-    if created_from is not None and created_from.tzinfo is None:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="created_from deve ser um datetime com fuso horário (timezone/UTC).",
-        )
+    if created_from is not None:
+        if created_from.tzinfo is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="created_from deve conter fuso horário UTC estrito (ex: 'Z' ou '+00:00').",
+            )
+        if created_from.utcoffset() != timedelta(0):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="created_from deve utilizar o fuso horário UTC zero (+00:00/Z). Offsets locais não são permitidos.",
+            )
 
-    if created_to is not None and created_to.tzinfo is None:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="created_to deve ser um datetime com fuso horário (timezone/UTC).",
-        )
+    if created_to is not None:
+        if created_to.tzinfo is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="created_to deve conter fuso horário UTC estrito (ex: 'Z' ou '+00:00').",
+            )
+        if created_to.utcoffset() != timedelta(0):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="created_to deve utilizar o fuso horário UTC zero (+00:00/Z). Offsets locais não são permitidos.",
+            )
 
     if created_from is not None and created_to is not None and created_from > created_to:
         raise HTTPException(

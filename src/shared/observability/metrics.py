@@ -199,6 +199,19 @@ def record_incident_evidence_added(rule_id: str = "default") -> None:
     GOVSEC_INCIDENT_EVIDENCES_TOTAL.labels(rule_id=rule_id).inc()
 
 
+async def sync_open_incidents_gauge_from_db(session: Any) -> None:
+    """
+    Reconstrói e sincroniza os valores do Gauge GOVSEC_OPEN_INCIDENTS a partir do estado real do banco de dados PostgreSQL.
+    Garante resiliência a restarts e consistência entre réplicas.
+    """
+    from src.core.infrastructure.db.repositories import PostgresIncidentRepository
+
+    repo = PostgresIncidentRepository(session)
+    counts = await repo.count_open_by_severity()
+    for severity, count in counts.items():
+        GOVSEC_OPEN_INCIDENTS.labels(severity=severity).set(count)
+
+
 def collect_db_pool_metrics() -> None:
     """Coleta dinâmica do estado do pool SQLAlchemy sem gerar alta cardinalidade."""
     try:

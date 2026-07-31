@@ -32,6 +32,8 @@ from src.core.domain.correlation import CorrelationKey, CorrelationRule
 from src.core.domain.entities import AuditLog
 from src.core.domain.exceptions import DomainError
 from src.core.domain.incidents import (
+    CorrelationResult,
+    CorrelationResultItem,
     Incident,
     IncidentEvidence,
     IncidentStatus,
@@ -94,6 +96,7 @@ class CorrelateSecurityEventHandler:
     Acionado pelo CorrelationKafkaConsumer.
 
     Aceita uma UoW de correlação já aberta (transação ativa).
+    Retorna CorrelationResult para que o consumidor registre as métricas PÓS-COMMIT.
     """
 
     def __init__(
@@ -116,12 +119,12 @@ class CorrelateSecurityEventHandler:
         self,
         tenant_id: UUID,
         security_event_id: UUID,
-    ) -> list[Incident]:
+    ) -> CorrelationResult:
         """
         Processa a correlação de um SecurityEvent.
 
-        Retorna a lista de incidentes criados ou atualizados.
-        Se a regra for inelegível ou inativa, NENHUM incidente, evidência ou auditoria é criado.
+        Retorna CorrelationResult detalhando incidentes e evidências criados.
+        Métricas Prometheus NÃO são chamadas aqui (devem ser registradas pós-commit).
         """
         if not isinstance(tenant_id, UUID):
             raise DomainError(f"tenant_id deve ser UUID, recebido: {type(tenant_id)}")
@@ -137,9 +140,9 @@ class CorrelateSecurityEventHandler:
                 security_event_id,
                 tenant_id,
             )
-            return []
+            return CorrelationResult()
 
-        results: list[Incident] = []
+        items: list[CorrelationResultItem] = []
 
         # 2. Avaliar cada regra
         for rule in self._rules:
@@ -162,8 +165,10 @@ class CorrelateSecurityEventHandler:
                 correlation_key_hash=key_hash,
             )
 
+            is_new_incident = False
             if existing is None:
                 # 4a. Criar novo incidente
+                is_new_incident = True
                 now = datetime.now(timezone.utc)
                 incident = Incident(
                     incident_id=uuid4(),
@@ -182,14 +187,6 @@ class CorrelateSecurityEventHandler:
                 )
                 saved_incident = await self._uow.incidents.save(incident)
 
-                # Auditoria de criação e métricas Prometheus (M3.3)
-                from src.shared.observability.metrics import record_incident_created
-
-                record_incident_created(
-                    severity=saved_incident.severity.value,
-                    status=saved_incident.status.value,
-                )
-
                 await self._uow.logs.save(
                     AuditLog(
                         tenant_id=tenant_id,
@@ -204,7 +201,15 @@ class CorrelateSecurityEventHandler:
             else:
                 saved_incident = existing
 
-            # 4b. Vincular evidência (idempotente: UNIQUE(incident_id, event_id))
+            # 4b. Verificar se a evidência já existe antes de salvar (para idempotência da métrica)
+            evidence_exists = await self._uow.evidences.exists(
+                incident_id=saved_incident.incident_id,
+                event_id=security_event_id,
+                tenant_id=tenant_id,
+            )
+            is_new_evidence = not evidence_exists
+
+            # 4c. Vincular evidência (idempotente: UNIQUE(incident_id, event_id))
             evidence = IncidentEvidence(
                 evidence_id=uuid4(),
                 incident_id=saved_incident.incident_id,
@@ -220,11 +225,13 @@ class CorrelateSecurityEventHandler:
             )
             await self._uow.evidences.save(evidence)
 
-            # Métricas Prometheus para evidências adicionadas (M3.3)
-            from src.shared.observability.metrics import record_incident_evidence_added
+            items.append(
+                CorrelationResultItem(
+                    incident=saved_incident,
+                    is_new_incident=is_new_incident,
+                    is_new_evidence=is_new_evidence,
+                    rule_id=rule.rule_id,
+                )
+            )
 
-            record_incident_evidence_added(rule_id=rule.rule_id)
-
-            results.append(saved_incident)
-
-        return results
+        return CorrelationResult(items=items)

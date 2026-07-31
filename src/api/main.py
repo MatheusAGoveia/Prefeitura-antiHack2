@@ -52,6 +52,14 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None, None]:
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
 
+    # Startup: reconstruir o estado dos incidentes abertos a partir do PostgreSQL
+    with suppress(Exception):
+        from src.core.infrastructure.db.unit_of_work import AsyncSessionLocal
+        from src.shared.observability.metrics import sync_open_incidents_gauge_from_db
+
+        async with AsyncSessionLocal() as session:
+            await sync_open_incidents_gauge_from_db(session)
+
     # Startup: iniciar coleta periódica de métricas de sistema (CPU, RAM, Disco)
     metrics_task = asyncio.create_task(
         start_system_metrics_collector(interval_seconds=15),

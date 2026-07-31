@@ -7,6 +7,7 @@ isolamento total de frameworks web, ORMs e componentes de infraestrutura.
 """
 
 import hashlib
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import StrEnum
@@ -47,6 +48,14 @@ class SecurityEventSeverity(StrEnum):
     CRITICAL = "CRITICAL"
 
 
+ACTIVE_INCIDENT_STATUSES: set[IncidentStatus] = {
+    IncidentStatus.OPEN,
+    IncidentStatus.ACKNOWLEDGED,
+    IncidentStatus.INVESTIGATING,
+    IncidentStatus.CONTAINED,
+}
+
+
 # Teias de transição permitidas no ciclo de vida do incidente
 ALLOWED_STATUS_TRANSITIONS: dict[IncidentStatus, set[IncidentStatus]] = {
     IncidentStatus.OPEN: {IncidentStatus.ACKNOWLEDGED},
@@ -60,35 +69,77 @@ ALLOWED_STATUS_TRANSITIONS: dict[IncidentStatus, set[IncidentStatus]] = {
 
 SENSITIVE_KEYS: set[str] = {
     "password",
+    "passwd",
     "secret",
+    "client_secret",
     "token",
-    "authorization",
-    "cookie",
-    "api_key",
-    "apikey",
     "access_token",
     "refresh_token",
+    "authorization",
+    "cookie",
+    "set_cookie",
+    "api_key",
+    "apikey",
     "private_key",
     "credential",
 }
 
+# Regex compilada e segura sem ReDoS para sanitização de strings genéricas em uma única passagem
+_CREDENTIAL_PATTERN = re.compile(
+    r"(?i)"
+    r"(\bAuthorization:\s*(?:Bearer|Basic)?\s*)([^\s,;]+)"
+    r"|(\bBearer\s+)([A-Za-z0-9\-\._~\+\/]+=*)"
+    r"|(\bBasic\s+)([A-Za-z0-9\+\/]+=*)"
+    r"|(\b(?:api_key|apikey|token|access_token|refresh_token|password|passwd|secret|client_secret|cookie)=)([^\s&;]+)"
+)
+
+
+def _sanitize_match(match: re.Match[str]) -> str:
+    if match.group(1):
+        return f"{match.group(1)}[REDACTED]"
+    if match.group(3):
+        return f"{match.group(3)}[REDACTED]"
+    if match.group(5):
+        return f"{match.group(5)}[REDACTED]"
+    if match.group(7):
+        return f"{match.group(7)}[REDACTED]"
+    return match.group(0)
+
+
+def sanitize_string_content(text: str) -> str:
+    """
+    Substitui padrões de credenciais e tokens expostos em strings genéricas por '[REDACTED]'.
+    Previne vazamento de segredos dentro de mensagens de erro ou logs livres.
+    """
+    if not isinstance(text, str):
+        return text
+    return _CREDENTIAL_PATTERN.sub(_sanitize_match, text)
+
 
 def sanitize_payload(payload: dict[str, Any]) -> dict[str, Any]:
     """
-    Sanitiza recursivamente um payload mascarando chaves sensíveis.
-    Garante Zero Trust e previne vazamento de dados confidenciais.
+    Sanitiza recursivamente um payload mascarando chaves sensíveis e valores em strings.
+    Garante Zero Trust e previne vazamento de dados confidenciais em dicts, listas e tuplas.
     """
     sanitized: dict[str, Any] = {}
     for key, value in payload.items():
-        key_lower = str(key).lower()
+        key_lower = str(key).lower().replace("-", "_")
         if any(sensitive in key_lower for sensitive in SENSITIVE_KEYS):
             sanitized[key] = "[REDACTED]"
         elif isinstance(value, dict):
             sanitized[key] = sanitize_payload(value)
-        elif isinstance(value, list):
-            sanitized[key] = [
-                sanitize_payload(item) if isinstance(item, dict) else item for item in value
-            ]
+        elif isinstance(value, list | tuple):
+            items: list[Any] = []
+            for item in value:
+                if isinstance(item, dict):
+                    items.append(sanitize_payload(item))
+                elif isinstance(item, str):
+                    items.append(sanitize_string_content(item))
+                else:
+                    items.append(item)
+            sanitized[key] = items
+        elif isinstance(value, str):
+            sanitized[key] = sanitize_string_content(value)
         else:
             sanitized[key] = value
     return sanitized
@@ -242,6 +293,23 @@ class IncidentStatusChange:
 
     def __post_init__(self) -> None:
         _validate_utc_datetime(self.timestamp, "timestamp")
+
+
+@dataclass(frozen=True)
+class CorrelationResultItem:
+    """Resultado individual de vinculo/criacao de incidente no motor de correlacao."""
+
+    incident: "Incident"
+    is_new_incident: bool
+    is_new_evidence: bool
+    rule_id: str
+
+
+@dataclass(frozen=True)
+class CorrelationResult:
+    """Resultado agregado do processamento de evento no motor de correlacao."""
+
+    items: list[CorrelationResultItem] = field(default_factory=list)
 
 
 @dataclass

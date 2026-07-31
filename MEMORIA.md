@@ -7,9 +7,9 @@
 ## 📌 Estado Atual do Projeto
 - **Repositório:** `MatheusAGoveia/Prefeitura-antiHack2`
 - **Branch Ativa:** `feature/m3.3-incident-center-api`
-- **Data da Última Atualização:** 2026-07-31T15:51:00Z
+- **Data da Última Atualização:** 2026-07-31T17:49:00Z
 - **Responsável:** IA Assistente (Arquiteto Principal GovSec Shield)
-- **Status Atual:** SPRINT M3.3 (Central Operacional de Incidentes e Evidências) 100% CONCLUÍDA e HOMOLOGADA. Suíte completa expandida para 213 testes unitários e de integração aprovados sem ressalvas. Validação de qualidade de código (Ruff, Mypy, Bandit, Compileall, Git Diff, Docker) 100% verde.
+- **Status Atual:** SPRINT M3.3 (Central Operacional de Incidentes e Evidências e Correção dos Bloqueadores) 100% CONCLUÍDA e HOMOLOGADA. Suíte completa expandida para 215 testes unitários e de integração aprovados sem ressalvas (100% PASSED). Validação de qualidade de código nos 9 gates (Ruff, Mypy, Bandit, Compileall, Git Diff, Docker Compose) 100% VERDE. Plataforma pronta para a Sprint M3.4.
 
 ---
 
@@ -87,10 +87,16 @@
 | **2026-07-31** | Mascaramento Transparente DTO | Payloads brutos de evidências são obrigatoriamente sanitizados via `DataMasker` (`sanitize_payload`), impedindo o vazamento de segredos em respostas HTTP. |
 | **2026-07-31** | Retorno 404 em Cross-Tenant | Consultas de incidentes/evidências de tenants não autorizados retornam estritamente HTTP 404 (em vez de 403) para não vazar a existência do recurso. |
 | **2026-07-31** | Gauge de Estado em Tempo Real | `govsec_open_incidents` fornece visibilidade SRE instantânea dos incidentes ativos por severidade, decrementando em resoluções pós-commit. |
+| **2026-07-31** | Métricas Prometheus Pós-Commit | `CorrelationKafkaConsumer` dispara métricas Prometheus somente APÓS `uow.commit()` no Postgres, garantindo que rollbacks e replays não alterem contadores. |
+| **2026-07-31** | Preservação de `history_id` do Domínio | `PostgresIncidentRepository.save` utiliza `history_id=change.history_id` gerado pela entidade de domínio, mantendo a identidade estável no DB e HTTP REST. |
+| **2026-07-31** | Reconstrução do Gauge a partir do Postgres | `sync_open_incidents_gauge_from_db` sincroniza o Gauge `govsec_open_incidents` diretamente do banco no startup FastAPI e pós-commit. |
+| **2026-07-31** | Mascaramento de Strings com Regex Segura | `sanitize_string_content` mascara tokens `Bearer`, `Basic` e pares `key=val` em strings livres usando regex compiladas de alta performance em uma única passagem. |
+| **2026-07-31** | Contrato UTC Zero Estrito (`Z`/`+00:00`) | `GET /api/v1/incidents` rejeita datas naive sem timezone e offsets locais (ex: `-03:00`) com **HTTP 422**, e rejeita `created_from > created_to` com **HTTP 422**. |
 
 ---
 
 ## 📌 Registros Recentes & Próximos Passos
-- **Sprint M3.3 Finalizada & Homologada:** Todos os 10 itens de correção concluídos, 213 testes passados, Ruff 0 erros, Mypy 0 erros, Bandit 0 avisos, containers Docker `healthy`, `git diff --check` limpo.
-- **Próximos Passos (Pronta para homologação ou avanço para a próxima fase):**
-  1. Apresentar o resultado final ao usuário e solicitar autorização para encerramento da M3.3.
+- **Correção dos Bloqueadores Finais da Sprint M3.3 Finalizada & Homologada (2026-07-31):** Todos os 6 componentes técnicos corrigidos, 215 testes unitários e de integração passados (100% PASSED), Ruff 0 erros, Mypy 0 erros em 123 arquivos, Bandit 0 avisos em 8667 linhas, `compileall` sem erros, `git diff --check` limpo, `docker compose config` válido.
+- **Próximos Passos (Pronto para início da Sprint M3.4):**
+  1. Apresentar a conclusão detalhada e o resultado dos 9 gates ao usuário.
+  2. Iniciar o planejamento da Sprint M3.4 sob demanda do usuário.
