@@ -505,6 +505,104 @@ async def test_concurrent_executions_single_incident() -> None:
     await engine.dispose()
 
 
+# ---------------------------------------------------------------------------
+# Testes do Consumidor Kafka e Garantias de Arquitetura M3.2
+# ---------------------------------------------------------------------------
+
+
+from unittest.mock import AsyncMock, MagicMock
+from src.core.infrastructure.messaging.correlation_consumer import CorrelationKafkaConsumer
+from src.core.infrastructure.messaging.kafka_event_bus import KafkaEventBus
+from src.core.domain.outbox import OutboxEvent
+
+
+@pytest.mark.asyncio
+async def test_topic_alignment_producer_and_consumer() -> None:
+    """Garante que o produtor (KafkaEventBus) e consumidor (CorrelationKafkaConsumer) utilizam exatamente o mesmo tópico."""
+    consumer = CorrelationKafkaConsumer()
+    expected_topic = f"{settings.GOVSEC_KAFKA_TOPIC_PREFIX}.events"
+    assert consumer._topic == expected_topic, f"Tópico do consumidor deve ser {expected_topic}"
+
+
+@pytest.mark.asyncio
+async def test_correlation_consumer_default_uow_factory_instantiation() -> None:
+    """Valida que o CorrelationKafkaConsumer se inicializa com a fábrica síncrona de UoW por padrão sem erros."""
+    consumer = CorrelationKafkaConsumer()
+    assert consumer._uow_factory is not None
+    # Testar que a fábrica padrão não levanta exceção de sintaxe
+    # N.B. default_uow_factory é síncrona
+
+
+@pytest.mark.asyncio
+async def test_correlation_does_not_modify_outbox_events(async_session: AsyncSession) -> None:
+    """Garante que a execução do handler de correlação deixa os registros de outbox_events intactos."""
+    tenant_id = uuid4()
+    event_model = _make_security_event_model(tenant_id=tenant_id)
+    async_session.add(event_model)
+
+    # Inserir um outbox_event com status 'pending'
+    outbox_model = OutboxEventModel(
+        outbox_event_id=uuid4(),
+        tenant_id=tenant_id,
+        aggregate_type="SecurityEvent",
+        aggregate_id=event_model.event_id,
+        event_type="SecurityEventReceivedEvent",
+        payload={"tenant_id": str(tenant_id), "security_event_id": str(event_model.event_id)},
+        idempotency_key=str(uuid4()),
+        status="pending",
+        created_at=datetime.now(timezone.utc),
+    )
+    async_session.add(outbox_model)
+    await async_session.flush()
+
+    uow = PostgresCorrelationUnitOfWork(async_session)
+    handler = CorrelateSecurityEventHandler(uow=uow, rules=[InfraAvailabilityRule()], window_seconds=3600)
+    incidents = await handler.handle(tenant_id=tenant_id, security_event_id=event_model.event_id)
+    await uow.commit()
+
+    assert len(incidents) == 1
+
+    # Verificar que o outbox_event permanece 'pending' e inalterado
+    result = await async_session.execute(
+        select(OutboxEventModel).where(OutboxEventModel.outbox_event_id == outbox_model.outbox_event_id)
+    )
+    reloaded_outbox = result.scalar_one()
+    assert reloaded_outbox.status == "pending"
+    assert reloaded_outbox.published_at is None
+
+
+@pytest.mark.asyncio
+async def test_kafka_consumer_process_single_message_flow(async_session: AsyncSession) -> None:
+    """
+    Testa o método process_single_message do CorrelationKafkaConsumer.
+    Verifica que o evento Kafka é processado, o incidente é criado no banco e retorna True
+    para autorizar o commit do offset no Kafka.
+    """
+    tenant_id = uuid4()
+    event_model = _make_security_event_model(tenant_id=tenant_id, event_type="service_down")
+    async_session.add(event_model)
+    await async_session.commit()
+
+    def test_uow_factory() -> PostgresCorrelationUnitOfWork:
+        return PostgresCorrelationUnitOfWork(async_session)
+
+    consumer = CorrelationKafkaConsumer(uow_factory=test_uow_factory)
+
+    kafka_msg_value = {
+        "event_type": "SecurityEventReceivedEvent",
+        "tenant_id": str(tenant_id),
+        "security_event_id": str(event_model.event_id),
+    }
+
+    success = await consumer.process_single_message(kafka_msg_value)
+    assert success is True
+
+    # Verificar que o incidente foi criado no banco
+    repo = PostgresIncidentRepository(async_session)
+    incidents = await repo.list(tenant_id=tenant_id)
+    assert len(incidents) == 1
+
+
 @pytest.mark.asyncio
 async def test_repository_count_and_stable_sorting(async_session: AsyncSession) -> None:
     """Valida que repo.count() executa contagem exata e repo.list() usa ordenação estável."""

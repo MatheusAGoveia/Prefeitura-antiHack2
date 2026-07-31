@@ -1,3 +1,4 @@
+import hashlib
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import UUID, uuid4
@@ -1079,7 +1080,7 @@ class PostgresIncidentRepository(IncidentRepository):
         result = await self.session.execute(stmt)
         model = result.scalar_one_or_none()
 
-        key_hash = __import__("hashlib").sha256(
+        key_hash = hashlib.sha256(
             incident.correlation_key.encode("utf-8")
         ).hexdigest()
 

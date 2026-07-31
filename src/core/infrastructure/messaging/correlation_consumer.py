@@ -55,7 +55,7 @@ class CorrelationKafkaConsumer:
         self._bootstrap_servers = bootstrap_servers or settings.GOVSEC_KAFKA_BOOTSTRAP
         self._group_id = group_id or settings.GOVSEC_KAFKA_CORRELATION_GROUP_ID
         prefix = settings.GOVSEC_KAFKA_TOPIC_PREFIX
-        self._topic = topic or f"{prefix}.security-events"
+        self._topic = topic or f"{prefix}.events"
         self._uow_factory = uow_factory
         self._rules_factory = rules_factory or get_rules_for_tenant
         self._window_seconds = window_seconds
@@ -129,7 +129,7 @@ class CorrelationKafkaConsumer:
             from src.core.infrastructure.db.repositories import PostgresCorrelationUnitOfWork
             from src.core.infrastructure.db.unit_of_work import async_session_factory
 
-            async def default_uow_factory() -> PostgresCorrelationUnitOfWork:
+            def default_uow_factory() -> PostgresCorrelationUnitOfWork:
                 return PostgresCorrelationUnitOfWork(async_session_factory())
 
             uow_factory = default_uow_factory
