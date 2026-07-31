@@ -19,7 +19,7 @@ import hashlib
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID, uuid4
 
 import pytest
@@ -697,7 +697,7 @@ async def test_handler_failure_returns_false_and_does_not_commit_offset() -> Non
 
 
 @pytest.mark.asyncio
-async def test_process_single_message_sqlalchemy_error_returns_false_and_aborts_commit() -> None:
+async def test_process_single_message_sqlalchemy_error_returns_false() -> None:
     """Valida que simulação de SQLAlchemyError em process_single_message retorna False."""
     mock_uow = AsyncMock()
     mock_uow.__aenter__.return_value = mock_uow
@@ -713,6 +713,40 @@ async def test_process_single_message_sqlalchemy_error_returns_false_and_aborts_
 
     success = await consumer.process_single_message(kafka_msg_value)
     assert success is False, "SQLAlchemyError no commit deve fazer process_single_message retornar False."
+
+
+@pytest.mark.asyncio
+async def test_run_loop_aborts_kafka_offset_commit_when_process_single_message_fails() -> None:
+    """Valida que se process_single_message retornar False no loop run(), consumer.commit NUNCA é chamado."""
+    consumer = CorrelationKafkaConsumer()
+    mock_aiokafka_consumer = AsyncMock()
+
+    mock_msg = MagicMock()
+    mock_msg.value = {
+        "event_type": "SecurityEventReceivedEvent",
+        "tenant_id": str(uuid4()),
+        "security_event_id": str(uuid4()),
+    }
+    mock_msg.offset = 10
+    tp = MagicMock()
+
+    async def side_effect_getmany(timeout_ms: int = 1000, max_records: int = 10) -> dict:
+        if mock_aiokafka_consumer.getmany.call_count == 1:
+            return {tp: [mock_msg]}
+        consumer._running = False
+        return {}
+
+    mock_aiokafka_consumer.getmany.side_effect = side_effect_getmany
+    consumer._consumer = mock_aiokafka_consumer
+    consumer._running = True
+
+    # Mockar process_single_message para retornar False (simulando falha no DB)
+    consumer.process_single_message = AsyncMock(return_value=False)  # type: ignore[assignment]
+
+    await consumer.run()
+
+    # Confirmação técnica estrita: commit() NUNCA deve ter sido chamado para mensagens que falharam!
+    mock_aiokafka_consumer.commit.assert_not_awaited()
 
 
 @pytest.mark.asyncio
