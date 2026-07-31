@@ -107,12 +107,6 @@ class CorrelationUnitOfWork(ABC):
         """Repositório de Audit Logs."""
         pass
 
-    @property
-    @abstractmethod
-    def outbox(self) -> OutboxRepository:
-        """Repositório de Outbox (para marcar eventos como published/failed)."""
-        pass
-
     @abstractmethod
     async def commit(self) -> None:
         """Confirma a transação no banco de dados."""

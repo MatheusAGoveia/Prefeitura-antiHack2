@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     GOVSEC_REDIS_URL: str = "redis://localhost:6379/0"
     GOVSEC_KAFKA_BOOTSTRAP: str = "localhost:19092"
     GOVSEC_KAFKA_TOPIC_PREFIX: str = "govsec"
+    GOVSEC_KAFKA_CORRELATION_GROUP_ID: str = "govsec-correlation-group"
     GOVSEC_USE_KAFKA: bool = False
     GOVSEC_JWT_SECRET: str = "super-secret-govsec-key-change-in-production"
     GOVSEC_JWT_ALGORITHM: str = "HS256"

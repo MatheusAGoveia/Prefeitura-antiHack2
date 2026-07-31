@@ -1079,6 +1079,10 @@ class PostgresIncidentRepository(IncidentRepository):
         result = await self.session.execute(stmt)
         model = result.scalar_one_or_none()
 
+        key_hash = __import__("hashlib").sha256(
+            incident.correlation_key.encode("utf-8")
+        ).hexdigest()
+
         if model is None:
             model = IncidentModel(
                 incident_id=incident.incident_id,
@@ -1088,21 +1092,47 @@ class PostgresIncidentRepository(IncidentRepository):
                 severity=incident.severity.value,
                 status=incident.status.value,
                 correlation_key=incident.correlation_key,
-                correlation_key_hash=__import__('hashlib').sha256(
-                    incident.correlation_key.encode('utf-8')
-                ).hexdigest(),
+                correlation_key_hash=key_hash,
                 created_at=incident.created_at,
                 updated_at=incident.updated_at,
             )
             self.session.add(model)
+            try:
+                async with self.session.begin_nested():
+                    await self.session.flush()
+            except IntegrityError:
+                # Concorrência: se outra transação criou o mesmo incidente ativo no mesmo instante
+                existing = await self.find_open_by_correlation_key(
+                    tenant_id=incident.tenant_id,
+                    correlation_key_hash=key_hash,
+                )
+                if existing is not None:
+                    return existing
+                raise
         else:
             model.title = incident.title
             model.description = incident.description
             model.severity = incident.severity.value
             model.status = incident.status.value
             model.updated_at = incident.updated_at
+            await self.session.flush()
 
-        await self.session.flush()
+        # Persistir histórico de auditoria pendente na mesma transação
+        if incident.audit_history:
+            for change in incident.audit_history:
+                history_model = IncidentStatusHistoryModel(
+                    history_id=uuid4(),
+                    incident_id=incident.incident_id,
+                    tenant_id=incident.tenant_id,
+                    from_status=change.from_status.value,
+                    to_status=change.to_status.value,
+                    actor_id=change.actor_id,
+                    reason=change.reason,
+                    timestamp=change.timestamp,
+                )
+                self.session.add(history_model)
+            await self.session.flush()
+
         return self._to_entity(model)
 
     async def get_by_id(self, incident_id: UUID, tenant_id: UUID) -> Incident | None:
@@ -1132,6 +1162,18 @@ class PostgresIncidentRepository(IncidentRepository):
         model = result.scalar_one_or_none()
         return self._to_entity(model) if model else None
 
+    async def count(
+        self,
+        tenant_id: UUID,
+        status: str | None = None,
+    ) -> int:
+        from sqlalchemy import func
+        stmt = select(func.count()).select_from(IncidentModel).where(IncidentModel.tenant_id == tenant_id)
+        if status:
+            stmt = stmt.where(IncidentModel.status == status)
+        result = await self.session.execute(stmt)
+        return result.scalar_one()
+
     async def list(
         self,
         tenant_id: UUID,
@@ -1139,17 +1181,19 @@ class PostgresIncidentRepository(IncidentRepository):
         limit: int = 50,
         status: str | None = None,
     ) -> list[Incident]:
-        """Lista incidentes do tenant, ordenados por created_at DESC (ordenação estável)."""
+        """Lista incidentes do tenant com ordenação estável created_at DESC, incident_id DESC."""
         stmt = select(IncidentModel).where(IncidentModel.tenant_id == tenant_id)
         if status:
             stmt = stmt.where(IncidentModel.status == status)
-        stmt = stmt.order_by(desc(IncidentModel.created_at)).offset(skip).limit(limit)
+        stmt = stmt.order_by(
+            desc(IncidentModel.created_at), desc(IncidentModel.incident_id)
+        ).offset(skip).limit(limit)
         result = await self.session.execute(stmt)
         return [self._to_entity(m) for m in result.scalars().all()]
 
 
 class PostgresIncidentEvidenceRepository(IncidentEvidenceRepository):
-    """Repositório Postgres de Evidências de Incidentes (M3.2). Idempotente via UQ."""
+    """Repositório Postgres de Evidências de Incidentes (M3.2). Idempotente via UQ e SAVEPOINT."""
 
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
@@ -1170,9 +1214,8 @@ class PostgresIncidentEvidenceRepository(IncidentEvidenceRepository):
         """
         Persiste uma evidência. Se UNIQUE(incident_id, event_id) violar (replay),
         busca e retorna a evidência existente silenciosamente.
-        Usa SAVEPOINT para idempotência sem invalidar a transação pai.
+        Usa SAVEPOINT para idempotência atômica sem invalidar a transação pai.
         """
-        # Verificar idempotência ANTES de tentar inserir (evita IntegrityError e rollback)
         already_exists = await self.exists(
             incident_id=evidence.incident_id,
             event_id=evidence.event_id,
@@ -1187,8 +1230,7 @@ class PostgresIncidentEvidenceRepository(IncidentEvidenceRepository):
                 )
             )
             result = await self.session.execute(stmt)
-            existing = result.scalar_one()
-            return self._to_entity(existing)
+            return self._to_entity(result.scalar_one())
 
         model = IncidentEvidenceModel(
             evidence_id=evidence.evidence_id,
@@ -1201,7 +1243,20 @@ class PostgresIncidentEvidenceRepository(IncidentEvidenceRepository):
             added_at=evidence.added_at,
         )
         self.session.add(model)
-        await self.session.flush()
+        try:
+            async with self.session.begin_nested():
+                await self.session.flush()
+        except IntegrityError:
+            stmt = select(IncidentEvidenceModel).where(
+                and_(
+                    IncidentEvidenceModel.incident_id == evidence.incident_id,
+                    IncidentEvidenceModel.event_id == evidence.event_id,
+                    IncidentEvidenceModel.tenant_id == evidence.tenant_id,
+                )
+            )
+            result = await self.session.execute(stmt)
+            return self._to_entity(result.scalar_one())
+
         return self._to_entity(model)
 
     async def exists(
@@ -1248,7 +1303,6 @@ class PostgresCorrelationUnitOfWork(CorrelationUnitOfWork):
         self._incidents = PostgresIncidentRepository(session)
         self._evidences = PostgresIncidentEvidenceRepository(session)
         self._logs = PostgresLogRepository(session)
-        self._outbox = PostgresOutboxRepository(session)
 
     @property
     def security_events(self) -> PostgresSecurityEventRepository:
@@ -1269,10 +1323,6 @@ class PostgresCorrelationUnitOfWork(CorrelationUnitOfWork):
     @property
     def logs(self) -> PostgresLogRepository:
         return self._logs
-
-    @property
-    def outbox(self) -> PostgresOutboxRepository:
-        return self._outbox
 
     async def __aenter__(self) -> "PostgresCorrelationUnitOfWork":
         return self

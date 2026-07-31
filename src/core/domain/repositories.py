@@ -258,6 +258,18 @@ class IncidentRepository(ABC):
         pass
 
     @abstractmethod
+    async def count(
+        self,
+        tenant_id: UUID,
+        status: str | None = None,
+    ) -> int:
+        """
+        Retorna o total de incidentes de um tenant com filtro opcional por status.
+        tenant_id é sempre obrigatório.
+        """
+        pass
+
+    @abstractmethod
     async def list(
         self,
         tenant_id: UUID,
@@ -268,7 +280,7 @@ class IncidentRepository(ABC):
         """
         Lista incidentes de um tenant com paginação e filtro opcional por status.
         tenant_id é sempre obrigatório — nunca aceito do cliente.
-        Ordenação estável por created_at DESC.
+        Ordenação estável por created_at DESC, incident_id DESC.
         """
         pass
 

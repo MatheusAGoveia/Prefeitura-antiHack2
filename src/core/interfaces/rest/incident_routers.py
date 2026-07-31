@@ -3,15 +3,18 @@ Endpoints REST de Incidentes (M3.2).
 GovSec Shield — Incident Management API
 
 Contratos:
-  GET  /api/v1/incidents          — listagem paginada por tenant (filtro obrigatório via JWT)
-  GET  /api/v1/incidents/{id}     — detalhe de um incidente com contagem de evidências
+  GET   /api/v1/incidents          — listagem paginada por tenant (filtro obrigatório via JWT)
+  GET   /api/v1/incidents/{id}     — detalhe de um incidente com contagem de evidências
   PATCH /api/v1/incidents/{id}/status — mudança auditada de status (tenant e actor do JWT)
 
-Regras de segurança:
+Regras de segurança & arquitetura:
   - tenant_id NUNCA aceito do cliente; extraído exclusivamente do JWT.
   - actor_id para auditoria de status = user_id do JWT autenticado.
+  - count(*) executado diretamente no banco de dados.
+  - Ordenação estável: created_at DESC, incident_id DESC.
+  - Sem import de modelos ORM dentro das rotas REST (encapsulamento total via repositório/UoW).
   - Transição inválida → HTTP 422 com mensagem explícita.
-  - Incidente de outro tenant → HTTP 404 (não vazar existência).
+  - Incidente de outro tenant → HTTP 404 (não vaza existência).
 """
 
 from uuid import UUID
@@ -21,7 +24,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.application.dto import (
     ChangeIncidentStatusDTO,
-    EvidenceResponseDTO,
     IncidentListResponseDTO,
     IncidentResponseDTO,
     VALID_INCIDENT_STATUSES,
@@ -34,7 +36,7 @@ from src.core.infrastructure.db.repositories import (
     PostgresIncidentRepository,
 )
 from src.core.infrastructure.db.unit_of_work import get_db_session
-from src.core.infrastructure.security.kernel import AuthenticatedUser, SecurityKernel
+from src.core.infrastructure.security.kernel import AuthenticatedUser
 from src.core.interfaces.rest.dependencies import get_current_user
 
 router = APIRouter(prefix="/api/v1/incidents", tags=["Incidents"])
@@ -52,7 +54,7 @@ router = APIRouter(prefix="/api/v1/incidents", tags=["Incidents"])
     description=(
         "Retorna incidentes paginados e filtrados por tenant_id extraído do JWT. "
         "O cliente NUNCA informa o tenant_id. "
-        "Ordenação estável por created_at DESC."
+        "Ordenação estável por created_at DESC, incident_id DESC."
     ),
 )
 async def list_incidents(
@@ -69,6 +71,7 @@ async def list_incidents(
     """
     Lista incidentes do tenant do usuário autenticado.
     tenant_id é extraído do JWT — nunca do cliente.
+    Contagem total executada via COUNT(*) no banco.
     """
     if incident_status is not None:
         normalized = incident_status.strip().lower()
@@ -82,11 +85,10 @@ async def list_incidents(
     tenant_id = current_user.tenant_id
     repo = PostgresIncidentRepository(session)
 
-    # Contar total para paginação (antes de aplicar offset/limit)
-    all_incidents = await repo.list(tenant_id=tenant_id, skip=0, limit=10_000, status=incident_status)
-    total = len(all_incidents)
+    # Contar total usando COUNT(*) no banco (alta performance)
+    total = await repo.count(tenant_id=tenant_id, status=incident_status)
 
-    # Aplicar paginação
+    # Aplicar paginação com ordenação estável (created_at DESC, incident_id DESC)
     page = await repo.list(tenant_id=tenant_id, skip=skip, limit=limit, status=incident_status)
 
     items = [
@@ -184,55 +186,35 @@ async def change_incident_status(
     tenant_id = current_user.tenant_id
     actor_id = str(current_user.user_id)
 
-    uow = PostgresCorrelationUnitOfWork(session)
-    incident = await uow.incidents.get_by_id(incident_id=incident_id, tenant_id=tenant_id)
-    if incident is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Incidente não encontrado.",
-        )
+    async with PostgresCorrelationUnitOfWork(session) as uow:
+        incident = await uow.incidents.get_by_id(incident_id=incident_id, tenant_id=tenant_id)
+        if incident is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Incidente não encontrado.",
+            )
 
-    try:
-        new_status = IncidentStatus(dto.new_status)
-        incident.transition_to(
-            new_status=new_status,
-            actor_id=actor_id,
-            reason=dto.reason,
-        )
-    except InvalidStatusTransitionError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=str(exc),
-        ) from exc
-    except DomainError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=str(exc),
-        ) from exc
+        try:
+            new_status = IncidentStatus(dto.new_status)
+            incident.transition_to(
+                new_status=new_status,
+                actor_id=actor_id,
+                reason=dto.reason,
+            )
+        except InvalidStatusTransitionError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=str(exc),
+            ) from exc
+        except DomainError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=str(exc),
+            ) from exc
 
-    # Persistir incidente atualizado e histórico na mesma transação
-    saved = await uow.incidents.save(incident)
-
-    # Persistir o registro de histórico de status
-    from src.core.infrastructure.db.models import IncidentStatusHistoryModel
-    from uuid import uuid4
-    from datetime import datetime, timezone
-
-    last_change = incident.audit_history[-1] if incident.audit_history else None
-    if last_change is not None:
-        history_model = IncidentStatusHistoryModel(
-            history_id=uuid4(),
-            incident_id=incident.incident_id,
-            tenant_id=tenant_id,
-            from_status=last_change.from_status.value,
-            to_status=last_change.to_status.value,
-            actor_id=last_change.actor_id,
-            reason=last_change.reason,
-            timestamp=last_change.timestamp,
-        )
-        session.add(history_model)
-
-    await session.commit()
+        # Persistir incidente atualizado e histórico de auditoria na mesma transação/UoW
+        saved = await uow.incidents.save(incident)
+        await uow.commit()
 
     return IncidentResponseDTO(
         incident_id=saved.incident_id,

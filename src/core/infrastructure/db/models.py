@@ -10,6 +10,7 @@ from uuid import UUID, uuid4
 from sqlalchemy import (
     JSON,
     Boolean,
+    CheckConstraint,
     DateTime,
     ForeignKeyConstraint,
     Index,
@@ -236,6 +237,11 @@ class IncidentModel(Base):
     __table_args__ = (
         # FK composta referenciável por tabelas filhas (tenant-aware)
         UniqueConstraint("tenant_id", "incident_id", name="uq_incidents_tenant_incident"),
+        # CHECK constraint para validação estrita de status no banco de dados
+        CheckConstraint(
+            "status IN ('open', 'acknowledged', 'investigating', 'contained', 'resolved', 'closed')",
+            name="chk_incidents_status_valid",
+        ),
         # Índice único PARCIAL: apenas incidentes ativos (permite reabertura pós-RESOLVED/CLOSED)
         Index(
             "idx_incidents_active_corrkey_unique",

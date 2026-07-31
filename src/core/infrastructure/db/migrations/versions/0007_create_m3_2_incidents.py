@@ -88,6 +88,11 @@ def upgrade(op_ctx: Operations | None = None) -> None:
             sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
             # FK composta referenciável por tabelas filhas
             sa.UniqueConstraint("tenant_id", "incident_id", name="uq_incidents_tenant_incident"),
+            # CHECK constraint para validação estrita dos status permitidos
+            sa.CheckConstraint(
+                "status IN ('open', 'acknowledged', 'investigating', 'contained', 'resolved', 'closed')",
+                name="chk_incidents_status_valid",
+            ),
         )
         # Índices de performance
         op_impl.create_index("idx_incidents_tenant_id", "incidents", ["tenant_id"])

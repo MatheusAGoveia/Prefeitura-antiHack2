@@ -168,6 +168,23 @@ services:
       timeout: 5s
       retries: 5
 
+  correlation-worker:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    container_name: govsec-correlation-worker
+    command: ["poetry", "run", "python", "scripts/correlation_worker.py"]
+    environment:
+      GOVSEC_ENV: dev
+      GOVSEC_DB_URL: postgresql+asyncpg://govsec:govsec@postgres:5432/govsec
+      GOVSEC_KAFKA_BOOTSTRAP: redpanda:9092
+      GOVSEC_KAFKA_CORRELATION_GROUP_ID: govsec-correlation-group
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
+
 volumes:
   postgres_data:
   prometheus_data:

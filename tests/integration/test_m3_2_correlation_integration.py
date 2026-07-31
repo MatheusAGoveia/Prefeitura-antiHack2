@@ -451,3 +451,84 @@ async def test_invalid_status_transition_raises_domain_error(async_session: Asyn
 
     with pytest.raises(InvalidStatusTransitionError):
         incident.transition_to(IncidentStatus.RESOLVED, "actor", "Skipping steps.")
+
+
+# ---------------------------------------------------------------------------
+# Novos testes de integração avançados M3.2
+# ---------------------------------------------------------------------------
+
+
+import asyncio
+
+
+@pytest.mark.asyncio
+async def test_concurrent_executions_single_incident() -> None:
+    """
+    Simula concorrência real (duas sessões DB independentes e paralelas tentando criar o mesmo incidente).
+    O SAVEPOINT no repositório captura a violação de integridade e garante que
+    apenas 1 incidente ativo seja criado, vinculando as evidências.
+    """
+    engine = create_async_engine(TEST_DATABASE_URL, echo=False)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    tenant_id = uuid4()
+    occurred = datetime(2026, 7, 30, 14, 10, 0, tzinfo=timezone.utc)
+
+    async with factory() as session_setup:
+        e1 = _make_security_event_model(tenant_id=tenant_id, event_type="service_down", occurred_at=occurred)
+        e2 = _make_security_event_model(tenant_id=tenant_id, event_type="service_down", occurred_at=occurred)
+        session_setup.add_all([e1, e2])
+        await session_setup.commit()
+
+    async def run_correlate(event_id: UUID) -> None:
+        async with factory() as session:
+            uow = PostgresCorrelationUnitOfWork(session)
+            h = CorrelateSecurityEventHandler(uow=uow, rules=[InfraAvailabilityRule()], window_seconds=3600)
+            await h.handle(tenant_id=tenant_id, security_event_id=event_id)
+            await uow.commit()
+
+    # Executar concorrentemente com 2 sessões distintas
+    await asyncio.gather(
+        run_correlate(e1.event_id),
+        run_correlate(e2.event_id),
+    )
+
+    async with factory() as session_check:
+        repo = PostgresIncidentRepository(session_check)
+        all_incidents = await repo.list(tenant_id=tenant_id)
+        assert len(all_incidents) == 1, "Apenas 1 incidente ativo deve existir após execução concorrente"
+
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_repository_count_and_stable_sorting(async_session: AsyncSession) -> None:
+    """Valida que repo.count() executa contagem exata e repo.list() usa ordenação estável."""
+    tenant_id = uuid4()
+    repo = PostgresIncidentRepository(async_session)
+
+    # Criar 3 incidentes
+    for i in range(3):
+        e_model = _make_security_event_model(tenant_id=tenant_id, event_type=f"service_down_{i}")
+        async_session.add(e_model)
+        await async_session.flush()
+
+        uow = PostgresCorrelationUnitOfWork(async_session)
+        h = CorrelateSecurityEventHandler(uow=uow, rules=[InfraAvailabilityRule()], window_seconds=3600)
+        await h.handle(tenant_id=tenant_id, security_event_id=e_model.event_id)
+
+    total = await repo.count(tenant_id=tenant_id)
+    assert total == 3
+
+    open_count = await repo.count(tenant_id=tenant_id, status="open")
+    assert open_count == 3
+
+    closed_count = await repo.count(tenant_id=tenant_id, status="closed")
+    assert closed_count == 0
+
+    listed = await repo.list(tenant_id=tenant_id, skip=0, limit=10)
+    assert len(listed) == 3

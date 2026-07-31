@@ -33,7 +33,10 @@ from src.core.infrastructure.correlation.rules import (
     AuthBruteForceRule,
     InfraAvailabilityRule,
 )
-from src.core.application.correlation_handler import _compute_time_bucket
+from src.core.application.correlation_handler import (
+    CorrelateSecurityEventHandler,
+    _compute_time_bucket,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -401,3 +404,37 @@ class TestSanitizePayload:
         payload = {"host": "web-01", "port": 443, "status": "down"}
         result = sanitize_payload(payload)
         assert result == payload
+
+
+# ---------------------------------------------------------------------------
+# CorrelateSecurityEventHandler — Inelegibilidade e Regra Inativa (Mock UoW)
+# ---------------------------------------------------------------------------
+
+
+from unittest.mock import AsyncMock, MagicMock
+
+
+class TestCorrelateSecurityEventHandlerUnit:
+    @pytest.mark.asyncio
+    async def test_ineligible_event_returns_empty_and_does_not_save(self) -> None:
+        tenant_id = uuid4()
+        event_id = uuid4()
+
+        event = _make_event(tenant_id=tenant_id, event_type="user_login", severity="LOW")
+        event.event_id = event_id
+
+        uow = MagicMock()
+        uow.security_events.get_by_id = AsyncMock(return_value=event)
+        uow.incidents.save = AsyncMock()
+        uow.evidences.save = AsyncMock()
+        uow.logs.save = AsyncMock()
+
+        rule = InfraAvailabilityRule()  # user_login LOW is ineligible
+        handler = CorrelateSecurityEventHandler(uow=uow, rules=[rule])
+
+        results = await handler.handle(tenant_id=tenant_id, security_event_id=event_id)
+
+        assert results == []
+        uow.incidents.save.assert_not_called()
+        uow.evidences.save.assert_not_called()
+        uow.logs.save.assert_not_called()
