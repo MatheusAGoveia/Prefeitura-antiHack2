@@ -218,18 +218,14 @@ class CorrelationKafkaConsumer:
                 # Commit no Banco de Dados
                 await uow.commit()
 
-                # REGISTRO DE MÉTRICAS PROMETHEUS PÓS-COMMIT BEM-SUCEDIDO (ISOLADO DE FALHAS DE OBSERVABILIDADE)
+                # REGISTRO DE MÉTRICAS HISTÓRICAS PÓS-COMMIT (ISOLADO DE FALHAS DE OBSERVABILIDADE)
+                # Nota de Arquitetura: O PostgreSQL é a fonte de verdade para incidentes abertos (Gauge).
+                # A API REST FastAPI é a autoridade exclusiva que expõe govsec_open_incidents via /metrics.
                 from src.shared.observability.metrics import (
-                    safe_record_incident_created,
                     safe_record_incident_evidence_added,
                 )
 
                 for item in result.items:
-                    if item.is_new_incident:
-                        safe_record_incident_created(
-                            severity=item.incident.severity.value,
-                            status=item.incident.status.value,
-                        )
                     if item.is_new_evidence:
                         safe_record_incident_evidence_added(rule_id=item.rule_id)
 

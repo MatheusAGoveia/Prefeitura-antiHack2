@@ -860,3 +860,15 @@ async def test_zero_count_severity_resets_gauge_to_zero(async_session: AsyncSess
     # Verificar que o gauge para critical foi zerado no Prometheus
     assert GOVSEC_OPEN_INCIDENTS.labels(severity="critical")._value.get() == 0.0
     assert GOVSEC_OPEN_INCIDENTS.labels(severity="high")._value.get() == 0.0
+
+
+def test_grafana_dashboard_promql_uses_max_and_no_sum() -> None:
+    """Valida que o dashboard Grafana provisionado utiliza max(govsec_open_incidents) e não sum(govsec_open_incidents)."""
+    from pathlib import Path
+
+    dashboard_path = Path("deploy/grafana/dashboards/golden_signals.json")
+    assert dashboard_path.exists(), "Dashboard Grafana não encontrado em deploy/grafana/dashboards/golden_signals.json"
+
+    content = dashboard_path.read_text(encoding="utf-8")
+    assert "sum(govsec_open_incidents)" not in content, "Dashboard Grafana ainda possui 'sum(govsec_open_incidents)', o que multiplica o valor por réplicas da API!"
+    assert "max(govsec_open_incidents) by (severity)" in content, "Dashboard Grafana deve utilizar 'max(govsec_open_incidents) by (severity)' para refletir a contagem verdadeira do Postgres."

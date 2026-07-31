@@ -475,7 +475,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "govsec-prometheus" },
-          "expr": "sum(govsec_open_incidents) by (severity)",
+          "expr": "max(govsec_open_incidents) by (severity)",
           "legendFormat": "{{severity}}",
           "refId": "A"
         }

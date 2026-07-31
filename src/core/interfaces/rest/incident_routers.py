@@ -437,10 +437,10 @@ async def change_incident_status(
             incident_id=saved.incident_id, tenant_id=tenant_id
         )
 
-        # Incrementar métrica Prometheus de transição auditada (M3.3) PÓS-COMMIT (com adaptador seguro de infraestrutura)
+        # Incrementar métrica Prometheus de transição auditada (M3.3) PÓS-COMMIT (adaptadores seguros de infraestrutura)
         from src.shared.observability.metrics import (
             safe_record_incident_status_transition,
-            sync_open_incidents_gauge_from_db,
+            safe_sync_open_incidents_gauge_from_db,
         )
 
         safe_record_incident_status_transition(
@@ -448,11 +448,7 @@ async def change_incident_status(
             to_status=new_status,
             severity=saved.severity.value,
         )
-        try:
-            await sync_open_incidents_gauge_from_db(session)
-        except Exception as exc:
-            # Justificativa Técnica: Isolamento de falha de observabilidade pós-commit HTTP.
-            logger.warning("Falha ao sincronizar gauge no pós-commit HTTP status: %s", exc)
+        await safe_sync_open_incidents_gauge_from_db(session)
 
     return IncidentResponseDTO(
         incident_id=saved.incident_id,

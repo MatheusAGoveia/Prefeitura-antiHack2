@@ -273,6 +273,17 @@ async def sync_open_incidents_gauge_from_db(session: Any) -> None:
         GOVSEC_OPEN_INCIDENTS.labels(severity=sev_key).set(cnt)
 
 
+async def safe_sync_open_incidents_gauge_from_db(session: Any) -> None:
+    """
+    Adaptador de infraestrutura seguro para sincronização do Gauge GOVSEC_OPEN_INCIDENTS a partir do banco.
+    Isola qualquer exceção de observabilidade/banco sem vazar para a camada REST HTTP.
+    """
+    try:
+        await sync_open_incidents_gauge_from_db(session)
+    except Exception as exc:
+        logger.warning("Falha ao sincronizar gauge de incidentes a partir do banco de dados: %s", exc)
+
+
 def collect_db_pool_metrics() -> None:
     """Coleta dinâmica do estado do pool SQLAlchemy sem gerar alta cardinalidade."""
     try:
