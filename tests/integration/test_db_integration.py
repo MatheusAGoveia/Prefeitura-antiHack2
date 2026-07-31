@@ -9,10 +9,14 @@ import pytest
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from src.core.domain.entities import Tenant, TenantStatus
+from src.core.domain.entities import AlertAcknowledgement, AuditLog, Tenant, TenantStatus
 from src.core.infrastructure.config import settings
 from src.core.infrastructure.db.models import Base
-from src.core.infrastructure.db.repositories import PostgresTenantRepository
+from src.core.infrastructure.db.repositories import (
+    PostgresAlertAcknowledgementRepository,
+    PostgresLogRepository,
+    PostgresTenantRepository,
+)
 
 TEST_DATABASE_URL = settings.GOVSEC_DB_URL
 
@@ -33,7 +37,7 @@ async def async_session():
 
 
 @pytest.mark.asyncio
-async def test_postgres_tenant_repository_flow(async_session: AsyncSession):
+async def test_postgres_tenant_repository_flow(async_session: AsyncSession) -> None:
     repo = PostgresTenantRepository(async_session)
 
     tenant = Tenant(name="Prefeitura de Contagem", slug="contagem", status=TenantStatus.ACTIVE)
@@ -56,12 +60,7 @@ async def test_postgres_tenant_repository_flow(async_session: AsyncSession):
 
 
 @pytest.mark.asyncio
-async def test_postgres_log_repository_real_persistence(async_session: AsyncSession):
-    from uuid import uuid4
-
-    from src.core.domain.entities import AuditLog
-    from src.core.infrastructure.db.repositories import PostgresLogRepository
-
+async def test_postgres_log_repository_real_persistence(async_session: AsyncSession) -> None:
     log_repo = PostgresLogRepository(async_session)
     tenant_id = uuid4()
 
@@ -84,10 +83,9 @@ async def test_postgres_log_repository_real_persistence(async_session: AsyncSess
 
 
 @pytest.mark.asyncio
-async def test_postgres_alert_acknowledgement_repository_real_persistence(async_session: AsyncSession):
-    from src.core.domain.entities import AlertAcknowledgement
-    from src.core.infrastructure.db.repositories import PostgresAlertAcknowledgementRepository
-
+async def test_postgres_alert_acknowledgement_repository_real_persistence(
+    async_session: AsyncSession,
+) -> None:
     ack_repo = PostgresAlertAcknowledgementRepository(async_session)
 
     tenant_uuid = uuid4()
@@ -109,4 +107,3 @@ async def test_postgres_alert_acknowledgement_repository_real_persistence(async_
     assert retrieved.alert_id == "ServiceDown-01"
     assert retrieved.reason == "Servidor reiniciado graciosamente pela equipe SRE"
     assert retrieved.acknowledged_by == "operador-sre"
-
