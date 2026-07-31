@@ -19,13 +19,16 @@ import hashlib
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
+from aiokafka.errors import KafkaError
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine, inspect, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from src.core.application.correlation_handler import CorrelateSecurityEventHandler
@@ -48,7 +51,10 @@ from src.core.infrastructure.db.repositories import (
     PostgresIncidentEvidenceRepository,
     PostgresIncidentRepository,
 )
-from src.core.infrastructure.messaging.correlation_consumer import CorrelationKafkaConsumer
+from src.core.infrastructure.messaging.correlation_consumer import (
+    READINESS_FILE_PATH,
+    CorrelationKafkaConsumer,
+)
 
 # Usa o banco de dados configurado no ambiente de teste
 TEST_DATABASE_URL = settings.GOVSEC_DB_URL
@@ -688,3 +694,58 @@ async def test_handler_failure_returns_false_and_does_not_commit_offset() -> Non
 
     success = await consumer.process_single_message(kafka_msg_value)
     assert success is False, "Se o DB/handler falhar, process_single_message deve retornar False para abortar commit de offset."
+
+
+@pytest.mark.asyncio
+async def test_process_single_message_sqlalchemy_error_returns_false_and_aborts_commit() -> None:
+    """Valida que simulação de SQLAlchemyError em process_single_message retorna False."""
+    mock_uow = AsyncMock()
+    mock_uow.__aenter__.return_value = mock_uow
+    mock_uow.__aexit__.return_value = None
+    mock_uow.commit.side_effect = SQLAlchemyError("Erro de banco durante commit transacional")
+
+    consumer = CorrelationKafkaConsumer(uow_factory=lambda: mock_uow)
+    kafka_msg_value = {
+        "event_type": "SecurityEventReceivedEvent",
+        "tenant_id": str(uuid4()),
+        "security_event_id": str(uuid4()),
+    }
+
+    success = await consumer.process_single_message(kafka_msg_value)
+    assert success is False, "SQLAlchemyError no commit deve fazer process_single_message retornar False."
+
+
+@pytest.mark.asyncio
+async def test_transient_kafka_error_in_loop_keeps_worker_active() -> None:
+    """Valida que KafkaError transitório no loop principal é registrado e mantém a resiliência do worker."""
+    consumer = CorrelationKafkaConsumer()
+    mock_aiokafka_consumer = AsyncMock()
+
+    async def side_effect_getmany(timeout_ms: int = 1000, max_records: int = 10) -> dict:
+        if mock_aiokafka_consumer.getmany.call_count == 1:
+            raise KafkaError("Conexão com o broker caiu temporariamente")
+        consumer._running = False
+        return {}
+
+    mock_aiokafka_consumer.getmany.side_effect = side_effect_getmany
+    consumer._consumer = mock_aiokafka_consumer
+    consumer._running = True
+
+    await consumer.run()
+    assert mock_aiokafka_consumer.getmany.call_count >= 2
+
+
+@pytest.mark.asyncio
+async def test_consumer_start_failure_removes_readiness_file_and_propagates_exception() -> None:
+    """Valida que se AIOKafkaConsumer.start() falhar, o readiness file não fica ativo e a exceção é propagada."""
+    consumer = CorrelationKafkaConsumer()
+
+    with patch("src.core.infrastructure.messaging.correlation_consumer.AIOKafkaConsumer") as mock_cls:
+        mock_instance = AsyncMock()
+        mock_instance.start.side_effect = KafkaError("Broker indisponível na inicialização")
+        mock_cls.return_value = mock_instance
+
+        with pytest.raises(KafkaError):
+            await consumer.start()
+
+        assert not READINESS_FILE_PATH.exists(), "Readiness file deve ser removido ou não existir após falha no start."

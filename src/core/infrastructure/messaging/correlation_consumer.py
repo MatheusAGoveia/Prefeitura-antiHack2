@@ -120,8 +120,19 @@ class CorrelationKafkaConsumer:
             self._running = True
             self._create_readiness_file()
             logger.info("CorrelationKafkaConsumer iniciado com sucesso.")
-        except (KafkaError, OSError, Exception) as exc:
-            logger.error("Falha fatal ao inicializar CorrelationKafkaConsumer no Kafka: %s", exc)
+        except KafkaError as exc:
+            logger.error("Falha de rede/broker Kafka ao inicializar CorrelationKafkaConsumer: %s", exc)
+            self._remove_readiness_file()
+            raise
+        except OSError as exc:
+            logger.error("Falha de I/O de sistema ao inicializar CorrelationKafkaConsumer: %s", exc)
+            self._remove_readiness_file()
+            raise
+        except Exception as exc:
+            # Justificativa Técnica: No limite da inicialização do componente de infraestrutura, qualquer exceção
+            # inesperada deve impedir a criação do readiness file, garantir a remoção de resíduos e propagar a falha
+            # ao processo chamador para reinício pelo orquestrador (Docker Compose/K8s).
+            logger.error("Falha inesperada ao inicializar CorrelationKafkaConsumer: %s", exc)
             self._remove_readiness_file()
             raise
 
