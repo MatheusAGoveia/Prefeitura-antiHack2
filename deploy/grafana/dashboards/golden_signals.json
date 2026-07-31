@@ -458,17 +458,119 @@
           }
         }
       }
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 52 },
+      "id": 50,
+      "title": "🛡️ Central Operacional de Incidentes e Evidências (M3.3)",
+      "type": "row"
+    },
+    {
+      "gridPos": { "h": 8, "w": 6, "x": 0, "y": 53 },
+      "id": 51,
+      "title": "Incidentes Criados por Severidade",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "govsec-prometheus" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "govsec-prometheus" },
+          "expr": "sum(govsec_incidents_total) by (severity)",
+          "legendFormat": "{{severity}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "0",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 1 },
+              { "color": "red", "value": 5 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "gridPos": { "h": 8, "w": 6, "x": 6, "y": 53 },
+      "id": 52,
+      "title": "Tendência de Criados (5m)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "govsec-prometheus" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "govsec-prometheus" },
+          "expr": "sum(rate(govsec_incidents_total[5m]))",
+          "legendFormat": "Taxa de Criação/s",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "0",
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "lineInterpolation": "smooth" },
+          "unit": "reqps"
+        }
+      }
+    },
+    {
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 53 },
+      "id": 53,
+      "title": "Transições de Status por Período",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "govsec-prometheus" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "govsec-prometheus" },
+          "expr": "sum(increase(govsec_incident_status_transitions_total[5m])) by (from_status, to_status)",
+          "legendFormat": "{{from_status}} ➔ {{to_status}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "0",
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "bars" }
+        }
+      }
+    },
+    {
+      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 53 },
+      "id": 54,
+      "title": "Evidências Vinculadas por Período",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "govsec-prometheus" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "govsec-prometheus" },
+          "expr": "sum(increase(govsec_incident_evidences_total[5m])) by (rule_id)",
+          "legendFormat": "Regra {{rule_id}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "0",
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line" }
+        }
+      }
     }
   ],
   "refresh": "5s",
   "schemaVersion": 38,
   "style": "dark",
-  "tags": ["govsec", "observability", "golden-signals", "sprint2", "capability-m2"],
+  "tags": ["govsec", "observability", "golden-signals", "sprint2", "capability-m2", "capability-m3.3"],
   "time": { "from": "now-15m", "to": "now" },
   "timepicker": {},
   "timezone": "browser",
   "title": "GovSec Shield — Observability Dashboard",
   "uid": "govsec-golden-signals",
-  "version": 3
+  "version": 4
 }
 

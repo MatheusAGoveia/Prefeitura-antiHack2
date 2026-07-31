@@ -138,6 +138,44 @@ GOVSEC_ALERTS_ACKNOWLEDGED_TOTAL = Counter(
     registry=REGISTRY,
 )
 
+# ─── Métricas M3.3 — Operações de Incidentes e Evidências ─────────────────────
+
+GOVSEC_INCIDENTS_TOTAL = Counter(
+    "govsec_incidents_total",
+    "Total de incidentes criados no motor de correlação",
+    ["severity", "status"],
+    registry=REGISTRY,
+)
+
+GOVSEC_INCIDENT_STATUS_TRANSITIONS_TOTAL = Counter(
+    "govsec_incident_status_transitions_total",
+    "Total de transições de status de incidentes auditadas",
+    ["from_status", "to_status"],
+    registry=REGISTRY,
+)
+
+GOVSEC_INCIDENT_EVIDENCES_TOTAL = Counter(
+    "govsec_incident_evidences_total",
+    "Total de evidências de incidentes vinculadas",
+    ["rule_id"],
+    registry=REGISTRY,
+)
+
+
+def record_incident_created(severity: str, status: str) -> None:
+    """Registra criação de incidente com labels de baixa cardinalidade (sem IDs sensíveis)."""
+    GOVSEC_INCIDENTS_TOTAL.labels(severity=severity, status=status).inc()
+
+
+def record_incident_status_transition(from_status: str, to_status: str) -> None:
+    """Registra transição auditada de status de incidente."""
+    GOVSEC_INCIDENT_STATUS_TRANSITIONS_TOTAL.labels(from_status=from_status, to_status=to_status).inc()
+
+
+def record_incident_evidence_added(rule_id: str = "default") -> None:
+    """Registra inclusão de evidência vinculada a incidente."""
+    GOVSEC_INCIDENT_EVIDENCES_TOTAL.labels(rule_id=rule_id).inc()
+
 
 def collect_db_pool_metrics() -> None:
     """Coleta dinâmica do estado do pool SQLAlchemy sem gerar alta cardinalidade."""

@@ -2,7 +2,7 @@ import hashlib
 from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
-from sqlalchemy import and_, desc, or_, select
+from sqlalchemy import and_, asc, desc, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,6 +14,7 @@ from src.core.domain.incidents import (
     Incident,
     IncidentEvidence,
     IncidentStatus,
+    IncidentStatusChange,
     SecurityEvent,
     SecurityEventSeverity,
 )
@@ -24,6 +25,7 @@ from src.core.domain.repositories import (
     CorrelationRuleVersionRepository,
     IncidentEvidenceRepository,
     IncidentRepository,
+    IncidentStatusHistoryRepository,
     LogRepository,
     OutboxRepository,
     SecurityEventRepository,
@@ -1166,11 +1168,21 @@ class PostgresIncidentRepository(IncidentRepository):
         self,
         tenant_id: UUID,
         status: str | None = None,
+        severity: str | None = None,
+        created_from: datetime | None = None,
+        created_to: datetime | None = None,
     ) -> int:
         from sqlalchemy import func
         stmt = select(func.count()).select_from(IncidentModel).where(IncidentModel.tenant_id == tenant_id)
         if status:
-            stmt = stmt.where(IncidentModel.status == status)
+            stmt = stmt.where(func.lower(IncidentModel.status) == status.lower())
+        if severity:
+            stmt = stmt.where(func.lower(IncidentModel.severity) == severity.lower())
+        if created_from:
+            stmt = stmt.where(IncidentModel.created_at >= created_from)
+        if created_to:
+            stmt = stmt.where(IncidentModel.created_at <= created_to)
+
         result = await self.session.execute(stmt)
         return result.scalar_one()
 
@@ -1180,20 +1192,46 @@ class PostgresIncidentRepository(IncidentRepository):
         skip: int = 0,
         limit: int = 50,
         status: str | None = None,
+        severity: str | None = None,
+        created_from: datetime | None = None,
+        created_to: datetime | None = None,
+        sort_by: str = "created_at",
+        order: str = "desc",
     ) -> list[Incident]:
-        """Lista incidentes do tenant com ordenação estável created_at DESC, incident_id DESC."""
+        """Lista incidentes do tenant com filtros operacionais, paginação e ordenação segura."""
+        from sqlalchemy import func
+
         stmt = select(IncidentModel).where(IncidentModel.tenant_id == tenant_id)
         if status:
-            stmt = stmt.where(IncidentModel.status == status)
-        stmt = stmt.order_by(
-            desc(IncidentModel.created_at), desc(IncidentModel.incident_id)
-        ).offset(skip).limit(limit)
+            stmt = stmt.where(func.lower(IncidentModel.status) == status.lower())
+        if severity:
+            stmt = stmt.where(func.lower(IncidentModel.severity) == severity.lower())
+        if created_from:
+            stmt = stmt.where(IncidentModel.created_at >= created_from)
+        if created_to:
+            stmt = stmt.where(IncidentModel.created_at <= created_to)
+
+        # Mapeamento seguro de campos para ordenação
+        allowed_sort_fields = {
+            "created_at": IncidentModel.created_at,
+            "updated_at": IncidentModel.updated_at,
+            "severity": IncidentModel.severity,
+            "status": IncidentModel.status,
+        }
+        sort_column = allowed_sort_fields.get(sort_by, IncidentModel.created_at)
+
+        if order.lower() == "asc":
+            stmt = stmt.order_by(asc(sort_column), asc(IncidentModel.incident_id))
+        else:
+            stmt = stmt.order_by(desc(sort_column), desc(IncidentModel.incident_id))
+
+        stmt = stmt.offset(skip).limit(limit)
         result = await self.session.execute(stmt)
         return [self._to_entity(m) for m in result.scalars().all()]
 
 
 class PostgresIncidentEvidenceRepository(IncidentEvidenceRepository):
-    """Repositório Postgres de Evidências de Incidentes (M3.2). Idempotente via UQ e SAVEPOINT."""
+    """Repositório Postgres de Evidências de Incidentes (M3.2/M3.3). Idempotente via UQ e SAVEPOINT."""
 
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
@@ -1272,27 +1310,95 @@ class PostgresIncidentEvidenceRepository(IncidentEvidenceRepository):
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none() is not None
 
-    async def list_by_incident(
-        self, incident_id: UUID, tenant_id: UUID
-    ) -> list[IncidentEvidence]:
-        stmt = select(IncidentEvidenceModel).where(
+    async def count_by_incident(self, incident_id: UUID, tenant_id: UUID) -> int:
+        from sqlalchemy import func
+        stmt = select(func.count()).select_from(IncidentEvidenceModel).where(
             and_(
                 IncidentEvidenceModel.incident_id == incident_id,
                 IncidentEvidenceModel.tenant_id == tenant_id,
             )
-        ).order_by(IncidentEvidenceModel.added_at)
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one()
+
+    async def list_by_incident(
+        self, incident_id: UUID, tenant_id: UUID, skip: int = 0, limit: int = 50
+    ) -> list[IncidentEvidence]:
+        stmt = (
+            select(IncidentEvidenceModel)
+            .where(
+                and_(
+                    IncidentEvidenceModel.incident_id == incident_id,
+                    IncidentEvidenceModel.tenant_id == tenant_id,
+                )
+            )
+            .order_by(desc(IncidentEvidenceModel.added_at), desc(IncidentEvidenceModel.evidence_id))
+            .offset(skip)
+            .limit(limit)
+        )
         result = await self.session.execute(stmt)
         return [self._to_entity(m) for m in result.scalars().all()]
 
 
+class PostgresIncidentStatusHistoryRepository(IncidentStatusHistoryRepository):
+    """Repositório Postgres do Histórico de Auditoria de Status (M3.3)."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def count_by_incident(self, incident_id: UUID, tenant_id: UUID) -> int:
+        from sqlalchemy import func
+        stmt = select(func.count()).select_from(IncidentStatusHistoryModel).where(
+            and_(
+                IncidentStatusHistoryModel.incident_id == incident_id,
+                IncidentStatusHistoryModel.tenant_id == tenant_id,
+            )
+        )
+        result = await self.session.execute(stmt)
+        return result.scalar_one()
+
+    async def list_by_incident(
+        self, incident_id: UUID, tenant_id: UUID, skip: int = 0, limit: int = 50
+    ) -> list[IncidentStatusChange]:
+        from src.core.domain.incidents import IncidentStatus, IncidentStatusChange
+
+        stmt = (
+            select(IncidentStatusHistoryModel)
+            .where(
+                and_(
+                    IncidentStatusHistoryModel.incident_id == incident_id,
+                    IncidentStatusHistoryModel.tenant_id == tenant_id,
+                )
+            )
+            .order_by(
+                desc(IncidentStatusHistoryModel.timestamp),
+                desc(IncidentStatusHistoryModel.history_id),
+            )
+            .offset(skip)
+            .limit(limit)
+        )
+        result = await self.session.execute(stmt)
+        models = result.scalars().all()
+        return [
+            IncidentStatusChange(
+                from_status=IncidentStatus(m.from_status),
+                to_status=IncidentStatus(m.to_status),
+                actor_id=m.actor_id,
+                reason=m.reason,
+                timestamp=m.timestamp,
+            )
+            for m in models
+        ]
+
+
 # ---------------------------------------------------------------------------
-# M3.2 — PostgresCorrelationUnitOfWork
+# M3.2 / M3.3 — PostgresCorrelationUnitOfWork
 # ---------------------------------------------------------------------------
 
 
 class PostgresCorrelationUnitOfWork(CorrelationUnitOfWork):
     """
-    Unit of Work Postgres para o motor de correlação (M3.2).
+    Unit of Work Postgres para o motor de correlação (M3.2/M3.3).
     Todos os repositórios compartilham a mesma AsyncSession (mesma transação).
     """
 
@@ -1302,6 +1408,7 @@ class PostgresCorrelationUnitOfWork(CorrelationUnitOfWork):
         self._correlation_rules = PostgresCorrelationRuleVersionRepository(session)
         self._incidents = PostgresIncidentRepository(session)
         self._evidences = PostgresIncidentEvidenceRepository(session)
+        self._history = PostgresIncidentStatusHistoryRepository(session)
         self._logs = PostgresLogRepository(session)
 
     @property
@@ -1319,6 +1426,10 @@ class PostgresCorrelationUnitOfWork(CorrelationUnitOfWork):
     @property
     def evidences(self) -> PostgresIncidentEvidenceRepository:
         return self._evidences
+
+    @property
+    def history(self) -> PostgresIncidentStatusHistoryRepository:
+        return self._history
 
     @property
     def logs(self) -> PostgresLogRepository:

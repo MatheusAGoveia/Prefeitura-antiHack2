@@ -6,9 +6,10 @@
 
 ## 📌 Estado Atual do Projeto
 - **Repositório:** `MatheusAGoveia/Prefeitura-antiHack2`
-- **Branch Ativa:** `feature/m3-corre- **Data da Última Atualização:** 2026-07-31T15:00:00Z
+- **Branch Ativa:** `feature/m3.3-incident-center-api`
+- **Data da Última Atualização:** 2026-07-31T15:28:00Z
 - **Responsável:** IA Assistente (Arquiteto Principal GovSec Shield)
-- **Status Atual:** Correção de Bloqueadores M3.2 100% CONCLUÍDA e HOMOLOGADA. Suíte expandida para 205 testes unitários/integração aprovados com validação explícita de `assert_not_awaited()` para aborto de commit no Kafka.
+- **Status Atual:** SPRINT M3.3 (Central Operacional de Incidentes e Evidências) 100% CONCLUÍDA e HOMOLOGADA. Suíte completa expandida para 211 testes unitários e de integração aprovados sem ressalvas. Validação de qualidade de código (Ruff, Mypy, Bandit, Compileall, Git Diff, Docker e Test Alerts) 100% verde.
 
 ---
 
@@ -59,6 +60,21 @@
 - [x] **Healthcheck por Readiness File (`/tmp/correlation-worker.ready`):** Criado estritamente após a conexão bem-sucedida ao Redpanda/Kafka (`consumer.start()`) e removido em paradas/falhas.
 - [x] **Limpeza de Qualidade (Git Diff Check):** Eliminadas linhas em branco excedentes ao final de `MEMORIA.md`, `pyproject.toml`, `requirements.txt` e `test_m3_2_correlation_integration.py`.
 
+### 4. Sprint M3.3 — Central Operacional de Incidentes e Evidências (2026-07-31)
+- [x] **Branch Dedicada:** `feature/m3.3-incident-center-api` criada a partir do commit mais recente da M3.2.
+- [x] **DTOs de Aplicação (`src/core/application/dto.py`):** DTOs com payloads mascarados e modelos de listagem/paginação (`EvidenceResponseDTO`, `EvidenceListResponseDTO`, `IncidentHistoryResponseDTO`, `IncidentHistoryListResponseDTO`).
+- [x] **Interfaces de Domínio (`src/core/domain/repositories.py`):** `IncidentRepository` expandido com suporte a filtros operacionais (`status`, `severity`, `created_from`, `created_to`) e ordenação segura; `IncidentEvidenceRepository` paginado; nova interface `IncidentStatusHistoryRepository`.
+- [x] **Repositórios PostgreSQL (`src/core/infrastructure/db/repositories.py`):** `PostgresIncidentRepository` com SQL dinâmico e ordenação secundária determinística por ID; `PostgresIncidentEvidenceRepository` e `PostgresIncidentStatusHistoryRepository`.
+- [x] **API REST Operacional (`src/core/interfaces/rest/incident_routers.py`):**
+  - `GET /api/v1/incidents`: Filtros por status, severidade, janela de data, paginação (`skip`, `limit`) e ordenação (`sort_by`, `order`).
+  - `GET /api/v1/incidents/{incident_id}/evidences`: Consulta de evidências com mascaramento sanitizado de payloads (`DataMasker`).
+  - `GET /api/v1/incidents/{incident_id}/history`: Trilha de auditoria imutável de transições de status.
+  - `PATCH /api/v1/incidents/{incident_id}/status`: Transição auditada com registro transacional em UoW.
+  - Isolamento multi-tenant estrito: acesso cross-tenant retorna `HTTP 404 Not Found`.
+- [x] **Métricas Prometheus de Observabilidade (`src/shared/observability/metrics.py`):** Métricas `GOVSEC_INCIDENTS_TOTAL`, `GOVSEC_INCIDENT_STATUS_TRANSITIONS_TOTAL` e `GOVSEC_INCIDENT_EVIDENCES_TOTAL` sem vazamento de labels sensíveis.
+- [x] **Dashboard Grafana (`deploy/grafana/dashboards/golden_signals.json`):** Painel da Central Operacional de Incidentes (linha 50) com 4 novos gráficos.
+- [x] **Suíte de Testes de Integração (`tests/integration/test_m3_3_incident_operations.py`):** 6 novos testes cobrindo filtros, ordenação estável, isolamento 404, payloads mascarados, histórico imutável e métricas Prometheus.
+
 ---
 
 ## 🏗️ Decisões Arquiteturais Tomadas (ADRs & Design)
@@ -71,13 +87,14 @@
 | **2026-07-30** | ADR-005: Fundação do M3 | Arquitetura de correlação determinística com persistência transacional antes do Kafka e contratos de domínio timezone-aware UTC. |
 | **2026-07-31** | Healthcheck por Readiness File | O worker só fica `healthy` após estabelecer a conexão real de grupo com o broker Redpanda, gravando o sinal no filesystem do container. |
 | **2026-07-31** | Init Container `db-migrations` | Migrações do Alembic executam com sucesso antes da subida dos serviços dependentes de banco, prevenindo InFailedSQLTransactionError. |
-| **2026-07-31** | Versionamento do `poetry.lock` | Remoção de `poetry.lock` de `.gitignore` garante builds reproduzíveis em ambientes de CI/CD e contêineres Docker. |
+| **2026-07-31** | Mascaramento Transparente DTO | Payloads brutos de evidências são obrigatoriamente sanitizados via `DataMasker` (`sanitize_payload`), impedindo o vazamento de segredos em respostas HTTP. |
+| **2026-07-31** | Retorno 404 em Cross-Tenant | Consultas de incidentes/evidências de tenants não autorizados retornam estritamente HTTP 404 (em vez de 403) para não vazar a existência do recurso. |
 
 ---
 
 ## 📌 Registros Recentes & Próximos Passos
-- **Sprint M3.2 Estabilizada & Homologada:** Todos os critérios de aceite cumpridos, 201 testes aprovados, Ruff 0 erros, Mypy 0 erros, Bandit 0 avisos, containers Docker `healthy`.
-- **Próximos Passos (Início da Sprint M3.3):**
-  1. Implementar rotas REST FastAPI do Incident Management.
-  2. Desenvolver a desduplicação e recepção de webhooks do Alertmanager.
-  3. Criar a interface do Incident Center e Event Inbox no frontend Next.js.
+- **Sprint M3.3 Concluída & Homologada:** Todos os critérios de aceite cumpridos, 211 testes aprovados, Ruff 0 erros, Mypy 0 erros, Bandit 0 avisos, containers Docker `healthy`, Fire Drill M2 200 OK.
+- **Próximos Passos (Início da próxima fase):**
+  1. Desenvolver a desduplicação e recepção de webhooks do Alertmanager / Zabbix.
+  2. Criar os fluxos de automação de resposta a incidentes.
+  3. Desenvolver a interface web do Incident Center no frontend Next.js.

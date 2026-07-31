@@ -177,7 +177,7 @@ class ChangeIncidentStatusDTO(BaseModel):
 
 
 class EvidenceResponseDTO(BaseModel):
-    """DTO de resposta para uma evidência de incidente."""
+    """DTO de resposta para uma evidência de incidente com payload devidamente mascarado."""
 
     evidence_id: UUID
     incident_id: UUID
@@ -185,9 +185,43 @@ class EvidenceResponseDTO(BaseModel):
     tenant_id: UUID
     evidence_hash: str
     description: str
+    raw_payload_masked: dict[str, Any] = Field(default_factory=dict)
     added_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class EvidenceListResponseDTO(BaseModel):
+    """DTO de resposta paginada para evidências de um incidente."""
+
+    items: list[EvidenceResponseDTO]
+    total: int
+    skip: int
+    limit: int
+
+
+class IncidentHistoryResponseDTO(BaseModel):
+    """DTO de resposta para o histórico auditável imutável de transição de status."""
+
+    history_id: UUID
+    incident_id: UUID
+    tenant_id: UUID
+    from_status: str
+    to_status: str
+    actor_id: str
+    reason: str
+    timestamp: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class IncidentHistoryListResponseDTO(BaseModel):
+    """DTO de resposta paginada para o histórico de auditoria de um incidente."""
+
+    items: list[IncidentHistoryResponseDTO]
+    total: int
+    skip: int
+    limit: int
 
 
 class IncidentResponseDTO(BaseModel):

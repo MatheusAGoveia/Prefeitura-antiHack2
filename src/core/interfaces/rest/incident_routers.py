@@ -17,6 +17,8 @@ Regras de segurança & arquitetura:
   - Incidente de outro tenant → HTTP 404 (não vaza existência).
 """
 
+from contextlib import suppress
+from datetime import datetime
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -25,21 +27,30 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.core.application.dto import (
     VALID_INCIDENT_STATUSES,
     ChangeIncidentStatusDTO,
+    EvidenceListResponseDTO,
+    EvidenceResponseDTO,
+    IncidentHistoryListResponseDTO,
+    IncidentHistoryResponseDTO,
     IncidentListResponseDTO,
     IncidentResponseDTO,
 )
 from src.core.domain.exceptions import DomainError
-from src.core.domain.incidents import IncidentStatus, InvalidStatusTransitionError
+from src.core.domain.incidents import IncidentStatus, InvalidStatusTransitionError, sanitize_payload
 from src.core.infrastructure.db.repositories import (
     PostgresCorrelationUnitOfWork,
     PostgresIncidentEvidenceRepository,
     PostgresIncidentRepository,
+    PostgresIncidentStatusHistoryRepository,
 )
 from src.core.infrastructure.db.unit_of_work import get_db_session
 from src.core.infrastructure.security.kernel import AuthenticatedUser
 from src.core.interfaces.rest.dependencies import get_current_user
+from src.shared.observability.metrics import record_incident_status_transition
 
 router = APIRouter(prefix="/api/v1/incidents", tags=["Incidents"])
+
+VALID_SEVERITIES = frozenset(["low", "medium", "high", "critical"])
+ALLOWED_SORT_FIELDS = frozenset(["created_at", "updated_at", "severity", "status"])
 
 
 # ---------------------------------------------------------------------------
@@ -53,8 +64,8 @@ router = APIRouter(prefix="/api/v1/incidents", tags=["Incidents"])
     summary="Listar incidentes do tenant autenticado",
     description=(
         "Retorna incidentes paginados e filtrados por tenant_id extraído do JWT. "
-        "O cliente NUNCA informa o tenant_id. "
-        "Ordenação estável por created_at DESC, incident_id DESC."
+        "Permite filtros por status, severidade e janela de criação (UTC). "
+        "O cliente NUNCA informa o tenant_id."
     ),
 )
 async def list_incidents(
@@ -65,6 +76,26 @@ async def list_incidents(
         alias="status",
         description=f"Filtro opcional por status. Valores válidos: {sorted(VALID_INCIDENT_STATUSES)}",
     ),
+    severity: str | None = Query(
+        default=None,
+        description=f"Filtro opcional por severidade. Valores válidos: {sorted(VALID_SEVERITIES)}",
+    ),
+    created_from: datetime | None = Query(
+        default=None,
+        description="Filtro de data/hora inicial de criação (UTC).",
+    ),
+    created_to: datetime | None = Query(
+        default=None,
+        description="Filtro de data/hora final de criação (UTC).",
+    ),
+    sort_by: str = Query(
+        default="created_at",
+        description=f"Campo para ordenação. Permitidos: {sorted(ALLOWED_SORT_FIELDS)}",
+    ),
+    order: str = Query(
+        default="desc",
+        description="Direção da ordenação: asc ou desc.",
+    ),
     current_user: AuthenticatedUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_db_session),
 ) -> IncidentListResponseDTO:
@@ -74,22 +105,60 @@ async def list_incidents(
     Contagem total executada via COUNT(*) no banco.
     """
     if incident_status is not None:
-        normalized = incident_status.strip().lower()
-        if normalized not in VALID_INCIDENT_STATUSES:
+        normalized_status = incident_status.strip().lower()
+        if normalized_status not in VALID_INCIDENT_STATUSES:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=f"Status inválido: '{incident_status}'. Valores aceitos: {sorted(VALID_INCIDENT_STATUSES)}",
             )
-        incident_status = normalized
+        incident_status = normalized_status
+
+    if severity is not None:
+        normalized_severity = severity.strip().lower()
+        if normalized_severity not in VALID_SEVERITIES:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Severidade inválida: '{severity}'. Valores aceitos: {sorted(VALID_SEVERITIES)}",
+            )
+        severity = normalized_severity
+
+    if sort_by not in ALLOWED_SORT_FIELDS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Campo de ordenação inválido: '{sort_by}'. Permitidos: {sorted(ALLOWED_SORT_FIELDS)}",
+        )
+
+    order_norm = order.strip().lower()
+    if order_norm not in ("asc", "desc"):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Direção de ordenação inválida: '{order}'. Permitidas: 'asc', 'desc'",
+        )
 
     tenant_id = current_user.tenant_id
     repo = PostgresIncidentRepository(session)
 
-    # Contar total usando COUNT(*) no banco (alta performance)
-    total = await repo.count(tenant_id=tenant_id, status=incident_status)
+    # Contar total usando COUNT(*) no banco com filtros aplicados
+    total = await repo.count(
+        tenant_id=tenant_id,
+        status=incident_status,
+        severity=severity,
+        created_from=created_from,
+        created_to=created_to,
+    )
 
-    # Aplicar paginação com ordenação estável (created_at DESC, incident_id DESC)
-    page = await repo.list(tenant_id=tenant_id, skip=skip, limit=limit, status=incident_status)
+    # Aplicar paginação com ordenação segura e determinística
+    page = await repo.list(
+        tenant_id=tenant_id,
+        skip=skip,
+        limit=limit,
+        status=incident_status,
+        severity=severity,
+        created_from=created_from,
+        created_to=created_to,
+        sort_by=sort_by,
+        order=order_norm,
+    )
 
     items = [
         IncidentResponseDTO(
@@ -135,7 +204,7 @@ async def get_incident(
             detail="Incidente não encontrado.",
         )
 
-    evidences = await evidence_repo.list_by_incident(
+    evidence_count = await evidence_repo.count_by_incident(
         incident_id=incident_id, tenant_id=tenant_id
     )
 
@@ -149,8 +218,118 @@ async def get_incident(
         correlation_key=incident.correlation_key,
         created_at=incident.created_at,
         updated_at=incident.updated_at,
-        evidence_count=len(evidences),
+        evidence_count=evidence_count,
     )
+
+
+# ---------------------------------------------------------------------------
+# GET /api/v1/incidents/{incident_id}/evidences
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/{incident_id}/evidences",
+    response_model=EvidenceListResponseDTO,
+    summary="Listar evidências de um incidente",
+    description=(
+        "Retorna as evidências de um incidente do tenant autenticado, com payload devidamente sanitizado. "
+        "Incidente inexistente ou de outro tenant retorna HTTP 404."
+    ),
+)
+async def list_incident_evidences(
+    incident_id: UUID,
+    skip: int = Query(default=0, ge=0, description="Número de registros a pular."),
+    limit: int = Query(default=50, ge=1, le=200, description="Número máximo de registros."),
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db_session),
+) -> EvidenceListResponseDTO:
+    tenant_id = current_user.tenant_id
+    incident_repo = PostgresIncidentRepository(session)
+    evidence_repo = PostgresIncidentEvidenceRepository(session)
+
+    # 1. Validar se o incidente existe para este tenant (isolamento estrito multi-tenant)
+    incident = await incident_repo.get_by_id(incident_id=incident_id, tenant_id=tenant_id)
+    if incident is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Incidente não encontrado.",
+        )
+
+    # 2. Buscar total e lista paginada
+    total = await evidence_repo.count_by_incident(incident_id=incident_id, tenant_id=tenant_id)
+    evidences = await evidence_repo.list_by_incident(
+        incident_id=incident_id, tenant_id=tenant_id, skip=skip, limit=limit
+    )
+
+    items = [
+        EvidenceResponseDTO(
+            evidence_id=ev.evidence_id,
+            incident_id=ev.incident_id,
+            event_id=ev.event_id,
+            tenant_id=ev.tenant_id,
+            evidence_hash=ev.evidence_hash,
+            description=ev.description,
+            raw_payload_masked=sanitize_payload(ev.raw_payload_masked),
+            added_at=ev.added_at,
+        )
+        for ev in evidences
+    ]
+    return EvidenceListResponseDTO(items=items, total=total, skip=skip, limit=limit)
+
+
+# ---------------------------------------------------------------------------
+# GET /api/v1/incidents/{incident_id}/history
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/{incident_id}/history",
+    response_model=IncidentHistoryListResponseDTO,
+    summary="Listar histórico auditável de alterações de status",
+    description=(
+        "Retorna o histórico auditável imutável de transições de status do incidente. "
+        "Incidente inexistente ou de outro tenant retorna HTTP 404."
+    ),
+)
+async def list_incident_history(
+    incident_id: UUID,
+    skip: int = Query(default=0, ge=0, description="Número de registros a pular."),
+    limit: int = Query(default=50, ge=1, le=200, description="Número máximo de registros."),
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db_session),
+) -> IncidentHistoryListResponseDTO:
+    tenant_id = current_user.tenant_id
+    incident_repo = PostgresIncidentRepository(session)
+    history_repo = PostgresIncidentStatusHistoryRepository(session)
+
+    # 1. Validar isolamento por tenant_id
+    incident = await incident_repo.get_by_id(incident_id=incident_id, tenant_id=tenant_id)
+    if incident is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Incidente não encontrado.",
+        )
+
+    # 2. Obter total e registros paginados
+    total = await history_repo.count_by_incident(incident_id=incident_id, tenant_id=tenant_id)
+    history_changes = await history_repo.list_by_incident(
+        incident_id=incident_id, tenant_id=tenant_id, skip=skip, limit=limit
+    )
+
+    items = [
+        IncidentHistoryResponseDTO(
+            history_id=UUID(int=idx + 1),  # DTO visual seguro
+            incident_id=incident_id,
+            tenant_id=tenant_id,
+            from_status=change.from_status.value,
+            to_status=change.to_status.value,
+            actor_id=change.actor_id,
+            reason=change.reason,
+            timestamp=change.timestamp,
+        )
+        for idx, change in enumerate(history_changes)
+    ]
+    return IncidentHistoryListResponseDTO(items=items, total=total, skip=skip, limit=limit)
 
 
 # ---------------------------------------------------------------------------
@@ -194,6 +373,7 @@ async def change_incident_status(
                 detail="Incidente não encontrado.",
             )
 
+        old_status = incident.status.value
         try:
             new_status = IncidentStatus(dto.new_status)
             incident.transition_to(
@@ -215,6 +395,10 @@ async def change_incident_status(
         # Persistir incidente atualizado e histórico de auditoria na mesma transação/UoW
         saved = await uow.incidents.save(incident)
         await uow.commit()
+
+        # Incrementar métrica Prometheus de transição auditada (M3.3)
+        with suppress(Exception):
+            record_incident_status_transition(from_status=old_status, to_status=new_status)
 
     return IncidentResponseDTO(
         incident_id=saved.incident_id,

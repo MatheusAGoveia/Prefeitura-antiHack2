@@ -4,11 +4,18 @@ GovSec Shield — Domain Repositories
 """
 
 from abc import ABC, abstractmethod
+from datetime import datetime
 from uuid import UUID
 
 from src.core.domain.correlation import CorrelationRuleVersion
 from src.core.domain.entities import AlertAcknowledgement, AuditLog, Tenant
-from src.core.domain.incidents import Asset, Incident, IncidentEvidence, SecurityEvent
+from src.core.domain.incidents import (
+    Asset,
+    Incident,
+    IncidentEvidence,
+    IncidentStatusChange,
+    SecurityEvent,
+)
 from src.core.domain.outbox import OutboxEvent
 
 
@@ -262,9 +269,12 @@ class IncidentRepository(ABC):
         self,
         tenant_id: UUID,
         status: str | None = None,
+        severity: str | None = None,
+        created_from: datetime | None = None,
+        created_to: datetime | None = None,
     ) -> int:
         """
-        Retorna o total de incidentes de um tenant com filtro opcional por status.
+        Retorna o total de incidentes de um tenant com filtros opcionais.
         tenant_id é sempre obrigatório.
         """
         pass
@@ -276,18 +286,22 @@ class IncidentRepository(ABC):
         skip: int = 0,
         limit: int = 50,
         status: str | None = None,
+        severity: str | None = None,
+        created_from: datetime | None = None,
+        created_to: datetime | None = None,
+        sort_by: str = "created_at",
+        order: str = "desc",
     ) -> list[Incident]:
         """
-        Lista incidentes de um tenant com paginação e filtro opcional por status.
+        Lista incidentes de um tenant com paginação, filtros e ordenação segura.
         tenant_id é sempre obrigatório — nunca aceito do cliente.
-        Ordenação estável por created_at DESC, incident_id DESC.
         """
         pass
 
 
 class IncidentEvidenceRepository(ABC):
     """
-    Interface de Repositório de Evidências de Incidentes (M3.2).
+    Interface de Repositório de Evidências de Incidentes (M3.2/M3.3).
     Garante idempotência de vínculo e isolamento por tenant_id.
     """
 
@@ -308,8 +322,32 @@ class IncidentEvidenceRepository(ABC):
         pass
 
     @abstractmethod
+    async def count_by_incident(self, incident_id: UUID, tenant_id: UUID) -> int:
+        """Retorna o total de evidências registradas para um incidente do tenant."""
+        pass
+
+    @abstractmethod
     async def list_by_incident(
-        self, incident_id: UUID, tenant_id: UUID
+        self, incident_id: UUID, tenant_id: UUID, skip: int = 0, limit: int = 50
     ) -> list[IncidentEvidence]:
-        """Lista todas as evidências de um incidente, filtrado por tenant_id."""
+        """Lista evidências de um incidente com paginação e isolamento por tenant_id."""
+        pass
+
+
+class IncidentStatusHistoryRepository(ABC):
+    """
+    Interface de Repositório do Histórico de Status de Incidentes (M3.3).
+    Registros imutáveis de transição de estado.
+    """
+
+    @abstractmethod
+    async def count_by_incident(self, incident_id: UUID, tenant_id: UUID) -> int:
+        """Retorna a contagem de alterações de status para um incidente."""
+        pass
+
+    @abstractmethod
+    async def list_by_incident(
+        self, incident_id: UUID, tenant_id: UUID, skip: int = 0, limit: int = 50
+    ) -> list[IncidentStatusChange]:
+        """Lista histórico de alterações de status com paginação determinística."""
         pass
