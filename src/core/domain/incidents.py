@@ -238,6 +238,7 @@ class IncidentStatusChange:
     actor_id: str
     reason: str
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    history_id: UUID = field(default_factory=uuid4)
 
     def __post_init__(self) -> None:
         _validate_utc_datetime(self.timestamp, "timestamp")

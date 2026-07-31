@@ -24,7 +24,6 @@ Garantias:
 """
 
 import logging
-from contextlib import suppress
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
@@ -184,12 +183,12 @@ class CorrelateSecurityEventHandler:
                 saved_incident = await self._uow.incidents.save(incident)
 
                 # Auditoria de criação e métricas Prometheus (M3.3)
-                with suppress(Exception):
-                    from src.shared.observability.metrics import record_incident_created
-                    record_incident_created(
-                        severity=saved_incident.severity.value,
-                        status=saved_incident.status.value,
-                    )
+                from src.shared.observability.metrics import record_incident_created
+
+                record_incident_created(
+                    severity=saved_incident.severity.value,
+                    status=saved_incident.status.value,
+                )
 
                 await self._uow.logs.save(
                     AuditLog(
@@ -222,9 +221,9 @@ class CorrelateSecurityEventHandler:
             await self._uow.evidences.save(evidence)
 
             # Métricas Prometheus para evidências adicionadas (M3.3)
-            with suppress(Exception):
-                from src.shared.observability.metrics import record_incident_evidence_added
-                record_incident_evidence_added(rule_id=rule.rule_id)
+            from src.shared.observability.metrics import record_incident_evidence_added
+
+            record_incident_evidence_added(rule_id=rule.rule_id)
 
             results.append(saved_incident)
 

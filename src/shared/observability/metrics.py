@@ -161,15 +161,37 @@ GOVSEC_INCIDENT_EVIDENCES_TOTAL = Counter(
     registry=REGISTRY,
 )
 
+GOVSEC_OPEN_INCIDENTS = Gauge(
+    "govsec_open_incidents",
+    "Quantidade de incidentes atualmente abertos por severidade",
+    ["severity"],
+    registry=REGISTRY,
+)
+
 
 def record_incident_created(severity: str, status: str) -> None:
     """Registra criação de incidente com labels de baixa cardinalidade (sem IDs sensíveis)."""
-    GOVSEC_INCIDENTS_TOTAL.labels(severity=severity, status=status).inc()
+    sev_lower = severity.lower()
+    st_lower = status.lower()
+    GOVSEC_INCIDENTS_TOTAL.labels(severity=sev_lower, status=st_lower).inc()
+    if st_lower in ("open", "acknowledged", "investigating", "contained"):
+        GOVSEC_OPEN_INCIDENTS.labels(severity=sev_lower).inc()
 
 
-def record_incident_status_transition(from_status: str, to_status: str) -> None:
-    """Registra transição auditada de status de incidente."""
-    GOVSEC_INCIDENT_STATUS_TRANSITIONS_TOTAL.labels(from_status=from_status, to_status=to_status).inc()
+def record_incident_status_transition(
+    from_status: str, to_status: str, severity: str | None = None
+) -> None:
+    """Registra transição auditada de status de incidente e atualiza estado de incidentes abertos."""
+    from_lower = from_status.lower()
+    to_lower = to_status.lower()
+    GOVSEC_INCIDENT_STATUS_TRANSITIONS_TOTAL.labels(
+        from_status=from_lower, to_status=to_lower
+    ).inc()
+
+    if severity and from_lower in ("open", "acknowledged", "investigating", "contained") and to_lower in ("resolved", "closed"):
+        g = GOVSEC_OPEN_INCIDENTS.labels(severity=severity.lower())
+        if g._value.get() > 0:
+            g.dec()
 
 
 def record_incident_evidence_added(rule_id: str = "default") -> None:

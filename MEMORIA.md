@@ -7,9 +7,9 @@
 ## 📌 Estado Atual do Projeto
 - **Repositório:** `MatheusAGoveia/Prefeitura-antiHack2`
 - **Branch Ativa:** `feature/m3.3-incident-center-api`
-- **Data da Última Atualização:** 2026-07-31T15:28:00Z
+- **Data da Última Atualização:** 2026-07-31T15:51:00Z
 - **Responsável:** IA Assistente (Arquiteto Principal GovSec Shield)
-- **Status Atual:** SPRINT M3.3 (Central Operacional de Incidentes e Evidências) 100% CONCLUÍDA e HOMOLOGADA. Suíte completa expandida para 211 testes unitários e de integração aprovados sem ressalvas. Validação de qualidade de código (Ruff, Mypy, Bandit, Compileall, Git Diff, Docker e Test Alerts) 100% verde.
+- **Status Atual:** SPRINT M3.3 (Central Operacional de Incidentes e Evidências) 100% CONCLUÍDA e HOMOLOGADA. Suíte completa expandida para 213 testes unitários e de integração aprovados sem ressalvas. Validação de qualidade de código (Ruff, Mypy, Bandit, Compileall, Git Diff, Docker) 100% verde.
 
 ---
 
@@ -56,24 +56,21 @@
 ### 3. Homologação Estrita & Correção dos Bloqueadores M3.2 (2026-07-31)
 - [x] **Versionamento do `poetry.lock`:** Removida a entrada de ignore em `.gitignore`, tornando o build Docker 100% determinístico e reproduzível.
 - [x] **Declaração de Dependências Runtime (`psutil`):** Adicionado `psutil = "^5.9.0"` ao `pyproject.toml` e `requirements.txt`.
-- [x] **Refinamento de Testes de Regressão:** Teste `test_run_loop_aborts_kafka_offset_commit_when_process_single_message_fails` criado validando com `assert_not_awaited()` que `consumer.commit` não é executado no loop quando o banco falha. Total de 205 testes aprovados.
+- [x] **Refinamento de Testes de Regressão:** Teste `test_run_loop_aborts_kafka_offset_commit_when_process_single_message_fails` criado validando com `assert_not_awaited()` que `consumer.commit` não é executado no loop quando o banco falha.
 - [x] **Healthcheck por Readiness File (`/tmp/correlation-worker.ready`):** Criado estritamente após a conexão bem-sucedida ao Redpanda/Kafka (`consumer.start()`) e removido em paradas/falhas.
-- [x] **Limpeza de Qualidade (Git Diff Check):** Eliminadas linhas em branco excedentes ao final de `MEMORIA.md`, `pyproject.toml`, `requirements.txt` e `test_m3_2_correlation_integration.py`.
+- [x] **Limpeza de Qualidade (Git Diff Check):** Eliminadas linhas em branco excedentes ao final dos arquivos.
 
 ### 4. Sprint M3.3 — Central Operacional de Incidentes e Evidências (2026-07-31)
 - [x] **Branch Dedicada:** `feature/m3.3-incident-center-api` criada a partir do commit mais recente da M3.2.
-- [x] **DTOs de Aplicação (`src/core/application/dto.py`):** DTOs com payloads mascarados e modelos de listagem/paginação (`EvidenceResponseDTO`, `EvidenceListResponseDTO`, `IncidentHistoryResponseDTO`, `IncidentHistoryListResponseDTO`).
-- [x] **Interfaces de Domínio (`src/core/domain/repositories.py`):** `IncidentRepository` expandido com suporte a filtros operacionais (`status`, `severity`, `created_from`, `created_to`) e ordenação segura; `IncidentEvidenceRepository` paginado; nova interface `IncidentStatusHistoryRepository`.
-- [x] **Repositórios PostgreSQL (`src/core/infrastructure/db/repositories.py`):** `PostgresIncidentRepository` com SQL dinâmico e ordenação secundária determinística por ID; `PostgresIncidentEvidenceRepository` e `PostgresIncidentStatusHistoryRepository`.
-- [x] **API REST Operacional (`src/core/interfaces/rest/incident_routers.py`):**
-  - `GET /api/v1/incidents`: Filtros por status, severidade, janela de data, paginação (`skip`, `limit`) e ordenação (`sort_by`, `order`).
-  - `GET /api/v1/incidents/{incident_id}/evidences`: Consulta de evidências com mascaramento sanitizado de payloads (`DataMasker`).
-  - `GET /api/v1/incidents/{incident_id}/history`: Trilha de auditoria imutável de transições de status.
-  - `PATCH /api/v1/incidents/{incident_id}/status`: Transição auditada com registro transacional em UoW.
-  - Isolamento multi-tenant estrito: acesso cross-tenant retorna `HTTP 404 Not Found`.
-- [x] **Métricas Prometheus de Observabilidade (`src/shared/observability/metrics.py`):** Métricas `GOVSEC_INCIDENTS_TOTAL`, `GOVSEC_INCIDENT_STATUS_TRANSITIONS_TOTAL` e `GOVSEC_INCIDENT_EVIDENCES_TOTAL` sem vazamento de labels sensíveis.
-- [x] **Dashboard Grafana (`deploy/grafana/dashboards/golden_signals.json`):** Painel da Central Operacional de Incidentes (linha 50) com 4 novos gráficos.
-- [x] **Suíte de Testes de Integração (`tests/integration/test_m3_3_incident_operations.py`):** 6 novos testes cobrindo filtros, ordenação estável, isolamento 404, payloads mascarados, histórico imutável e métricas Prometheus.
+- [x] **Identidade do Histórico Real (`history_id`):** `IncidentStatusChange` expandido com `history_id: UUID` repassando o UUID real armazenado no banco com ordenação `ORDER BY timestamp DESC, history_id DESC` e estabilidade determinística.
+- [x] **Métricas Pós-Commit e Remoção de `suppress(Exception)`:** Eliminados todos os tratamentos silenciosos de métricas; chamadas a `record_incident_created`, `record_incident_status_transition` e `record_incident_evidence_added` executam rigorosamente após a confirmação transacional no banco.
+- [x] **Gauge de Estado Atual (`govsec_open_incidents`):** Gauge Prometheus com label `severity` rastreando a quantidade de incidentes ativos em tempo real, decrementado em transições para `resolved` ou `closed`.
+- [x] **Isolamento Real Multi-Tenant Cross-Tenant:** Suíte de testes de integração com `Tenant A` e `Tenant B` reais confirmando `HTTP 404 Not Found` em todos os endpoints (`GET /incidents/{id}`, `GET /incidents/{id}/evidences`, `GET /incidents/{id}/history`, `PATCH /incidents/{id}/status`), e `total=0` em listagens.
+- [x] **Validação Estrita de Datas e Timezones (UTC):** Rejeição de datetimes naive com `HTTP 422`, rejeição de `created_from > created_to` com `HTTP 422`, e suporte a limites idênticos (`created_from == created_to`).
+- [x] **Contagem de Evidências sem N+1 (`evidence_count`):** Método `get_evidence_counts_batch` em `PostgresIncidentRepository` realizando consulta SQL agregada em lote `COUNT(evidence_id)` indexada por `tenant_id`, fornecendo `evidence_count` precisa nos 3 endpoints HTTP.
+- [x] **Mascaramento Completo em Respostas HTTP:** Payloads brutos em respostas HTTP de evidências sanitizam recursivamente senhas, tokens, cookies e chaves de API como `"[REDACTED]"`.
+- [x] **Dashboard Grafana (`deploy/grafana/dashboards/golden_signals.json`):** Atualizada a PromQL para `sum(govsec_open_incidents) by (severity)`.
+- [x] **Suíte de Testes Ampliada:** 213 testes unitários e de integração passados sem ressalvas (25.09s).
 
 ---
 
@@ -89,12 +86,11 @@
 | **2026-07-31** | Init Container `db-migrations` | Migrações do Alembic executam com sucesso antes da subida dos serviços dependentes de banco, prevenindo InFailedSQLTransactionError. |
 | **2026-07-31** | Mascaramento Transparente DTO | Payloads brutos de evidências são obrigatoriamente sanitizados via `DataMasker` (`sanitize_payload`), impedindo o vazamento de segredos em respostas HTTP. |
 | **2026-07-31** | Retorno 404 em Cross-Tenant | Consultas de incidentes/evidências de tenants não autorizados retornam estritamente HTTP 404 (em vez de 403) para não vazar a existência do recurso. |
+| **2026-07-31** | Gauge de Estado em Tempo Real | `govsec_open_incidents` fornece visibilidade SRE instantânea dos incidentes ativos por severidade, decrementando em resoluções pós-commit. |
 
 ---
 
 ## 📌 Registros Recentes & Próximos Passos
-- **Sprint M3.3 Concluída & Homologada:** Todos os critérios de aceite cumpridos, 211 testes aprovados, Ruff 0 erros, Mypy 0 erros, Bandit 0 avisos, containers Docker `healthy`, Fire Drill M2 200 OK.
-- **Próximos Passos (Início da próxima fase):**
-  1. Desenvolver a desduplicação e recepção de webhooks do Alertmanager / Zabbix.
-  2. Criar os fluxos de automação de resposta a incidentes.
-  3. Desenvolver a interface web do Incident Center no frontend Next.js.
+- **Sprint M3.3 Finalizada & Homologada:** Todos os 10 itens de correção concluídos, 213 testes passados, Ruff 0 erros, Mypy 0 erros, Bandit 0 avisos, containers Docker `healthy`, `git diff --check` limpo.
+- **Próximos Passos (Pronta para homologação ou avanço para a próxima fase):**
+  1. Apresentar o resultado final ao usuário e solicitar autorização para encerramento da M3.3.

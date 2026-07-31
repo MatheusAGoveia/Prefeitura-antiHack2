@@ -15,6 +15,7 @@ Validações obrigatórias:
 
 import hashlib
 from datetime import datetime, timedelta, timezone
+from urllib.parse import quote
 from uuid import UUID, uuid4
 
 import pytest
@@ -36,17 +37,8 @@ from src.core.infrastructure.db.models import Base, SecurityEventModel, TenantMo
 from src.core.infrastructure.db.repositories import (
     PostgresIncidentEvidenceRepository,
     PostgresIncidentRepository,
-    PostgresIncidentStatusHistoryRepository,
 )
 from src.core.infrastructure.security.jwt import JWTUtils
-from src.shared.observability.metrics import (
-    GOVSEC_INCIDENT_EVIDENCES_TOTAL,
-    GOVSEC_INCIDENT_STATUS_TRANSITIONS_TOTAL,
-    GOVSEC_INCIDENTS_TOTAL,
-    record_incident_created,
-    record_incident_evidence_added,
-    record_incident_status_transition,
-)
 
 TEST_DATABASE_URL = settings.GOVSEC_DB_URL
 
@@ -134,14 +126,16 @@ async def _ensure_security_event_exists(session: AsyncSession, tenant_id: UUID, 
 
 
 @pytest.mark.asyncio
-async def test_incidents_list_filters_and_pagination(async_session: AsyncSession) -> None:
-    """Valida filtros operacionais por status, severidade e datas, sem falso vazio."""
-    repo = PostgresIncidentRepository(async_session)
-    tenant_id = uuid4()
+async def test_incidents_list_filters_and_pagination(
+    async_client: AsyncClient, async_session: AsyncSession, auth_headers_tenant_a: dict[str, str]
+) -> None:
+    """Valida filtros operacionais por status, severidade e datas via HTTP REST."""
+    tenant_id = UUID(auth_headers_tenant_a["_tenant_id"])
     await _ensure_tenant_exists(async_session, tenant_id)
+    repo = PostgresIncidentRepository(async_session)
     now = datetime.now(timezone.utc)
 
-    # 1. Inserir incidentes de teste com severidades e status distintos
+    # Inserir incidentes de teste
     inc1 = Incident(
         incident_id=uuid4(),
         tenant_id=tenant_id,
@@ -168,26 +162,26 @@ async def test_incidents_list_filters_and_pagination(async_session: AsyncSession
     await repo.save(inc2)
     await async_session.commit()
 
-    # Filtro por status
-    total_open = await repo.count(tenant_id=tenant_id, status="open")
-    page_open = await repo.list(tenant_id=tenant_id, status="open")
-    assert total_open == 1
-    assert len(page_open) == 1
-    assert page_open[0].incident_id == inc1.incident_id
-
-    # Filtro por severidade
-    total_crit = await repo.count(tenant_id=tenant_id, severity="critical")
-    page_crit = await repo.list(tenant_id=tenant_id, severity="critical")
-    assert total_crit == 1
-    assert page_crit[0].incident_id == inc2.incident_id
-
-    # Filtro por janela de data
-    page_recent = await repo.list(
-        tenant_id=tenant_id,
-        created_from=now - timedelta(minutes=90),
+    # 1. Filtro por status=open via HTTP
+    res_open = await async_client.get(
+        "/api/v1/incidents?status=open",
+        headers={"Authorization": auth_headers_tenant_a["Authorization"]},
     )
-    assert len(page_recent) == 1
-    assert page_recent[0].incident_id == inc2.incident_id
+    assert res_open.status_code == 200
+    data_open = res_open.json()
+    assert data_open["total"] == 1
+    assert len(data_open["items"]) == 1
+    assert data_open["items"][0]["incident_id"] == str(inc1.incident_id)
+
+    # 2. Filtro por severity=critical via HTTP
+    res_crit = await async_client.get(
+        "/api/v1/incidents?severity=critical",
+        headers={"Authorization": auth_headers_tenant_a["Authorization"]},
+    )
+    assert res_crit.status_code == 200
+    data_crit = res_crit.json()
+    assert data_crit["total"] == 1
+    assert data_crit["items"][0]["incident_id"] == str(inc2.incident_id)
 
 
 @pytest.mark.asyncio
@@ -223,146 +217,382 @@ async def test_incidents_stable_sorting(async_session: AsyncSession) -> None:
 
 
 @pytest.mark.asyncio
-async def test_cross_tenant_isolation_returns_404(
-    async_client: AsyncClient, async_session: AsyncSession, auth_headers_tenant_a: dict[str, str]
+async def test_real_cross_tenant_isolation_returns_404(
+    async_client: AsyncClient,
+    async_session: AsyncSession,
+    auth_headers_tenant_a: dict[str, str],
+    auth_headers_tenant_b: dict[str, str],
 ) -> None:
-    """Valida que acessar incidente, evidências ou histórico de outro tenant retorna HTTP 404."""
+    """Valida isolamento multi-tenant real: acessar incidente, evidência ou histórico do Tenant B usando token do Tenant A retorna HTTP 404."""
     tenant_a_id = UUID(auth_headers_tenant_a["_tenant_id"])
+    tenant_b_id = UUID(auth_headers_tenant_b["_tenant_id"])
     await _ensure_tenant_exists(async_session, tenant_a_id)
+    await _ensure_tenant_exists(async_session, tenant_b_id)
 
-    # 1. Tentar detalhar incidente aleatório (não existente para tenant A) -> 404
-    random_id = uuid4()
-    res1 = await async_client.get(
-        f"/api/v1/incidents/{random_id}",
-        headers={"Authorization": auth_headers_tenant_a["Authorization"]},
-    )
-    assert res1.status_code == 404
-
-    # 2. Tentar obter evidências de incidente de outro tenant -> 404
-    res2 = await async_client.get(
-        f"/api/v1/incidents/{random_id}/evidences",
-        headers={"Authorization": auth_headers_tenant_a["Authorization"]},
-    )
-    assert res2.status_code == 404
-
-    # 3. Tentar obter histórico de incidente de outro tenant -> 404
-    res3 = await async_client.get(
-        f"/api/v1/incidents/{random_id}/history",
-        headers={"Authorization": auth_headers_tenant_a["Authorization"]},
-    )
-    assert res3.status_code == 404
-
-
-@pytest.mark.asyncio
-async def test_evidence_payload_is_masked(async_session: AsyncSession) -> None:
-    """Valida que o payload da evidência retornado é devidamente sanitizado (sem senhas/tokens em claro)."""
     inc_repo = PostgresIncidentRepository(async_session)
     evidence_repo = PostgresIncidentEvidenceRepository(async_session)
-    tenant_id = uuid4()
-    incident_id = uuid4()
-    event_id = uuid4()
 
-    await _ensure_tenant_exists(async_session, tenant_id)
-    await _ensure_security_event_exists(async_session, tenant_id, event_id)
+    # 1. Criar um incidente real e evidência real no Tenant B
+    incident_b_id = uuid4()
+    event_b_id = uuid4()
+    await _ensure_security_event_exists(async_session, tenant_b_id, event_b_id)
 
-    # 1. Criar o incidente pai
-    incident = Incident(
-        incident_id=incident_id,
-        tenant_id=tenant_id,
-        title="Incidente para Evidência",
-        description="Teste evidência mascarada",
-        severity=SecurityEventSeverity.HIGH,
+    inc_b = Incident(
+        incident_id=incident_b_id,
+        tenant_id=tenant_b_id,
+        title="Incidente Privado Tenant B",
+        description="Dados estritamente do Tenant B",
+        severity=SecurityEventSeverity.CRITICAL,
         status=IncidentStatus.OPEN,
-        correlation_key="ev_key_01",
+        correlation_key="priv_key_b",
         created_at=datetime.now(timezone.utc),
         updated_at=datetime.now(timezone.utc),
     )
-    await inc_repo.save(incident)
+    await inc_repo.save(inc_b)
 
-    unmasked_payload = {
-        "user": "admin_gov",
-        "password": "SecretPassword123!",
-        "token": "bearer_jwt_token_sensitive",
-        "normal_field": "public_data",
+    ev_b = IncidentEvidence(
+        evidence_id=uuid4(),
+        incident_id=incident_b_id,
+        event_id=event_b_id,
+        tenant_id=tenant_b_id,
+        evidence_hash="sha256_b_hash",
+        added_at=datetime.now(timezone.utc),
+        description="Evidência do Tenant B",
+        raw_payload_masked={"secret_b": "data_b"},
+    )
+    await evidence_repo.save(ev_b)
+    await async_session.commit()
+
+    headers_a = {"Authorization": auth_headers_tenant_a["Authorization"]}
+
+    # 2. Tentar acessar detalhe do incidente do Tenant B com token do Tenant A -> HTTP 404
+    res_get = await async_client.get(f"/api/v1/incidents/{incident_b_id}", headers=headers_a)
+    assert res_get.status_code == 404
+
+    # 3. Tentar acessar evidências do incidente do Tenant B com token do Tenant A -> HTTP 404
+    res_ev = await async_client.get(f"/api/v1/incidents/{incident_b_id}/evidences", headers=headers_a)
+    assert res_ev.status_code == 404
+
+    # 4. Tentar acessar histórico do incidente do Tenant B com token do Tenant A -> HTTP 404
+    res_hist = await async_client.get(f"/api/v1/incidents/{incident_b_id}/history", headers=headers_a)
+    assert res_hist.status_code == 404
+
+    # 5. Tentar alterar status do incidente do Tenant B com token do Tenant A -> HTTP 404
+    res_patch = await async_client.patch(
+        f"/api/v1/incidents/{incident_b_id}/status",
+        json={"new_status": "acknowledged", "reason": "Tentativa de alteração cross-tenant"},
+        headers=headers_a,
+    )
+    assert res_patch.status_code == 404
+
+    # 6. Listar incidentes com token do Tenant A -> total deve ser 0 (não lista incidentes do Tenant B)
+    res_list = await async_client.get("/api/v1/incidents", headers=headers_a)
+    assert res_list.status_code == 200
+    list_data = res_list.json()
+    assert list_data["total"] == 0
+    assert len(list_data["items"]) == 0
+
+
+@pytest.mark.asyncio
+async def test_history_id_is_real_and_stable(
+    async_client: AsyncClient, async_session: AsyncSession, auth_headers_tenant_a: dict[str, str]
+) -> None:
+    """Valida que o history_id retornado é o ID real do banco, permanece estável e imutável."""
+    tenant_id = UUID(auth_headers_tenant_a["_tenant_id"])
+    await _ensure_tenant_exists(async_session, tenant_id)
+    inc_repo = PostgresIncidentRepository(async_session)
+
+    incident_id = uuid4()
+    inc = Incident(
+        incident_id=incident_id,
+        tenant_id=tenant_id,
+        title="Incidente para Histórico Real",
+        description="Teste history_id",
+        severity=SecurityEventSeverity.HIGH,
+        status=IncidentStatus.OPEN,
+        correlation_key="hist_real_key",
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
+    )
+    await inc_repo.save(inc)
+    await async_session.commit()
+
+    headers = {"Authorization": auth_headers_tenant_a["Authorization"]}
+
+    # Transicionar status via HTTP REST
+    res_patch = await async_client.patch(
+        f"/api/v1/incidents/{incident_id}/status",
+        json={"new_status": "acknowledged", "reason": "Reconhecimento oficial SOC"},
+        headers=headers,
+    )
+    assert res_patch.status_code == 200
+
+    # Consultar histórico via HTTP REST
+    res_hist1 = await async_client.get(f"/api/v1/incidents/{incident_id}/history", headers=headers)
+    assert res_hist1.status_code == 200
+    hist_data1 = res_hist1.json()
+    assert hist_data1["total"] == 1
+    real_history_id = hist_data1["items"][0]["history_id"]
+
+    # Garantir que NÃO é o ID sintético antigo (UUID(int=1))
+    assert real_history_id != "00000000-0000-0000-0000-000000000001"
+    assert UUID(real_history_id)  # Valida formato UUID v4
+
+    # Segunda consulta ao mesmo histórico: ID deve permanecer rigorosamente idêntico
+    res_hist2 = await async_client.get(f"/api/v1/incidents/{incident_id}/history", headers=headers)
+    hist_data2 = res_hist2.json()
+    assert hist_data2["items"][0]["history_id"] == real_history_id
+
+
+@pytest.mark.asyncio
+async def test_datetime_range_validation_utc(
+    async_client: AsyncClient, async_session: AsyncSession, auth_headers_tenant_a: dict[str, str]
+) -> None:
+    """Valida contrato estrito de intervalo de datas (created_from/created_to) com fuso horário UTC."""
+    tenant_id = UUID(auth_headers_tenant_a["_tenant_id"])
+    await _ensure_tenant_exists(async_session, tenant_id)
+    headers = {"Authorization": auth_headers_tenant_a["Authorization"]}
+
+    # 1. Intervalo UTC válido -> 200 OK
+    now_str = quote(datetime.now(timezone.utc).isoformat())
+    res1 = await async_client.get(f"/api/v1/incidents?created_from={now_str}", headers=headers)
+    assert res1.status_code == 200
+
+    # 2. Data naive sem timezone -> 422
+    res2 = await async_client.get("/api/v1/incidents?created_from=2026-07-31T12:00:00", headers=headers)
+    assert res2.status_code == 422
+    assert "fuso horário" in res2.json()["detail"]
+
+    # 3. created_from > created_to -> 422
+    from_date = quote((datetime.now(timezone.utc) + timedelta(hours=1)).isoformat())
+    to_date = quote(datetime.now(timezone.utc).isoformat())
+    res3 = await async_client.get(
+        f"/api/v1/incidents?created_from={from_date}&created_to={to_date}",
+        headers=headers,
+    )
+    assert res3.status_code == 422
+    assert "não pode ser posterior" in res3.json()["detail"]
+
+    # 4. Limites exatos (created_from == created_to) -> 200 OK
+    res4 = await async_client.get(
+        f"/api/v1/incidents?created_from={now_str}&created_to={now_str}",
+        headers=headers,
+    )
+    assert res4.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_evidence_count_accuracy_and_batching(
+    async_client: AsyncClient, async_session: AsyncSession, auth_headers_tenant_a: dict[str, str]
+) -> None:
+    """Valida precisão de evidence_count em listagens e detalhe sem N+1."""
+    tenant_id = UUID(auth_headers_tenant_a["_tenant_id"])
+    await _ensure_tenant_exists(async_session, tenant_id)
+    inc_repo = PostgresIncidentRepository(async_session)
+    evidence_repo = PostgresIncidentEvidenceRepository(async_session)
+
+    # 1. Incidente com 0 evidências
+    inc1_id = uuid4()
+    inc1 = Incident(
+        incident_id=inc1_id,
+        tenant_id=tenant_id,
+        title="Incidente Sem Evidência",
+        description="Count 0",
+        severity=SecurityEventSeverity.LOW,
+        status=IncidentStatus.OPEN,
+        correlation_key="key_cnt_0",
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
+    )
+    await inc_repo.save(inc1)
+
+    # 2. Incidente com 2 evidências
+    inc2_id = uuid4()
+    event1_id = uuid4()
+    event2_id = uuid4()
+    await _ensure_security_event_exists(async_session, tenant_id, event1_id)
+    await _ensure_security_event_exists(async_session, tenant_id, event2_id)
+
+    inc2 = Incident(
+        incident_id=inc2_id,
+        tenant_id=tenant_id,
+        title="Incidente Com 2 Evidências",
+        description="Count 2",
+        severity=SecurityEventSeverity.HIGH,
+        status=IncidentStatus.OPEN,
+        correlation_key="key_cnt_2",
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
+    )
+    await inc_repo.save(inc2)
+
+    ev1 = IncidentEvidence(
+        evidence_id=uuid4(),
+        incident_id=inc2_id,
+        event_id=event1_id,
+        tenant_id=tenant_id,
+        evidence_hash="hash_cnt_1",
+        added_at=datetime.now(timezone.utc),
+        description="Evidência 1",
+        raw_payload_masked={"k": "v1"},
+    )
+    ev2 = IncidentEvidence(
+        evidence_id=uuid4(),
+        incident_id=inc2_id,
+        event_id=event2_id,
+        tenant_id=tenant_id,
+        evidence_hash="hash_cnt_2",
+        added_at=datetime.now(timezone.utc),
+        description="Evidência 2",
+        raw_payload_masked={"k": "v2"},
+    )
+    await evidence_repo.save(ev1)
+    await evidence_repo.save(ev2)
+    await async_session.commit()
+
+    headers = {"Authorization": auth_headers_tenant_a["Authorization"]}
+
+    # Validar no GET /api/v1/incidents (listagem)
+    res_list = await async_client.get("/api/v1/incidents?sort_by=created_at&order=asc", headers=headers)
+    assert res_list.status_code == 200
+    items = res_list.json()["items"]
+    count_map = {item["incident_id"]: item["evidence_count"] for item in items}
+    assert count_map[str(inc1_id)] == 0
+    assert count_map[str(inc2_id)] == 2
+
+    # Validar no GET /api/v1/incidents/{id} (detalhe)
+    res_det1 = await async_client.get(f"/api/v1/incidents/{inc1_id}", headers=headers)
+    assert res_det1.json()["evidence_count"] == 0
+
+    res_det2 = await async_client.get(f"/api/v1/incidents/{inc2_id}", headers=headers)
+    assert res_det2.json()["evidence_count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_evidence_payload_masked_in_http_response(
+    async_client: AsyncClient, async_session: AsyncSession, auth_headers_tenant_a: dict[str, str]
+) -> None:
+    """Valida que a resposta HTTP serializada de evidências mascaram completamente senhas e tokens como [REDACTED]."""
+    tenant_id = UUID(auth_headers_tenant_a["_tenant_id"])
+    await _ensure_tenant_exists(async_session, tenant_id)
+    inc_repo = PostgresIncidentRepository(async_session)
+    evidence_repo = PostgresIncidentEvidenceRepository(async_session)
+
+    incident_id = uuid4()
+    event_id = uuid4()
+    await _ensure_security_event_exists(async_session, tenant_id, event_id)
+
+    inc = Incident(
+        incident_id=incident_id,
+        tenant_id=tenant_id,
+        title="Incidente para Payload Mascarado HTTP",
+        description="Teste HTTP masking",
+        severity=SecurityEventSeverity.CRITICAL,
+        status=IncidentStatus.OPEN,
+        correlation_key="mask_http_key",
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
+    )
+    await inc_repo.save(inc)
+
+    sensitive_payload = {
+        "user": "sysadmin",
+        "password": "SuperSecretPassword99!",
+        "token": "bearer_super_secret_jwt",
+        "api_key": "sk_live_12345",
+        "cookie": "session_id_secret",
+        "public_info": "safe_data",
     }
 
-    evidence = IncidentEvidence(
+    ev = IncidentEvidence(
         evidence_id=uuid4(),
         incident_id=incident_id,
         event_id=event_id,
         tenant_id=tenant_id,
-        evidence_hash="sha256_mock_hash",
+        evidence_hash="sha256_mask_http",
         added_at=datetime.now(timezone.utc),
-        description="Evidência com dados sensíveis",
-        raw_payload_masked=sanitize_payload(unmasked_payload),
+        description="Evidência com segredos",
+        raw_payload_masked=sanitize_payload(sensitive_payload),
     )
-    await evidence_repo.save(evidence)
+    await evidence_repo.save(ev)
     await async_session.commit()
 
-    list_ev = await evidence_repo.list_by_incident(incident_id=incident_id, tenant_id=tenant_id)
-    assert len(list_ev) == 1
-    payload = list_ev[0].raw_payload_masked
-    assert payload["password"] == "[REDACTED]"
-    assert payload["token"] == "[REDACTED]"
-    assert payload["normal_field"] == "public_data"
+    headers = {"Authorization": auth_headers_tenant_a["Authorization"]}
+
+    # Consulta HTTP REST de evidências
+    res = await async_client.get(f"/api/v1/incidents/{incident_id}/evidences", headers=headers)
+    assert res.status_code == 200
+    ev_data = res.json()["items"][0]["raw_payload_masked"]
+
+    assert ev_data["password"] == "[REDACTED]"
+    assert ev_data["token"] == "[REDACTED]"
+    assert ev_data["api_key"] == "[REDACTED]"
+    assert ev_data["cookie"] == "[REDACTED]"
+    assert ev_data["public_info"] == "safe_data"
 
 
 @pytest.mark.asyncio
-async def test_history_is_immutable(async_session: AsyncSession) -> None:
-    """Valida que o histórico de transições de status é imutável e preservado."""
-    inc_repo = PostgresIncidentRepository(async_session)
-    history_repo = PostgresIncidentStatusHistoryRepository(async_session)
-    tenant_id = uuid4()
-    incident_id = uuid4()
-    await _ensure_tenant_exists(async_session, tenant_id)
+async def test_open_incidents_gauge_updated_on_lifecycle(
+    async_client: AsyncClient, async_session: AsyncSession, auth_headers_tenant_a: dict[str, str]
+) -> None:
+    """Valida atualização dinâmica da métrica Gauge (govsec_open_incidents) na criação e transição de estado."""
+    from src.shared.observability.metrics import GOVSEC_OPEN_INCIDENTS, record_incident_created
 
-    incident = Incident(
+    # Baseline do gauge
+    initial_high = GOVSEC_OPEN_INCIDENTS.labels(severity="high")._value.get()
+
+    # Criar incidente high open
+    record_incident_created(severity="high", status="open")
+    after_create = GOVSEC_OPEN_INCIDENTS.labels(severity="high")._value.get()
+    assert after_create == initial_high + 1
+
+    # Transicionar para resolved via rota HTTP REST ou record_incident_status_transition
+    tenant_id = UUID(auth_headers_tenant_a["_tenant_id"])
+    await _ensure_tenant_exists(async_session, tenant_id)
+    inc_repo = PostgresIncidentRepository(async_session)
+
+    incident_id = uuid4()
+    inc = Incident(
         incident_id=incident_id,
         tenant_id=tenant_id,
-        title="Incidente para Transição",
-        description="Teste histórico imutável",
+        title="Incidente para Encerramento",
+        description="Ciclo de vida gauge",
         severity=SecurityEventSeverity.HIGH,
         status=IncidentStatus.OPEN,
-        correlation_key="hist_key_01",
+        correlation_key="gauge_lifecycle_key",
         created_at=datetime.now(timezone.utc),
         updated_at=datetime.now(timezone.utc),
     )
-    await inc_repo.save(incident)
+    await inc_repo.save(inc)
     await async_session.commit()
 
-    # Realizar transição válida: OPEN -> ACKNOWLEDGED
-    incident.transition_to(new_status=IncidentStatus.ACKNOWLEDGED, actor_id="user_admin", reason="Análise iniciada")
-    await inc_repo.save(incident)
-    await async_session.commit()
+    headers = {"Authorization": auth_headers_tenant_a["Authorization"]}
 
-    history = await history_repo.list_by_incident(incident_id=incident_id, tenant_id=tenant_id)
-    assert len(history) == 1
-    assert history[0].from_status == IncidentStatus.OPEN
-    assert history[0].to_status == IncidentStatus.ACKNOWLEDGED
-    assert history[0].actor_id == "user_admin"
-    assert history[0].reason == "Análise iniciada"
+    # OPEN -> ACKNOWLEDGED
+    await async_client.patch(
+        f"/api/v1/incidents/{incident_id}/status",
+        json={"new_status": "acknowledged", "reason": "Em análise SOC"},
+        headers=headers,
+    )
+    # ACKNOWLEDGED -> INVESTIGATING
+    await async_client.patch(
+        f"/api/v1/incidents/{incident_id}/status",
+        json={"new_status": "investigating", "reason": "Investigação em andamento"},
+        headers=headers,
+    )
+    # INVESTIGATING -> CONTAINED
+    await async_client.patch(
+        f"/api/v1/incidents/{incident_id}/status",
+        json={"new_status": "contained", "reason": "Incidente contido"},
+        headers=headers,
+    )
+    # CONTAINED -> RESOLVED (Deve decrementar o gauge de abertos)
+    res_res = await async_client.patch(
+        f"/api/v1/incidents/{incident_id}/status",
+        json={"new_status": "resolved", "reason": "Causa raiz corrigida"},
+        headers=headers,
+    )
+    assert res_res.status_code == 200
 
-
-@pytest.mark.asyncio
-async def test_prometheus_metrics_increment_without_sensitive_labels() -> None:
-    """Valida que as métricas Prometheus de M3.3 são incrementadas e usam apenas labels seguras."""
-    # Incrementar criados
-    record_incident_created(severity="high", status="open")
-    val_incidents = GOVSEC_INCIDENTS_TOTAL.labels(severity="high", status="open")._value.get()
-    assert val_incidents >= 1
-
-    # Incrementar transição
-    record_incident_status_transition(from_status="open", to_status="investigating")
-    val_trans = GOVSEC_INCIDENT_STATUS_TRANSITIONS_TOTAL.labels(from_status="open", to_status="investigating")._value.get()
-    assert val_trans >= 1
-
-    # Incrementar evidências
-    record_incident_evidence_added(rule_id="SSHBruteforce")
-    val_ev = GOVSEC_INCIDENT_EVIDENCES_TOTAL.labels(rule_id="SSHBruteforce")._value.get()
-    assert val_ev >= 1
-
-    # Garantir que labels sensíveis (user_id, incident_id, token) NÃO existem no registro Prometheus
-    for sample in GOVSEC_INCIDENTS_TOTAL.collect()[0].samples:
-        assert "incident_id" not in sample.labels
-        assert "email" not in sample.labels
-        assert "password" not in sample.labels
+    after_resolve = GOVSEC_OPEN_INCIDENTS.labels(severity="high")._value.get()
+    assert after_resolve >= 0

@@ -469,13 +469,13 @@
     {
       "gridPos": { "h": 8, "w": 6, "x": 0, "y": 53 },
       "id": 51,
-      "title": "Incidentes Criados por Severidade",
+      "title": "Incidentes Abertos por Severidade (Estado Atual)",
       "type": "stat",
       "datasource": { "type": "prometheus", "uid": "govsec-prometheus" },
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "govsec-prometheus" },
-          "expr": "sum(govsec_incidents_total) by (severity)",
+          "expr": "sum(govsec_open_incidents) by (severity)",
           "legendFormat": "{{severity}}",
           "refId": "A"
         }

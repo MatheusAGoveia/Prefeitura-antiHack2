@@ -1,4 +1,5 @@
 import hashlib
+from collections.abc import Sequence
 from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
@@ -1229,6 +1230,30 @@ class PostgresIncidentRepository(IncidentRepository):
         result = await self.session.execute(stmt)
         return [self._to_entity(m) for m in result.scalars().all()]
 
+    async def get_evidence_counts_batch(
+        self, tenant_id: UUID, incident_ids: Sequence[UUID]
+    ) -> dict[UUID, int]:
+        """Retorna a contagem de evidências em lote para uma lista de incidentes sem N+1."""
+        if not incident_ids:
+            return {}
+        from sqlalchemy import func
+
+        stmt = (
+            select(
+                IncidentEvidenceModel.incident_id,
+                func.count(IncidentEvidenceModel.evidence_id),
+            )
+            .where(
+                and_(
+                    IncidentEvidenceModel.tenant_id == tenant_id,
+                    IncidentEvidenceModel.incident_id.in_(incident_ids),
+                )
+            )
+            .group_by(IncidentEvidenceModel.incident_id)
+        )
+        res = await self.session.execute(stmt)
+        return {row[0]: row[1] for row in res.all()}
+
 
 class PostgresIncidentEvidenceRepository(IncidentEvidenceRepository):
     """Repositório Postgres de Evidências de Incidentes (M3.2/M3.3). Idempotente via UQ e SAVEPOINT."""
@@ -1386,6 +1411,7 @@ class PostgresIncidentStatusHistoryRepository(IncidentStatusHistoryRepository):
                 actor_id=m.actor_id,
                 reason=m.reason,
                 timestamp=m.timestamp,
+                history_id=m.history_id,
             )
             for m in models
         ]

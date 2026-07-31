@@ -17,7 +17,6 @@ Regras de segurança & arquitetura:
   - Incidente de outro tenant → HTTP 404 (não vaza existência).
 """
 
-from contextlib import suppress
 from datetime import datetime
 from uuid import UUID
 
@@ -135,6 +134,24 @@ async def list_incidents(
             detail=f"Direção de ordenação inválida: '{order}'. Permitidas: 'asc', 'desc'",
         )
 
+    if created_from is not None and created_from.tzinfo is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="created_from deve ser um datetime com fuso horário (timezone/UTC).",
+        )
+
+    if created_to is not None and created_to.tzinfo is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="created_to deve ser um datetime com fuso horário (timezone/UTC).",
+        )
+
+    if created_from is not None and created_to is not None and created_from > created_to:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="created_from não pode ser posterior a created_to.",
+        )
+
     tenant_id = current_user.tenant_id
     repo = PostgresIncidentRepository(session)
 
@@ -160,6 +177,10 @@ async def list_incidents(
         order=order_norm,
     )
 
+    # Obter contagem de evidências em lote para a página (sem N+1)
+    incident_ids = [inc.incident_id for inc in page]
+    counts_map = await repo.get_evidence_counts_batch(tenant_id=tenant_id, incident_ids=incident_ids)
+
     items = [
         IncidentResponseDTO(
             incident_id=inc.incident_id,
@@ -171,6 +192,7 @@ async def list_incidents(
             correlation_key=inc.correlation_key,
             created_at=inc.created_at,
             updated_at=inc.updated_at,
+            evidence_count=counts_map.get(inc.incident_id, 0),
         )
         for inc in page
     ]
@@ -318,7 +340,7 @@ async def list_incident_history(
 
     items = [
         IncidentHistoryResponseDTO(
-            history_id=UUID(int=idx + 1),  # DTO visual seguro
+            history_id=change.history_id,
             incident_id=incident_id,
             tenant_id=tenant_id,
             from_status=change.from_status.value,
@@ -327,7 +349,7 @@ async def list_incident_history(
             reason=change.reason,
             timestamp=change.timestamp,
         )
-        for idx, change in enumerate(history_changes)
+        for change in history_changes
     ]
     return IncidentHistoryListResponseDTO(items=items, total=total, skip=skip, limit=limit)
 
@@ -396,9 +418,17 @@ async def change_incident_status(
         saved = await uow.incidents.save(incident)
         await uow.commit()
 
-        # Incrementar métrica Prometheus de transição auditada (M3.3)
-        with suppress(Exception):
-            record_incident_status_transition(from_status=old_status, to_status=new_status)
+        # Contar evidências para resposta completa do DTO
+        evidence_count = await uow.evidences.count_by_incident(
+            incident_id=saved.incident_id, tenant_id=tenant_id
+        )
+
+        # Incrementar métrica Prometheus de transição auditada (M3.3) pós-commit da transação
+        record_incident_status_transition(
+            from_status=old_status,
+            to_status=new_status,
+            severity=saved.severity.value,
+        )
 
     return IncidentResponseDTO(
         incident_id=saved.incident_id,
@@ -410,4 +440,5 @@ async def change_incident_status(
         correlation_key=saved.correlation_key,
         created_at=saved.created_at,
         updated_at=saved.updated_at,
+        evidence_count=evidence_count,
     )
