@@ -740,10 +740,13 @@ async def test_run_loop_aborts_kafka_offset_commit_when_process_single_message_f
     consumer._consumer = mock_aiokafka_consumer
     consumer._running = True
 
-    # Mockar process_single_message para retornar False (simulando falha no DB)
-    consumer.process_single_message = AsyncMock(return_value=False)  # type: ignore[assignment]
-
-    await consumer.run()
+    # Mockar process_single_message via patch.object sem type:ignore (simulando falha no DB)
+    with patch.object(
+        consumer,
+        "process_single_message",
+        new=AsyncMock(return_value=False),
+    ):
+        await consumer.run()
 
     # Confirmação técnica estrita: commit() NUNCA deve ter sido chamado para mensagens que falharam!
     mock_aiokafka_consumer.commit.assert_not_awaited()
