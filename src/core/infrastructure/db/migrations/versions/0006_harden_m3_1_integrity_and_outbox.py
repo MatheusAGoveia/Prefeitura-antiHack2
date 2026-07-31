@@ -14,8 +14,8 @@ from alembic import op
 from alembic.operations import Operations
 from sqlalchemy.dialects import postgresql
 
-revision: str = "0006_harden_m3_1_integrity_and_outbox"
-down_revision: str | None = "0005_create_m3_assets_security_events"
+revision: str = "0006_harden_m3_1_integrity"
+down_revision: str | None = "0005_create_m3_assets_events"
 branch_labels: Sequence[str] | None = None
 depends_on: Sequence[str] | None = None
 

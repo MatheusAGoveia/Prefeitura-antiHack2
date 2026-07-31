@@ -8,7 +8,7 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
-from aiokafka import AIOKafkaProducer  # type: ignore[import-untyped]
+from aiokafka import AIOKafkaProducer
 
 from src.core.application.interfaces import IEventPublisher
 from src.core.domain.events import DomainEvent

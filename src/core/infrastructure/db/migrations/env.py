@@ -12,7 +12,8 @@ from src.core.infrastructure.db.models import Base
 
 config = context.config
 
-if not config.get_main_option("sqlalchemy.url"):
+current_url = config.get_main_option("sqlalchemy.url")
+if (not current_url or current_url == "postgresql+asyncpg://govsec:govsec@localhost:5432/govsec") and settings.GOVSEC_DB_URL:
     config.set_main_option("sqlalchemy.url", settings.GOVSEC_DB_URL)
 
 if config.config_file_name is not None:
@@ -30,13 +31,18 @@ def run_migrations_offline() -> None:
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
+        version_num_dim=255,
     )
     with context.begin_transaction():
         context.run_migrations()
 
 
 def do_run_migrations(connection: Connection) -> None:
-    context.configure(connection=connection, target_metadata=target_metadata)
+    context.configure(
+        connection=connection,
+        target_metadata=target_metadata,
+        version_num_dim=255,
+    )
     with context.begin_transaction():
         context.run_migrations()
 

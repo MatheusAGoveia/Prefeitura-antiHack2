@@ -56,6 +56,7 @@ async def main() -> None:
         logger.error("Erro fatal no worker de correlação: %s", exc, exc_info=True)
         sys.exit(1)
     finally:
+        await consumer.stop()
         logger.info("Worker de correlação finalizado.")
 
 

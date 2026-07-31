@@ -168,12 +168,27 @@ services:
       timeout: 5s
       retries: 5
 
+  db-migrations:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    container_name: govsec-db-migrations
+    command: ["/app/.venv/bin/alembic", "upgrade", "head"]
+    environment:
+      GOVSEC_ENV: dev
+      GOVSEC_DB_URL: postgresql+asyncpg://govsec:govsec@postgres:5432/govsec
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
   correlation-worker:
     build:
       context: ../..
       dockerfile: Dockerfile
     container_name: govsec-correlation-worker
     command: ["/app/.venv/bin/python", "scripts/correlation_worker.py"]
+    restart: unless-stopped
     environment:
       GOVSEC_ENV: dev
       GOVSEC_DB_URL: postgresql+asyncpg://govsec:govsec@postgres:5432/govsec
@@ -184,12 +199,15 @@ services:
         condition: service_healthy
       redpanda:
         condition: service_healthy
+      db-migrations:
+        condition: service_completed_successfully
     healthcheck:
-      test: ["CMD", "/app/.venv/bin/python", "-c", "import os; exit(0 if any('correlation_worker' in open(f'/proc/{p}/cmdline').read() for p in os.listdir('/proc') if p.isdigit() and os.path.exists(f'/proc/{p}/cmdline')) else 1)"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
+      test: ["CMD-SHELL", "test -f /tmp/correlation-worker.ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
       start_period: 5s
+
 
 
 volumes:

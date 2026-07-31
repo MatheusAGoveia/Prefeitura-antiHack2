@@ -67,6 +67,11 @@ strict = true
 explicit_package_bases = true
 mypy_path = "."
 
+# Suporte a stubs para bibliotecas de terceiros sem tipagem nativa (aiokafka)
+[[tool.mypy.overrides]]
+module = "aiokafka.*"
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 minversion = "7.0"
 addopts = "-ra -q --cov=src --cov-report=term-missing"
@@ -77,4 +82,8 @@ testpaths = [
 ]
 asyncio_mode = "auto"
 pythonpath = ["."]
+markers = [
+    "kafka_integration: Testes de integração real contra broker Redpanda/Kafka e PostgreSQL",
+]
+
 

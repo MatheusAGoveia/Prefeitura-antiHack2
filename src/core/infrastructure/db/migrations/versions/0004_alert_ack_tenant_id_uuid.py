@@ -14,7 +14,7 @@ from alembic.operations import Operations
 from sqlalchemy.dialects import postgresql
 
 revision: str = "0004_alert_ack_tenant_id_uuid"
-down_revision: str | None = "0003_create_alert_acknowledgements"
+down_revision: str | None = "0003_create_alert_ack"
 branch_labels: Sequence[str] | None = None
 depends_on: Sequence[str] | None = None
 

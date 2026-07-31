@@ -11,7 +11,7 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
-revision: str = "0003_create_alert_acknowledgements"
+revision: str = "0003_create_alert_ack"
 down_revision: str | None = "0002_create_audit_logs"
 branch_labels: Sequence[str] | None = None
 depends_on: Sequence[str] | None = None

@@ -21,7 +21,7 @@ from alembic.operations import Operations
 from sqlalchemy.dialects import postgresql
 
 revision: str = "0007_create_m3_2_incidents"
-down_revision: str | None = "0006_harden_m3_1_integrity_and_outbox"
+down_revision: str | None = "0006_harden_m3_1_integrity"
 branch_labels: Sequence[str] | None = None
 depends_on: Sequence[str] | None = None
 

@@ -143,7 +143,7 @@ def test_migration_0007_upgrade_downgrade() -> None:
             assert "incident_status_history" in tables
 
         # Downgrade até 0006
-        command.downgrade(alembic_cfg, "0006_harden_m3_1_integrity_and_outbox")
+        command.downgrade(alembic_cfg, "0006_harden_m3_1_integrity")
         with sync_engine.connect() as conn:
             inspector = inspect(conn)
             tables = inspector.get_table_names()

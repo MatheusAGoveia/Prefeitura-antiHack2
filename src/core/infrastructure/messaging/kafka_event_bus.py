@@ -10,7 +10,7 @@ from collections.abc import Callable
 from typing import Any
 from uuid import uuid4
 
-from aiokafka import AIOKafkaConsumer, AIOKafkaProducer  # type: ignore[import-untyped]
+from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
 
 from src.core.domain.events import DomainEvent
 from src.core.infrastructure.config import settings

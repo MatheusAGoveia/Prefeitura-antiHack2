@@ -115,10 +115,10 @@ def test_alembic_step_by_step_0005_to_0006_real() -> None:
         alembic_cfg.set_main_option("sqlalchemy.url", sqlite_url)
 
         # 1. Executa upgrade até 0005
-        command.upgrade(alembic_cfg, "0005_create_m3_assets_security_events")
+        command.upgrade(alembic_cfg, "0005_create_m3_assets_events")
 
         # 2. Executa upgrade para 0006
-        command.upgrade(alembic_cfg, "0006_harden_m3_1_integrity_and_outbox")
+        command.upgrade(alembic_cfg, "0006_harden_m3_1_integrity")
 
         # 3. Inspeciona o schema e comportamento no banco
         from sqlalchemy import create_engine, text

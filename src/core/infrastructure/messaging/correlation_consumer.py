@@ -22,13 +22,16 @@ Segurança & Observabilidade:
 """
 
 import asyncio
+import contextlib
 import json
 import logging
+import tempfile
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 from uuid import UUID
 
-from aiokafka import AIOKafkaConsumer  # type: ignore[import-untyped]
+from aiokafka import AIOKafkaConsumer
 
 from src.core.application.correlation_handler import CorrelateSecurityEventHandler
 from src.core.application.interfaces.uow import CorrelationUnitOfWork
@@ -37,6 +40,8 @@ from src.core.infrastructure.config import settings
 from src.core.infrastructure.correlation.rules import get_rules_for_tenant
 
 logger = logging.getLogger(__name__)
+
+READINESS_FILE_PATH = Path(tempfile.gettempdir()) / "correlation-worker.ready"
 
 
 def default_correlation_uow_factory() -> CorrelationUnitOfWork:
@@ -71,6 +76,22 @@ class CorrelationKafkaConsumer:
         self._consumer: AIOKafkaConsumer | None = None
         self._running = False
 
+    @staticmethod
+    def _create_readiness_file() -> None:
+        try:
+            READINESS_FILE_PATH.parent.mkdir(parents=True, exist_ok=True)
+            READINESS_FILE_PATH.touch(exist_ok=True)
+            logger.info("Arquivo de readiness do correlation-worker criado em %s", READINESS_FILE_PATH)
+        except Exception as exc:
+            logger.warning("Falha ao criar arquivo de readiness do correlation-worker: %s", exc)
+
+    @staticmethod
+    def _remove_readiness_file() -> None:
+        with contextlib.suppress(Exception):
+            if READINESS_FILE_PATH.exists():
+                READINESS_FILE_PATH.unlink()
+                logger.info("Arquivo de readiness do correlation-worker removido.")
+
     async def start(self) -> None:
         """Inicia o consumidor Kafka."""
         if self._consumer is not None:
@@ -83,22 +104,28 @@ class CorrelationKafkaConsumer:
             self._topic,
         )
 
-        self._consumer = AIOKafkaConsumer(
-            self._topic,
-            bootstrap_servers=self._bootstrap_servers,
-            group_id=self._group_id,
-            enable_auto_commit=False,  # Desabilitado auto-commit para garantir commit pós-DB
-            auto_offset_reset="earliest",
-            value_deserializer=lambda m: json.loads(m.decode("utf-8")),
-            request_timeout_ms=5000,
-        )
-        await self._consumer.start()
-        self._running = True
-        logger.info("CorrelationKafkaConsumer iniciado com sucesso.")
+        try:
+            self._consumer = AIOKafkaConsumer(
+                self._topic,
+                bootstrap_servers=self._bootstrap_servers,
+                group_id=self._group_id,
+                enable_auto_commit=False,  # Desabilitado auto-commit para garantir commit pós-DB
+                auto_offset_reset="earliest",
+                value_deserializer=lambda m: json.loads(m.decode("utf-8")),
+                request_timeout_ms=5000,
+            )
+            await self._consumer.start()
+            self._running = True
+            self._create_readiness_file()
+            logger.info("CorrelationKafkaConsumer iniciado com sucesso.")
+        except Exception:
+            self._remove_readiness_file()
+            raise
 
     async def stop(self) -> None:
         """Encerra o consumidor Kafka graciosamente."""
         self._running = False
+        self._remove_readiness_file()
         if self._consumer is not None:
             try:
                 await self._consumer.stop()
