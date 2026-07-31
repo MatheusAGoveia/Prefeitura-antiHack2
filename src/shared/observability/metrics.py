@@ -8,7 +8,7 @@ import time
 from collections.abc import Callable
 from typing import Any
 
-from fastapi import HTTPException, Request, Response, status
+from fastapi import Depends, Request, Response
 from prometheus_client import (
     CONTENT_TYPE_LATEST,
     REGISTRY,
@@ -20,6 +20,7 @@ from prometheus_client import (
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from src.core.infrastructure.config import settings
+from src.core.infrastructure.db.unit_of_work import get_db_session
 
 logger = logging.getLogger(__name__)
 
@@ -182,17 +183,12 @@ def record_incident_created(severity: str, status: str) -> None:
 def record_incident_status_transition(
     from_status: str, to_status: str, severity: str | None = None
 ) -> None:
-    """Registra transição auditada de status de incidente e atualiza estado de incidentes abertos."""
+    """Registra transição auditada de status de incidente no contador histórico de transições."""
     from_lower = from_status.lower()
     to_lower = to_status.lower()
     GOVSEC_INCIDENT_STATUS_TRANSITIONS_TOTAL.labels(
         from_status=from_lower, to_status=to_lower
     ).inc()
-
-    if severity and from_lower in ("open", "acknowledged", "investigating", "contained") and to_lower in ("resolved", "closed"):
-        g = GOVSEC_OPEN_INCIDENTS.labels(severity=severity.lower())
-        if g._value.get() > 0:
-            g.dec()
 
 
 def record_incident_evidence_added(rule_id: str = "default") -> None:
@@ -281,19 +277,15 @@ async def sync_open_incidents_gauge_from_db(session: Any = None) -> None:
 async def safe_sync_open_incidents_gauge_from_db(session: Any = None) -> None:
     """
     Adaptador de infraestrutura seguro para sincronização do Gauge GOVSEC_OPEN_INCIDENTS a partir do banco.
-    Em caso de falha de conexão/consulta ao PostgreSQL, zera explicitamente o Gauge para evitar apresentar valores desatualizados velhos.
+    Em caso de falha de conexão/consulta ao PostgreSQL, apenas registra um aviso no log sem publicar estado falso.
     """
-    from src.core.domain.incidents import SecurityEventSeverity
-
     try:
         await sync_open_incidents_gauge_from_db(session)
     except Exception as exc:
         logger.warning(
-            "Falha ao sincronizar gauge de incidentes a partir do banco de dados. Zerando Gauge para prevenir dados desatualizados: %s",
+            "Falha ao sincronizar gauge de incidentes a partir do banco de dados: %s",
             exc,
         )
-        for sev in SecurityEventSeverity:
-            GOVSEC_OPEN_INCIDENTS.labels(severity=sev.value.lower()).set(0)
 
 
 def collect_db_pool_metrics() -> None:
@@ -352,27 +344,16 @@ class PrometheusMetricsMiddleware(BaseHTTPMiddleware):
         return response
 
 
-async def metrics_endpoint_handler() -> Response:
+async def metrics_endpoint_handler(session: Any = Depends(get_db_session)) -> Response:
     """
     Handler para o endpoint GET /metrics do Prometheus Exporter.
     Executa a sincronização dinâmica do estado verdadeiro de incidentes abertos a partir do PostgreSQL.
-    Em caso de falha no banco de dados, lança HTTP 500 para falhar o scrape do Prometheus,
-    evitando a entrega de métricas desatualizadas/stale como se fossem válidas.
+    Caso o banco esteja indisponível, safe_sync_open_incidents_gauge_from_db registra warning
+    sem publicar estados zerados falsos.
     """
-    try:
-        await sync_open_incidents_gauge_from_db()
-    except Exception as exc:
-        logger.error(
-            "Falha ao conectar/consultar o PostgreSQL durante scrape de /metrics: %s",
-            exc,
-        )
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Database unavailable for metrics scrape",
-        ) from exc
+    await safe_sync_open_incidents_gauge_from_db(session)
 
     collect_db_pool_metrics()
     data: bytes = generate_latest(REGISTRY)
     return Response(content=data, media_type=CONTENT_TYPE_LATEST)
-
 
