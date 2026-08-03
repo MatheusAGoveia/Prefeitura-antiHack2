@@ -20,6 +20,7 @@ from src.asset.application.dto import (
 )
 from src.asset.domain.exceptions import InvalidStatusTransitionError, TargetNotFoundError
 from src.asset.domain.scan_executions import ScanExecution, TriggerType
+from src.asset.infrastructure.audit import record_asset_audit_log
 from src.asset.infrastructure.db.repositories import PostgresAssetRepository
 from src.asset.infrastructure.db.scanner_repositories import (
     PostgresMonitoringRepository,
@@ -185,6 +186,15 @@ async def cancel_scan_execution(
     try:
         e.cancel(reason=f"Cancelado pelo usuário {current_user.user_id}")
         await repo.save(e)
+        await record_asset_audit_log(
+            db,
+            current_user.tenant_id,
+            current_user.user_id,
+            "cancelled",
+            "scan_executions",
+            e.id,
+            {"status": str(e.status)},
+        )
         await db.commit()
     except InvalidStatusTransitionError as err:
         await db.rollback()
@@ -235,6 +245,15 @@ async def retry_scan_execution(
         requested_by=UUID(str(current_user.user_id)),
     )
     await repo.save(new_e)
+    await record_asset_audit_log(
+        db,
+        current_user.tenant_id,
+        current_user.user_id,
+        "retried",
+        "scan_executions",
+        new_e.id,
+        {"original_execution_id": str(old_e.id), "status": str(new_e.status)},
+    )
     await db.commit()
 
     return ExecutionDispatchResponseDTO(

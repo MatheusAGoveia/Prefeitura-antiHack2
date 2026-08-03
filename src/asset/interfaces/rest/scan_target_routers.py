@@ -23,6 +23,7 @@ from src.asset.application.dto import (
 )
 from src.asset.domain.exceptions import AssetDomainError, InvalidTargetError
 from src.asset.domain.scan_targets import IPTargetValidator, ScanTarget
+from src.asset.infrastructure.audit import record_asset_audit_log
 from src.asset.infrastructure.db.repositories import PostgresAssetRepository
 from src.core.infrastructure.db.unit_of_work import get_db_session
 from src.core.infrastructure.security.kernel import AuthenticatedUser
@@ -206,7 +207,7 @@ async def patch_scan_target(
     current_user: AuthenticatedUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db_session),
 ) -> ScanTargetResponseDTO:
-    if not RBACManager.has_permission(current_user, "scan_targets", "PATCH") and not RBACManager.has_permission(current_user, "scan_targets", "POST"):
+    if not RBACManager.has_permission(current_user, "scan_targets", "PATCH"):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permissão negada.")
 
     repo = PostgresAssetRepository(db)
@@ -241,6 +242,15 @@ async def patch_scan_target(
             allow_public_targets=payload.allow_public_targets,
         )
         await repo.save_target(target)
+        await record_asset_audit_log(
+            db,
+            current_user.tenant_id,
+            current_user.user_id,
+            "updated",
+            "scan_targets",
+            target.id,
+            {"name": target.name, "target_value": target.target_value, "enabled": target.enabled},
+        )
         await db.commit()
     except AssetDomainError as e:
         await db.rollback()

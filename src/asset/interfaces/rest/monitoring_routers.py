@@ -4,13 +4,12 @@ GovSec Shield — Presentation Layer (M3.4)
 """
 
 import logging
+from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
-
-from datetime import datetime, timezone
 
 from src.asset.application.dto import (
     MonitoringIntegrationCreateDTO,
@@ -23,8 +22,10 @@ from src.asset.application.dto import (
 from src.asset.domain.exceptions import AssetDomainError
 from src.asset.domain.monitoring import MonitoringIntegration
 from src.asset.infrastructure.adapters.fake_monitoring_adapter import FakeMonitoringGateway
+from src.asset.infrastructure.audit import record_asset_audit_log
 from src.asset.infrastructure.db.models import MonitoringSyncExecutionModel
 from src.asset.infrastructure.db.scanner_repositories import PostgresMonitoringRepository
+from src.core.infrastructure.db.models import OutboxEventModel
 from src.core.infrastructure.db.unit_of_work import get_db_session
 from src.core.infrastructure.security.kernel import AuthenticatedUser
 from src.core.infrastructure.security.rbac import RBACManager
@@ -57,6 +58,15 @@ async def create_monitoring_integration(
             verify_tls=payload.verify_tls,
         )
         await repo.save(integration)
+        await record_asset_audit_log(
+            db,
+            current_user.tenant_id,
+            current_user.user_id,
+            "created",
+            "monitoring_integrations",
+            integration.id,
+            {"name": integration.name, "provider": str(integration.provider)},
+        )
         await db.commit()
 
         return MonitoringIntegrationResponseDTO(
@@ -110,13 +120,7 @@ async def list_monitoring_integrations(
         for m in items
     ]
 
-    return PaginatedResponse(
-        items=dto_items,
-        page=page,
-        page_size=page_size,
-        total=total,
-        pages=pages,
-    )
+    return PaginatedResponse(items=dto_items, page=page, page_size=page_size, total=total, pages=pages)
 
 
 @router.get("/{integration_id}", response_model=MonitoringIntegrationResponseDTO)
@@ -164,34 +168,43 @@ async def patch_monitoring_integration(
     if not m:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Integração de monitoramento não encontrada.")
 
-    if payload.name is not None:
-        m.name = payload.name
-    if payload.base_url is not None:
-        m.base_url = payload.base_url
-    if payload.enabled is not None:
-        m.enabled = payload.enabled
-    if payload.verify_tls is not None:
-        m.verify_tls = payload.verify_tls
-    if payload.credential_reference is not None and payload.credential_reference.strip():
-        m.credential_reference = payload.credential_reference.strip()
+    try:
+        m.update(
+            name=payload.name,
+            base_url=payload.base_url,
+            credential_reference=payload.credential_reference,
+            enabled=payload.enabled,
+            verify_tls=payload.verify_tls,
+        )
+        await repo.save(m)
+        await record_asset_audit_log(
+            db,
+            current_user.tenant_id,
+            current_user.user_id,
+            "updated",
+            "monitoring_integrations",
+            m.id,
+            {"name": m.name, "enabled": m.enabled},
+        )
+        await db.commit()
 
-    await repo.save(m)
-    await db.commit()
-
-    return MonitoringIntegrationResponseDTO(
-        id=m.id,
-        tenant_id=m.tenant_id,
-        provider=m.provider,
-        name=m.name,
-        base_url=m.base_url,
-        enabled=m.enabled,
-        verify_tls=m.verify_tls,
-        credentials_configured=True,
-        last_sync_at=m.last_sync_at,
-        last_sync_status=m.last_sync_status,
-        created_at=m.created_at,
-        updated_at=m.updated_at,
-    )
+        return MonitoringIntegrationResponseDTO(
+            id=m.id,
+            tenant_id=m.tenant_id,
+            provider=m.provider,
+            name=m.name,
+            base_url=m.base_url,
+            enabled=m.enabled,
+            verify_tls=m.verify_tls,
+            credentials_configured=True,
+            last_sync_at=m.last_sync_at,
+            last_sync_status=m.last_sync_status,
+            created_at=m.created_at,
+            updated_at=m.updated_at,
+        )
+    except AssetDomainError as e:
+        await db.rollback()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
 
 
 @router.delete("/{integration_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -207,6 +220,15 @@ async def delete_monitoring_integration(
     deleted = await repo.delete_integration(integration_id, current_user.tenant_id)
     if not deleted:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Integração de monitoramento não encontrada.")
+    await record_asset_audit_log(
+        db,
+        current_user.tenant_id,
+        current_user.user_id,
+        "deleted",
+        "monitoring_integrations",
+        integration_id,
+        {},
+    )
     await db.commit()
 
 
@@ -260,8 +282,7 @@ async def test_monitoring_integration(
     current_user: AuthenticatedUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db_session),
 ) -> MonitoringTestResponseDTO:
-    """Testa a conectividade com a API do Zabbix sem expor senhas/tokens no retorno."""
-    if not RBACManager.has_permission(current_user, "monitoring_integrations", "GET"):
+    if not RBACManager.has_permission(current_user, "monitoring_integrations", "POST"):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permissão negada.")
 
     repo = PostgresMonitoringRepository(db)
@@ -269,12 +290,25 @@ async def test_monitoring_integration(
     if not m:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Integração de monitoramento não encontrada.")
 
-    # Simulação usando adaptador Fake para homologação
-    FakeMonitoringGateway()
+    gw = FakeMonitoringGateway()
+    res = await gw.test_connection(m)
+
+    await record_asset_audit_log(
+        db,
+        current_user.tenant_id,
+        current_user.user_id,
+        "tested",
+        "monitoring_integrations",
+        integration_id,
+        {"success": res["success"], "message": res["message"]},
+    )
+    await db.commit()
+
     return MonitoringTestResponseDTO(
-        status="success",
-        message=f"Conectividade bem-sucedida com {m.provider.upper()} ({m.base_url}).",
-        latency_ms=12.4,
+        success=res["success"],
+        message=res["message"],
+        response_time_ms=res.get("response_time_ms", 120.0),
+        provider_version=res.get("provider_version", "Zabbix 6.4.0"),
     )
 
 
@@ -284,7 +318,7 @@ async def trigger_monitoring_sync(
     current_user: AuthenticatedUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db_session),
 ) -> dict[str, Any]:
-    """Inicia a sincronização assíncrona de ativos com o Zabbix retornando HTTP 202 Accepted e a execução persistida."""
+    """Inicia a sincronização assíncrona de ativos com o Zabbix retornando HTTP 202 Accepted, persistindo execução, outbox e auditoria na mesma transação."""
     if not RBACManager.has_permission(current_user, "monitoring_integrations", "SYNC"):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permissão negada.")
 
@@ -300,8 +334,12 @@ async def trigger_monitoring_sync(
         )
 
     now = datetime.now(timezone.utc)
+    sync_exec_id = uuid4()
+    correlation_id = uuid4()
+
+    # 1. Persistir MonitoringSyncExecution com status "queued"
     sync_exec = MonitoringSyncExecutionModel(
-        id=uuid4(),
+        id=sync_exec_id,
         tenant_id=current_user.tenant_id,
         integration_id=integration_id,
         status="queued",
@@ -313,22 +351,60 @@ async def trigger_monitoring_sync(
         error_summary=None,
     )
     await repo.save_sync_execution(sync_exec)
+
+    # 2. Criar evento na Outbox na MESMA transação
+    outbox_event = OutboxEventModel(
+        outbox_event_id=uuid4(),
+        tenant_id=current_user.tenant_id,
+        aggregate_type="monitoring_integration",
+        aggregate_id=integration_id,
+        event_type="monitoring.sync.requested",
+        payload={
+            "tenant_id": str(current_user.tenant_id),
+            "integration_id": str(integration_id),
+            "sync_execution_id": str(sync_exec_id),
+            "correlation_id": str(correlation_id),
+            "requested_at": now.isoformat(),
+        },
+        idempotency_key=f"monitoring_sync_{sync_exec_id}",
+        status="pending",
+        retry_count=0,
+    )
+    db.add(outbox_event)
+
+    # 3. Registrar auditoria na MESMA transação
+    await record_asset_audit_log(
+        db,
+        current_user.tenant_id,
+        current_user.user_id,
+        "sync_requested",
+        "monitoring_integrations",
+        integration_id,
+        {
+            "sync_execution_id": str(sync_exec_id),
+            "correlation_id": str(correlation_id),
+            "status": "queued",
+        },
+        correlation_id=str(correlation_id),
+    )
+
+    # 4. Commit transacional único
     await db.commit()
 
     GOVSEC_MONITORING_SYNC_TOTAL.labels(provider=str(m.provider), status="queued").inc()
 
     logger.info(
-        "Sincronização Zabbix solicitada e persistida: tenant_id=%s integration_id=%s sync_execution_id=%s",
+        "Sincronização Zabbix solicitada e enfileirada via Outbox: tenant_id=%s integration_id=%s sync_execution_id=%s",
         current_user.tenant_id,
         integration_id,
-        sync_exec.id,
+        sync_exec_id,
     )
 
     return {
-        "sync_execution_id": str(sync_exec.id),
+        "sync_execution_id": str(sync_exec_id),
         "integration_id": str(integration_id),
         "status": "queued",
-        "created_at": sync_exec.started_at.isoformat(),
+        "created_at": now.isoformat(),
         "provider": m.provider,
-        "message": "Sincronização assíncrona com Zabbix enfileirada e persistida.",
+        "message": "Sincronização assíncrona com Zabbix enfileirada e registrada na Outbox.",
     }

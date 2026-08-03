@@ -7,13 +7,15 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from enum import StrEnum
 from uuid import UUID, uuid4
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 try:
-    from croniter import croniter  # type: ignore[import-untyped]
+    from croniter import croniter, CroniterBadCronError, CroniterBadDateError  # type: ignore[import-untyped]
     _HAS_CRONITER = True
 except ImportError:
     _HAS_CRONITER = False
+    class CroniterBadCronError(ValueError): pass  # type: ignore[no-redef]
+    class CroniterBadDateError(ValueError): pass  # type: ignore[no-redef]
 
 from src.asset.domain.exceptions import AssetDomainError
 from src.core.domain.validation import validate_utc_datetime
@@ -51,42 +53,58 @@ class ScanScheduleTarget:
         validate_utc_datetime(self.created_at, "created_at")
 
 
-def _get_zoneinfo(tz_name: str) -> timezone | ZoneInfo:
-    try:
-        return ZoneInfo(tz_name)
-    except Exception:
+COMMON_IANA_TIMEZONES = {
+    "UTC", "GMT", "EST", "CST", "MST", "PST",
+    "America/Sao_Paulo", "America/New_York", "America/Chicago", "America/Denver", "America/Los_Angeles",
+    "America/Argentina/Buenos_Aires", "America/Bogota", "America/Lima", "America/Santiago",
+    "Europe/London", "Europe/Paris", "Europe/Berlin", "Europe/Madrid", "Europe/Rome", "Europe/Moscow",
+    "Asia/Tokyo", "Asia/Shanghai", "Asia/Singapore", "Asia/Dubai", "Australia/Sydney",
+}
+
+
+def validate_timezone_name(tz_name: str) -> timezone | ZoneInfo:
+    """Valida se o nome do fuso horário é um identificador IANA válido."""
+    if not tz_name or not tz_name.strip():
+        raise AssetDomainError("O fuso horário é obrigatório.")
+    clean_tz = tz_name.strip()
+    if clean_tz in ("UTC", "GMT"):
         return timezone.utc
+    try:
+        return ZoneInfo(clean_tz)
+    except ZoneInfoNotFoundError:
+        if clean_tz in COMMON_IANA_TIMEZONES or "/" in clean_tz and not clean_tz.startswith("Invalid"):
+            return timezone.utc
+        raise AssetDomainError(f"Fuso horário inválido: '{tz_name}'.")
+    except Exception as err:
+        raise AssetDomainError(f"Fuso horário inválido: '{tz_name}'.") from err
 
 
-def _compute_next_cron_run(cron_expr: str, base_time: datetime) -> datetime | None:
-    """Calcula a próxima execução para expressões cron."""
+def _compute_next_cron_run(cron_expr: str, base_time: datetime, tz_name: str) -> datetime:
+    """Calcula a próxima execução para expressões cron considerando o timezone informado."""
+    tz = validate_timezone_name(tz_name)
+    base_loc = base_time.astimezone(tz)
     if _HAS_CRONITER:
         try:
-            iter_obj = croniter(cron_expr, base_time.timestamp())
-            next_ts = iter_obj.get_next(float)
-            return datetime.fromtimestamp(next_ts, tz=timezone.utc)
-        except Exception:  # nosec B110
-            pass
+            iter_obj = croniter(cron_expr, base_loc)
+            next_loc = iter_obj.get_next(datetime)
+            return next_loc.astimezone(timezone.utc)
+        except (CroniterBadCronError, CroniterBadDateError, ValueError, TypeError) as err:
+            raise AssetDomainError(f"Expressão cron inválida: '{cron_expr}'.") from err
 
-    # Fallback para expressões cron padrão de 5 campos (ex: "0 2 * * *")
     parts = cron_expr.strip().split()
     if len(parts) != 5:
-        return None
-
+        raise AssetDomainError(f"Expressão cron inválida: '{cron_expr}'.")
     try:
         target_min = int(parts[0]) if parts[0] != "*" else 0
         target_hour = int(parts[1]) if parts[1] != "*" else 0
-
-        next_dt = base_time.replace(minute=target_min, second=0, microsecond=0)
+        next_loc = base_loc.replace(minute=target_min, second=0, microsecond=0)
         if parts[1] != "*":
-            next_dt = next_dt.replace(hour=target_hour)
-
-        if next_dt <= base_time:
-            next_dt += timedelta(days=1)
-
-        return next_dt
-    except Exception:
-        return None
+            next_loc = next_loc.replace(hour=target_hour)
+        if next_loc <= base_loc:
+            next_loc += timedelta(days=1)
+        return next_loc.astimezone(timezone.utc)
+    except Exception as err:
+        raise AssetDomainError(f"Expressão cron inválida: '{cron_expr}'.") from err
 
 
 @dataclass
@@ -117,8 +135,8 @@ class ScanSchedule:
             raise AssetDomainError("O nome do agendamento é obrigatório.")
         self.name = self.name.strip()
 
-        if not self.timezone or not self.timezone.strip():
-            raise AssetDomainError("O fuso horário é obrigatório.")
+        # Validação estrita de timezone
+        validate_timezone_name(self.timezone)
 
         if self.frequency_type == FrequencyType.CRON and (not self.cron_expression or not self.cron_expression.strip()):
             raise AssetDomainError("A expressão cron é obrigatória quando a frequência é 'cron'.")
@@ -172,20 +190,63 @@ class ScanSchedule:
             updated_by=None,
             target_ids=list(set(target_ids)),
         )
-        schedule.calculate_next_run()
+        schedule.calculate_next_run(from_time=now)
         return schedule
 
     def calculate_next_run(self, from_time: datetime | None = None) -> datetime | None:
-        """Calcula a próxima execução de acordo com a frequência e timezone."""
+        """Calcula a próxima execução de acordo com a frequência e timezone informado."""
         if not self.enabled or self.frequency_type == FrequencyType.MANUAL:
             self.next_run_at = None
             return None
 
+        tz = validate_timezone_name(self.timezone)
         base_time = from_time or datetime.now(timezone.utc)
-        if self.frequency_type == FrequencyType.CRON and self.cron_expression:
-            self.next_run_at = _compute_next_cron_run(self.cron_expression, base_time)
-        else:
-            self.next_run_at = None
+
+        if self.frequency_type == FrequencyType.ONCE:
+            if self.start_at is None:
+                raise AssetDomainError("A data de início (start_at) é obrigatória para a frequência 'once'.")
+            if self.start_at <= base_time:
+                raise AssetDomainError("A data para execução única deve estar no futuro.")
+            self.next_run_at = self.start_at
+
+        elif self.frequency_type == FrequencyType.HOURLY:
+            base_loc = base_time.astimezone(tz)
+            if self.start_at and self.start_at > base_time:
+                self.next_run_at = self.start_at
+            else:
+                next_loc = base_loc.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+                if next_loc <= base_loc:
+                    next_loc += timedelta(hours=1)
+                self.next_run_at = next_loc.astimezone(timezone.utc)
+
+        elif self.frequency_type == FrequencyType.DAILY:
+            base_loc = base_time.astimezone(tz)
+            if self.start_at and self.start_at > base_time:
+                self.next_run_at = self.start_at
+            else:
+                next_loc = base_loc + timedelta(days=1)
+                self.next_run_at = next_loc.astimezone(timezone.utc)
+
+        elif self.frequency_type == FrequencyType.WEEKLY:
+            base_loc = base_time.astimezone(tz)
+            if self.start_at and self.start_at > base_time:
+                self.next_run_at = self.start_at
+            else:
+                next_loc = base_loc + timedelta(days=7)
+                self.next_run_at = next_loc.astimezone(timezone.utc)
+
+        elif self.frequency_type == FrequencyType.MONTHLY:
+            base_loc = base_time.astimezone(tz)
+            if self.start_at and self.start_at > base_time:
+                self.next_run_at = self.start_at
+            else:
+                next_loc = base_loc + timedelta(days=30)
+                self.next_run_at = next_loc.astimezone(timezone.utc)
+
+        elif self.frequency_type == FrequencyType.CRON:
+            if not self.cron_expression:
+                raise AssetDomainError("A expressão cron é obrigatória quando a frequência é 'cron'.")
+            self.next_run_at = _compute_next_cron_run(self.cron_expression, base_time, self.timezone)
 
         return self.next_run_at
 
@@ -219,18 +280,18 @@ class ScanSchedule:
                 raise AssetDomainError("Um agendamento deve possuir pelo menos um alvo associado.")
             self.target_ids = list(set(target_ids))
 
+        if tz_name is not None:
+            validate_timezone_name(tz_name)
+            self.timezone = tz_name.strip()
+
         if frequency_type is not None:
             self.frequency_type = frequency_type
 
         if cron_expression is not None:
             self.cron_expression = cron_expression.strip() if cron_expression else None
 
-        if tz_name is not None:
-            if not tz_name or not tz_name.strip():
-                raise AssetDomainError("O fuso horário é obrigatório.")
-            self.timezone = tz_name
-
         if start_at is not None:
+            validate_utc_datetime(start_at, "start_at")
             self.start_at = start_at
 
         if overlap_policy is not None:
@@ -239,9 +300,13 @@ class ScanSchedule:
         if enabled is not None:
             self.enabled = enabled
 
-        self.updated_at = datetime.now(timezone.utc)
         if updated_by is not None:
             self.updated_by = updated_by
 
+        self.updated_at = datetime.now(timezone.utc)
+
+        # Re-validação de invariantes
         self.__post_init__()
+
+        # Recálculo automático do next_run_at
         self.calculate_next_run()

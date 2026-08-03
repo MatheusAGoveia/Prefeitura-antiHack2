@@ -38,6 +38,8 @@ def run_migrations_offline() -> None:
 
 
 def do_run_migrations(connection: Connection) -> None:
+    with contextlib.suppress(Exception):
+        connection.execute(sa.text("ALTER TABLE alembic_version ALTER COLUMN version_num TYPE VARCHAR(255);"))
     context.configure(
         connection=connection,
         target_metadata=target_metadata,

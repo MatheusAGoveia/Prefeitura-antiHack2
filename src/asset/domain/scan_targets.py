@@ -124,7 +124,7 @@ class IPTargetValidator:
                         "IP inicial e IP final de um intervalo devem pertencer à mesma versão do protocolo (IPv4 ou IPv6)."
                     )
 
-                if end_ip < start_ip:  # type: ignore[operator]
+                if int(end_ip) < int(start_ip):
                     raise InvalidTargetError(
                         f"IP final ({end_ip}) é menor que o IP inicial ({start_ip})."
                     )

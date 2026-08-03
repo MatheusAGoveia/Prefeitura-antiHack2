@@ -6,8 +6,9 @@ GovSec Shield — Application Layer (M3.4)
 import csv
 import io
 import re
+import xml.etree.ElementTree as ET
 import zipfile
-from xml.etree import ElementTree as etree  # noqa: N813 # nosec B405
+from typing import Any
 
 from src.asset.application.dto import (
     TargetImportPreviewItemDTO,
@@ -24,6 +25,25 @@ EXEC_FORMULA_REGEX = re.compile(
 MAX_IMPORT_RECORDS = 1000
 MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024  # 5 MB
 
+# Tabela de compatibilidade estrita de extensões e tipos MIME
+ALLOWED_MIME_TYPES = {
+    "csv": {
+        "text/csv",
+        "text/plain",
+        "application/csv",
+        "application/vnd.ms-excel",
+        "text/x-csv",
+        "application/x-csv",
+    },
+    "txt": {"text/plain", "text/csv"},
+    "xlsx": {
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "application/zip",
+        "application/x-zip-compressed",
+    },
+    "pdf": {"application/pdf"},
+}
+
 
 class TargetBulkImporter:
     """
@@ -36,15 +56,23 @@ class TargetBulkImporter:
         cls,
         filename: str | None,
         content: bytes | None,
+        content_type: str | None = None,
         raw_paste: str | None = None,
         items_list: list[str] | None = None,
     ) -> list[str]:
-        """Extrai linhas de texto bruto das diversas fontes fornecidas."""
+        """Extrai linhas de texto bruto das diversas fontes fornecidas com validação de MIME, extensão e magic bytes."""
         if content is not None:
+            if len(content) == 0:
+                raise AssetDomainError("O arquivo fornecido está vazio.")
+
             if len(content) > MAX_FILE_SIZE_BYTES:
                 raise AssetDomainError(
                     f"O tamanho do arquivo excede o limite máximo de 5MB ({len(content)} bytes)."
                 )
+
+            # Rejeição de executáveis conhecidos por assinatura magic bytes (MZ para Windows PE, \x7fELF para Linux)
+            if content.startswith(b"MZ") or content.startswith(b"\x7fELF"):
+                raise AssetDomainError("Arquivos executáveis não são permitidos por razões de segurança.")
 
             ext = (filename or "").split(".")[-1].lower() if filename and "." in filename else ""
 
@@ -53,10 +81,19 @@ class TargetBulkImporter:
                     "O formato de arquivo '.xls' (legado) não é suportado. Por favor utilize '.xlsx', '.csv' ou '.txt'."
                 )
 
-            if ext not in ("csv", "txt", "xlsx", "pdf"):
+            if ext not in ALLOWED_MIME_TYPES:
                 raise AssetDomainError(
                     f"Formato de arquivo '.{ext}' não suportado. Os formatos aceitos são: .csv, .txt, .xlsx e .pdf."
                 )
+
+            # Validação do tipo MIME do cabeçalho de upload (caso fornecido)
+            if content_type:
+                clean_mime = content_type.split(";")[0].strip().lower()
+                allowed_for_ext = ALLOWED_MIME_TYPES[ext]
+                if clean_mime not in allowed_for_ext:
+                    raise AssetDomainError(
+                        f"Tipo MIME '{content_type}' incompatível com a extensão '.{ext}' do arquivo."
+                    )
 
             if ext == "xlsx":
                 if not content.startswith(b"PK\x03\x04"):
@@ -67,6 +104,8 @@ class TargetBulkImporter:
                     raise AssetDomainError("Assinatura de arquivo PDF inválida ou arquivo corrompido.")
                 return cls._parse_pdf_bytes(content)
             elif ext in ("csv", "txt"):
+                if content.startswith(b"PK\x03\x04") or content.startswith(b"%PDF-"):
+                    raise AssetDomainError("Assinatura de arquivo binário detectada em arquivo de texto. Formato inválido.")
                 return cls._parse_text_bytes(content)
 
         if raw_paste:
@@ -89,8 +128,7 @@ class TargetBulkImporter:
                 raise AssetDomainError("Codificação do arquivo inválida. Utilize UTF-8.") from err
 
         lines: list[str] = []
-        # Utiliza csv.reader para suportar CSVs delimitados por vírgula ou ponto-e-vírgula
-        dialect = "," if ";" not in text[:500] else ";"
+        dialect = ";" if ";" in text[:500] else ","
         reader = csv.reader(io.StringIO(text), delimiter=dialect)
         for row in reader:
             for cell in row:
@@ -101,21 +139,34 @@ class TargetBulkImporter:
 
     @classmethod
     def _parse_xlsx_bytes(cls, content: bytes) -> list[str]:
-        """Parse seguro de planilhas XLSX utilizando zipfile + ElementTree (stdlib)."""
+        """Parse seguro de planilhas XLSX utilizando zipfile + ElementTree com bloqueio de fórmulas e macros."""
         try:
             with zipfile.ZipFile(io.BytesIO(content)) as zf:
+                namelist = zf.namelist()
+
+                # Rejeição imediata de arquivos com macros ou links externos
+                for name in namelist:
+                    name_lower = name.lower()
+                    if "vbaproject.bin" in name_lower or "externallinks/" in name_lower:
+                        raise AssetDomainError("Macros e links externos não são permitidos em planilhas XLSX.")
+
                 # Ler sharedStrings.xml se existir
                 shared_strings: list[str] = []
-                if "xl/sharedStrings.xml" in zf.namelist():
+                if "xl/sharedStrings.xml" in namelist:
                     ss_xml = zf.read("xl/sharedStrings.xml")
-                    tree = etree.fromstring(ss_xml)  # nosec B314
-                    for elem in tree.iter():
-                        if elem.tag.endswith("t") and elem.text:
-                            shared_strings.append(elem.text.strip())
+                    tree = ET.fromstring(ss_xml)
+                    for si in tree.findall("{*}si"):
+                        # Extrai texto de <t> direto ou de run <r><t>
+                        texts: list[str] = []
+                        for t in si.findall(".//{*}t"):
+                            if t.text:
+                                texts.append(t.text)
+                        full_str = "".join(texts).strip()
+                        shared_strings.append(full_str)
 
-                # Ler sheet1.xml
+                # Identificar a primeira planilha de dados
                 sheet_name = None
-                for name in zf.namelist():
+                for name in namelist:
                     if name.startswith("xl/worksheets/sheet") and name.endswith(".xml"):
                         sheet_name = name
                         break
@@ -124,17 +175,50 @@ class TargetBulkImporter:
                     raise AssetDomainError("Planilha XLSX vazia ou sem planilhas válidas.")
 
                 sheet_xml = zf.read(sheet_name)
-                tree = etree.fromstring(sheet_xml)  # nosec B314
+                tree = ET.fromstring(sheet_xml)
 
                 lines: list[str] = []
-                for elem in tree.iter():
-                    if elem.tag.endswith("v") and elem.text:
-                        val = elem.text.strip()
-                        if val.isdigit() and int(val) < len(shared_strings):
-                            lines.append(shared_strings[int(val)])
-                        else:
-                            lines.append(val)
+
+                # Iterar pelas células <c> da planilha
+                for c in tree.findall(".//{*}c"):
+                    # Rejeitar células contendo fórmulas explícitas <f>
+                    if c.find("{*}f") is not None:
+                        raise AssetDomainError("Planilhas contendo fórmulas não são permitidas por razões de segurança.")
+
+                    t_attr = c.attrib.get("t")
+                    v_elem = c.find("{*}v")
+
+                    if t_attr == "s":
+                        # Célula de Shared String
+                        if v_elem is not None and v_elem.text:
+                            v_text = v_elem.text.strip()
+                            if v_text.isdigit():
+                                idx = int(v_text)
+                                if 0 <= idx < len(shared_strings):
+                                    cell_val = shared_strings[idx]
+                                    if cell_val:
+                                        lines.append(cell_val)
+                    elif t_attr == "inlineStr":
+                        # Célula Inline String <is><t>
+                        is_elem = c.find("{*}is")
+                        if is_elem is not None:
+                            t_elem = is_elem.find(".//{*}t")
+                            if t_elem is not None and t_elem.text:
+                                cell_val = t_elem.text.strip()
+                                if cell_val:
+                                    lines.append(cell_val)
+                    else:
+                        # Célula Numérica ou Direta
+                        if v_elem is not None and v_elem.text:
+                            cell_val = v_elem.text.strip()
+                            if cell_val:
+                                lines.append(cell_val)
+
+                    if len(lines) > MAX_IMPORT_RECORDS * 5:
+                        break
+
                 return lines
+
         except zipfile.BadZipFile as err:
             raise AssetDomainError("Arquivo XLSX corrompido ou inválido.") from err
         except AssetDomainError:
@@ -144,19 +228,16 @@ class TargetBulkImporter:
 
     @classmethod
     def _parse_pdf_bytes(cls, content: bytes) -> list[str]:
-        """Extrai texto de PDFs textuais utilizando inspeção de streams PDF nativos."""
+        """Extrai texto de PDFs textuais utilizando inspeção de streams PDF nativos sem OCR."""
         if not content.startswith(b"%PDF-"):
             raise AssetDomainError("Arquivo PDF inválido ou cabeçalho PDF corrompido.")
 
-        # Busca por alvos em streams de texto do PDF (padrões Tj, TJ ou texto simples)
         text_content = ""
-        # Decodificação segura de blocos de texto PDF
         pattern_tj = re.compile(b"\\((.*?)\\)\\s*Tj", re.DOTALL)
         matches = pattern_tj.findall(content)
         if matches:
             text_content = " ".join(m.decode("latin-1", errors="ignore") for m in matches)
         else:
-            # Tenta encontrar blocos textuais genéricos
             text_blocks = re.findall(b"BT(.*?)ET", content, re.DOTALL)
             if text_blocks:
                 text_content = " ".join(b.decode("latin-1", errors="ignore") for b in text_blocks)
@@ -164,7 +245,6 @@ class TargetBulkImporter:
         if not text_content or not text_content.strip():
             raise AssetDomainError("PDF não possui camada de texto extraível. OCR ainda não é suportado.")
 
-        # Extrai linhas ou tokens de texto
         tokens = re.split(r"[\s,\n\r;]+", text_content)
         clean_tokens = [t.strip() for t in tokens if t.strip() and not t.startswith("/")]
         if not clean_tokens:
@@ -196,97 +276,60 @@ class TargetBulkImporter:
             errors: list[str] = []
             warnings: list[str] = []
 
-            # 1. Checagem de Fórmula / Executável
+            # Checagem de Fórmula / Executável
             if EXEC_FORMULA_REGEX.match(original):
-                errors.append(
-                    "Conteúdo rejeitado por conter formato de fórmula ou instrução executável não permitida."
+                errors.append("Injeção de fórmula ou conteúdo executável detectado.")
+
+            # Tenta inferir tipo e validar alvo
+            target_type = "single_ip"
+            if "/" in original and not original.startswith("http"):
+                target_type = "cidr_block"
+            elif "-" in original and not original.startswith("http"):
+                target_type = "ip_range"
+            elif any(c.isalpha() for c in original) and "." in original:
+                target_type = "hostname"
+
+            norm_val: str | None = None
+            if not errors:
+                val_res = IPTargetValidator.validate_and_normalize(
+                    target_type=target_type,
+                    target_value=original,
+                    allow_public_targets=allow_public_targets,
                 )
+                if not val_res.is_valid:
+                    errors.append(val_res.error_message or "Alvo de scanner inválido.")
+                else:
+                    norm_val = val_res.normalized_value
+                    if val_res.security_warnings:
+                        warnings.extend(val_res.security_warnings)
 
-            if errors:
-                invalid_count += 1
-                items.append(
-                    TargetImportPreviewItemDTO(
-                        line=idx,
-                        original_value=original,
-                        normalized_value=original,
-                        target_type="invalid",
-                        valid=False,
-                        errors=errors,
-                        estimated_addresses=0,
-                        warnings=[],
-                    )
-                )
-                continue
+            is_duplicate = False
+            if norm_val:
+                if norm_val in existing_target_values or norm_val in seen_in_file:
+                    is_duplicate = True
+                    duplicate_count += 1
+                    warnings.append(f"Alvo duplicado '{norm_val}' já cadastrado ou presente no mesmo lote.")
+                else:
+                    seen_in_file.add(norm_val)
 
-            # 2. Validação de Domínio via IPTargetValidator
-            res = IPTargetValidator.validate_target(original, allow_public_targets=allow_public_targets)
-            if not res.is_valid:
-                errors.append(res.error_message or "Endereço ou formato de alvo inválido.")
-                invalid_count += 1
-                items.append(
-                    TargetImportPreviewItemDTO(
-                        line=idx,
-                        original_value=original,
-                        normalized_value=original,
-                        target_type="invalid",
-                        valid=False,
-                        errors=errors,
-                        estimated_addresses=0,
-                        warnings=[],
-                    )
-                )
-                continue
-
-            normalized = res.normalized_value or original
-            target_type = res.target_type or "unknown"
-            est_addr = res.estimated_addresses
-
-            # 3. Avisos para faixas grandes
-            if est_addr > 256:
-                warnings.append(
-                    f"Alvo compreende uma faixa ampla com cerca de {est_addr} endereços IP."
-                )
-            if res.security_warnings:
-                warnings.extend(res.security_warnings)
-
-            # 4. Checagem de Duplicidade
-            is_dup = False
-            if normalized in seen_in_file:
-                errors.append("Alvo duplicado dentro do próprio arquivo/lista.")
-                is_dup = True
-            elif normalized in existing_target_values:
-                errors.append("Alvo já cadastrado no grupo de ativos deste tenant.")
-                is_dup = True
-
-            if is_dup:
-                duplicate_count += 1
-                items.append(
-                    TargetImportPreviewItemDTO(
-                        line=idx,
-                        original_value=original,
-                        normalized_value=normalized,
-                        target_type=target_type,
-                        valid=False,
-                        errors=errors,
-                        estimated_addresses=est_addr,
-                        warnings=warnings,
-                    )
-                )
-            else:
-                seen_in_file.add(normalized)
+            is_valid = len(errors) == 0 and not is_duplicate
+            if is_valid:
                 valid_count += 1
-                items.append(
-                    TargetImportPreviewItemDTO(
-                        line=idx,
-                        original_value=original,
-                        normalized_value=normalized,
-                        target_type=target_type,
-                        valid=True,
-                        errors=[],
-                        estimated_addresses=est_addr,
-                        warnings=warnings,
-                    )
+            else:
+                invalid_count += 1
+
+            items.append(
+                TargetImportPreviewItemDTO(
+                    line_number=idx,
+                    original_text=original,
+                    target_type=target_type,
+                    normalized_value=norm_val or original,
+                    valid=is_valid,
+                    duplicate=is_duplicate,
+                    errors=errors,
+                    warnings=warnings,
                 )
+            )
 
         return TargetImportPreviewResponseDTO(
             total_received=len(raw_lines),

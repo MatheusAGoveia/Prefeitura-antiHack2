@@ -27,7 +27,7 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
-revision: str = "0008_create_m3_4_asset_scanner_management"
+revision: str = "0008_m3_4_asset_scanner_mgmt"
 down_revision: str | None = "0007_create_m3_2_incidents"
 branch_labels: Sequence[str] | None = None
 depends_on: Sequence[str] | None = None

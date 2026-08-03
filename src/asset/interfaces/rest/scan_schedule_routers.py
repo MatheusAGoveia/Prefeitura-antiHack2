@@ -19,6 +19,7 @@ from src.asset.application.dto import (
 )
 from src.asset.domain.exceptions import AssetDomainError
 from src.asset.domain.scan_schedules import ScanSchedule
+from src.asset.infrastructure.audit import record_asset_audit_log
 from src.asset.infrastructure.db.repositories import PostgresAssetRepository
 from src.asset.infrastructure.db.scanner_repositories import (
     PostgresMonitoringRepository,
@@ -77,6 +78,15 @@ async def create_scan_schedule(
             enabled=payload.enabled,
         )
         await schedule_repo.save(schedule)
+        await record_asset_audit_log(
+            db,
+            current_user.tenant_id,
+            current_user.user_id,
+            "created",
+            "scan_schedules",
+            schedule.id,
+            {"name": schedule.name, "frequency_type": str(schedule.frequency_type)},
+        )
         await db.commit()
 
         return ScanScheduleResponseDTO(
@@ -358,6 +368,15 @@ async def patch_scan_schedule(
             updated_by=UUID(str(current_user.user_id)),
         )
         await repo.save(s)
+        await record_asset_audit_log(
+            db,
+            current_user.tenant_id,
+            current_user.user_id,
+            "updated",
+            "scan_schedules",
+            s.id,
+            {"name": s.name, "enabled": s.enabled, "frequency_type": str(s.frequency_type)},
+        )
         await db.commit()
     except AssetDomainError as e:
         await db.rollback()
@@ -398,4 +417,13 @@ async def delete_scan_schedule(
     deleted = await repo.delete_schedule(schedule_id, current_user.tenant_id)
     if not deleted:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agendamento não encontrado.")
+    await record_asset_audit_log(
+        db,
+        current_user.tenant_id,
+        current_user.user_id,
+        "deleted",
+        "scan_schedules",
+        schedule_id,
+        {},
+    )
     await db.commit()

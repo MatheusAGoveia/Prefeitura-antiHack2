@@ -17,6 +17,7 @@ from src.asset.application.dto import (
 )
 from src.asset.domain.exceptions import AssetDomainError
 from src.asset.domain.scanner_profiles import ScannerProfile
+from src.asset.infrastructure.audit import record_asset_audit_log
 from src.asset.infrastructure.db.scanner_repositories import PostgresScannerProfileRepository
 from src.core.infrastructure.db.unit_of_work import get_db_session
 from src.core.infrastructure.security.kernel import AuthenticatedUser
@@ -55,6 +56,15 @@ async def create_scanner_profile(
             rate_limit_per_second=payload.rate_limit_per_second,
         )
         await repo.save(profile)
+        await record_asset_audit_log(
+            db,
+            current_user.tenant_id,
+            current_user.user_id,
+            "created",
+            "scanner_profiles",
+            profile.id,
+            {"name": profile.name, "scanner_type": str(profile.scanner_type)},
+        )
         await db.commit()
 
         return ScannerProfileResponseDTO(
@@ -193,6 +203,15 @@ async def patch_scanner_profile(
             active=payload.active,
         )
         await repo.save(profile)
+        await record_asset_audit_log(
+            db,
+            current_user.tenant_id,
+            current_user.user_id,
+            "updated",
+            "scanner_profiles",
+            profile.id,
+            {"name": profile.name, "active": profile.active},
+        )
         await db.commit()
     except AssetDomainError as e:
         await db.rollback()
@@ -232,4 +251,13 @@ async def delete_scanner_profile(
     deleted = await repo.delete_profile(profile_id, current_user.tenant_id)
     if not deleted:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Perfil de scanner não encontrado.")
+    await record_asset_audit_log(
+        db,
+        current_user.tenant_id,
+        current_user.user_id,
+        "deleted",
+        "scanner_profiles",
+        profile_id,
+        {},
+    )
     await db.commit()

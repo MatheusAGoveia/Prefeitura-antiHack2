@@ -216,7 +216,7 @@ class VulnerabilityFinding:
 
         if new_status == VulnerabilityStatus.RESOLVED:
             self.resolved_at = now
-        elif old_status == VulnerabilityStatus.RESOLVED and new_status != VulnerabilityStatus.RESOLVED:  # type: ignore[comparison-overlap]
+        elif str(old_status) == str(VulnerabilityStatus.RESOLVED) and str(new_status) != str(VulnerabilityStatus.RESOLVED):
             self.resolved_at = None
 
         return VulnerabilityStatusHistory(

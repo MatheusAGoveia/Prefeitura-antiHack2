@@ -451,11 +451,12 @@ class UpdateScanTargetDTO(BaseModel):
 
 # --- DTOs de Importação em Massa de Alvos ---
 class TargetImportPreviewItemDTO(BaseModel):
-    line: int
-    original_value: str
+    line_number: int
+    original_text: str
     normalized_value: str
     target_type: str
     valid: bool
+    duplicate: bool = False
     errors: list[str] = Field(default_factory=list)
     estimated_addresses: int = 1
     warnings: list[str] = Field(default_factory=list)
