@@ -10,6 +10,8 @@ from uuid import UUID, uuid4
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from datetime import datetime, timezone
+
 from src.asset.application.dto import (
     MonitoringIntegrationCreateDTO,
     MonitoringIntegrationPatchDTO,
@@ -21,6 +23,7 @@ from src.asset.application.dto import (
 from src.asset.domain.exceptions import AssetDomainError
 from src.asset.domain.monitoring import MonitoringIntegration
 from src.asset.infrastructure.adapters.fake_monitoring_adapter import FakeMonitoringGateway
+from src.asset.infrastructure.db.models import MonitoringSyncExecutionModel
 from src.asset.infrastructure.db.scanner_repositories import PostgresMonitoringRepository
 from src.core.infrastructure.db.unit_of_work import get_db_session
 from src.core.infrastructure.security.kernel import AuthenticatedUser
@@ -281,7 +284,7 @@ async def trigger_monitoring_sync(
     current_user: AuthenticatedUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db_session),
 ) -> dict[str, Any]:
-    """Inicia a sincronização assíncrona de ativos com o Zabbix retornando HTTP 202 Accepted."""
+    """Inicia a sincronização assíncrona de ativos com o Zabbix retornando HTTP 202 Accepted e a execução persistida."""
     if not RBACManager.has_permission(current_user, "monitoring_integrations", "SYNC"):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permissão negada.")
 
@@ -290,11 +293,42 @@ async def trigger_monitoring_sync(
     if not m:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Integração de monitoramento não encontrada.")
 
+    if not m.enabled:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Integração de monitoramento está desabilitada.",
+        )
+
+    now = datetime.now(timezone.utc)
+    sync_exec = MonitoringSyncExecutionModel(
+        id=uuid4(),
+        tenant_id=current_user.tenant_id,
+        integration_id=integration_id,
+        status="queued",
+        started_at=now,
+        assets_processed=0,
+        assets_created=0,
+        assets_updated=0,
+        errors_count=0,
+        error_summary=None,
+    )
+    await repo.save_sync_execution(sync_exec)
+    await db.commit()
+
     GOVSEC_MONITORING_SYNC_TOTAL.labels(provider=str(m.provider), status="queued").inc()
 
+    logger.info(
+        "Sincronização Zabbix solicitada e persistida: tenant_id=%s integration_id=%s sync_execution_id=%s",
+        current_user.tenant_id,
+        integration_id,
+        sync_exec.id,
+    )
+
     return {
-        "sync_execution_id": str(uuid4()),
+        "sync_execution_id": str(sync_exec.id),
+        "integration_id": str(integration_id),
         "status": "queued",
+        "created_at": sync_exec.started_at.isoformat(),
         "provider": m.provider,
-        "message": "Sincronização assíncrona com Zabbix enfileirada.",
+        "message": "Sincronização assíncrona com Zabbix enfileirada e persistida.",
     }

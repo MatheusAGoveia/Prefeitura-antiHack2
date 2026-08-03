@@ -177,27 +177,26 @@ async def patch_scanner_profile(
     if not profile:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Perfil de scanner não encontrado.")
 
-    if payload.name is not None:
-        profile.name = payload.name
-    if payload.description is not None:
-        profile.description = payload.description
-    if payload.scanner_type is not None:
-        profile.scanner_type = payload.scanner_type
-    if payload.discovery_enabled is not None:
-        profile.discovery_enabled = payload.discovery_enabled
-    if payload.service_detection_enabled is not None:
-        profile.service_detection_enabled = payload.service_detection_enabled
-    if payload.vulnerability_detection_enabled is not None:
-        profile.vulnerability_detection_enabled = payload.vulnerability_detection_enabled
-    if payload.port_strategy is not None:
-        profile.port_strategy = payload.port_strategy
-    if payload.custom_ports is not None:
-        profile.custom_ports = payload.custom_ports
-    if payload.active is not None:
-        profile.active = payload.active
-
-    await repo.save(profile)
-    await db.commit()
+    try:
+        profile.update(
+            name=payload.name,
+            scanner_type=payload.scanner_type,
+            description=payload.description,
+            discovery_enabled=payload.discovery_enabled,
+            service_detection_enabled=payload.service_detection_enabled,
+            vulnerability_detection_enabled=payload.vulnerability_detection_enabled,
+            port_strategy=payload.port_strategy,
+            custom_ports=payload.custom_ports,
+            timeout_seconds=payload.timeout_seconds,
+            max_parallelism=payload.max_parallelism,
+            rate_limit_per_second=payload.rate_limit_per_second,
+            active=payload.active,
+        )
+        await repo.save(profile)
+        await db.commit()
+    except AssetDomainError as e:
+        await db.rollback()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
 
     return ScannerProfileResponseDTO(
         id=profile.id,

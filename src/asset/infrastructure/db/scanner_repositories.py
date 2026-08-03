@@ -791,6 +791,9 @@ class PostgresMonitoringRepository:
         rows = list(res.scalars().all())
         return rows, total
 
+    async def save_sync_execution(self, sync_exec: MonitoringSyncExecutionModel) -> None:
+        self._session.add(sync_exec)
+
     async def delete_integration(self, integration_id: UUID, tenant_id: UUID) -> bool:
         stmt = select(MonitoringIntegrationModel).where(
             MonitoringIntegrationModel.id == integration_id,

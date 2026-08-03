@@ -21,6 +21,8 @@ from src.asset.infrastructure.db.models import (
     AssetGroupModel,
     AssetServiceModel,
     DiscoveredAssetModel,
+    ScanExecutionTargetModel,
+    ScanScheduleTargetModel,
     ScanTargetModel,
 )
 
@@ -248,6 +250,32 @@ class PostgresAssetRepository:
         ]
         return targets, total
 
+    async def get_target_by_value(self, tenant_id: UUID, target_value: str) -> ScanTarget | None:
+        stmt = select(ScanTargetModel).where(
+            ScanTargetModel.tenant_id == tenant_id,
+            ScanTargetModel.target_value == target_value,
+        )
+        res = await self._session.execute(stmt)
+        m = res.scalar_one_or_none()
+        if not m:
+            return None
+        return ScanTarget(
+            id=m.id,
+            tenant_id=m.tenant_id,
+            asset_group_id=m.asset_group_id,
+            name=m.name,
+            target_type=TargetType(m.target_type),
+            target_value=m.target_value,
+            description=m.description,
+            enabled=m.enabled,
+            authorization_reference=m.authorization_reference,
+            last_discovered_at=m.last_discovered_at,
+            created_at=m.created_at,
+            updated_at=m.updated_at,
+            created_by=m.created_by,
+            updated_by=m.updated_by,
+        )
+
     async def get_existing_target_values(self, tenant_id: UUID, asset_group_id: UUID) -> set[str]:
         stmt = select(ScanTargetModel.target_value).where(
             ScanTargetModel.tenant_id == tenant_id,
@@ -265,6 +293,31 @@ class PostgresAssetRepository:
         target_model = res.scalar_one_or_none()
         if not target_model:
             return False
+
+        # Verificar dependências
+        sched_stmt = select(func.count()).select_from(ScanScheduleTargetModel).where(
+            ScanScheduleTargetModel.target_id == target_id
+        )
+        sched_count = (await self._session.execute(sched_stmt)).scalar_one() or 0
+
+        exec_stmt = select(func.count()).select_from(ScanExecutionTargetModel).where(
+            ScanExecutionTargetModel.target_id == target_id
+        )
+        exec_count = (await self._session.execute(exec_stmt)).scalar_one() or 0
+
+        asset_stmt = select(func.count()).select_from(DiscoveredAssetModel).where(
+            DiscoveredAssetModel.tenant_id == tenant_id,
+            (DiscoveredAssetModel.scan_target_id == target_id)
+            | (DiscoveredAssetModel.ip_address == target_model.target_value)
+            | (DiscoveredAssetModel.hostname == target_model.target_value),
+        )
+        asset_count = (await self._session.execute(asset_stmt)).scalar_one() or 0
+
+        if sched_count > 0 or exec_count > 0 or asset_count > 0:
+            # Inativar se houver históricos ou associações ativas
+            target_model.enabled = False
+            return True
+
         await self._session.delete(target_model)
         return True
 

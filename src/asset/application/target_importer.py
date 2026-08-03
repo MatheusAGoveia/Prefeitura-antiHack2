@@ -46,22 +46,28 @@ class TargetBulkImporter:
                     f"O tamanho do arquivo excede o limite máximo de 5MB ({len(content)} bytes)."
                 )
 
-            ext = (filename or "").split(".")[-1].lower()
+            ext = (filename or "").split(".")[-1].lower() if filename and "." in filename else ""
 
-            if ext in ("csv", "txt"):
-                return cls._parse_text_bytes(content)
-            elif ext in ("xlsx", "xls"):
+            if ext == "xls":
+                raise AssetDomainError(
+                    "O formato de arquivo '.xls' (legado) não é suportado. Por favor utilize '.xlsx', '.csv' ou '.txt'."
+                )
+
+            if ext not in ("csv", "txt", "xlsx", "pdf"):
+                raise AssetDomainError(
+                    f"Formato de arquivo '.{ext}' não suportado. Os formatos aceitos são: .csv, .txt, .xlsx e .pdf."
+                )
+
+            if ext == "xlsx":
+                if not content.startswith(b"PK\x03\x04"):
+                    raise AssetDomainError("Assinatura de arquivo XLSX inválida ou arquivo corrompido.")
                 return cls._parse_xlsx_bytes(content)
             elif ext == "pdf":
+                if not content.startswith(b"%PDF-"):
+                    raise AssetDomainError("Assinatura de arquivo PDF inválida ou arquivo corrompido.")
                 return cls._parse_pdf_bytes(content)
-            else:
-                # Tenta auto-detectar texto por UTF-8
-                try:
-                    return cls._parse_text_bytes(content)
-                except Exception as err:
-                    raise AssetDomainError(
-                        f"Formato de arquivo '.{ext}' não suportado ou inválido."
-                    ) from err
+            elif ext in ("csv", "txt"):
+                return cls._parse_text_bytes(content)
 
         if raw_paste:
             return [line.strip() for line in raw_paste.splitlines() if line.strip()]

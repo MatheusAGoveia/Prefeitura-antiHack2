@@ -19,6 +19,7 @@ from src.asset.application.dto import (
     TargetImportResultDTO,
     TargetValidateRequestDTO,
     TargetValidationResponseDTO,
+    UpdateScanTargetDTO,
 )
 from src.asset.domain.exceptions import AssetDomainError, InvalidTargetError
 from src.asset.domain.scan_targets import IPTargetValidator, ScanTarget
@@ -197,6 +198,53 @@ async def get_scan_target(
         updated_by=target.updated_by,
     )
 
+
+@router.patch("/{target_id}", response_model=ScanTargetResponseDTO)
+async def patch_scan_target(
+    target_id: UUID,
+    payload: UpdateScanTargetDTO,
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
+) -> ScanTargetResponseDTO:
+    if not RBACManager.has_permission(current_user, "scan_targets", "PATCH") and not RBACManager.has_permission(current_user, "scan_targets", "POST"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permissão negada.")
+
+    repo = PostgresAssetRepository(db)
+    target = await repo.get_target_by_id(target_id, current_user.tenant_id)
+    if not target:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Alvo de scanner não encontrado.")
+
+    if payload.asset_group_id is not None:
+        group = await repo.get_group_by_id(payload.asset_group_id, current_user.tenant_id)
+        if not group:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Grupo de ativos não encontrado.")
+
+    if payload.target_value is not None:
+        norm_val = payload.target_value.strip()
+        existing = await repo.get_target_by_value(current_user.tenant_id, norm_val)
+        if existing and existing.id != target.id:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Já existe um alvo cadastrado para '{norm_val}' neste tenant.",
+            )
+
+    try:
+        target.update(
+            name=payload.name,
+            target_type=payload.target_type,
+            target_value=payload.target_value,
+            description=payload.description,
+            enabled=payload.enabled,
+            authorization_reference=payload.authorization_reference,
+            asset_group_id=payload.asset_group_id,
+            updated_by=UUID(str(current_user.user_id)),
+            allow_public_targets=payload.allow_public_targets,
+        )
+        await repo.save_target(target)
+        await db.commit()
+    except AssetDomainError as e:
+        await db.rollback()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
 
     return ScanTargetResponseDTO(
         id=target.id,

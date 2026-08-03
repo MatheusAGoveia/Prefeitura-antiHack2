@@ -188,3 +188,60 @@ class ScanSchedule:
             self.next_run_at = None
 
         return self.next_run_at
+
+    def update(
+        self,
+        name: str | None = None,
+        description: str | None = None,
+        scanner_profile_id: UUID | None = None,
+        target_ids: list[UUID] | None = None,
+        frequency_type: FrequencyType | None = None,
+        cron_expression: str | None = None,
+        tz_name: str | None = None,
+        start_at: datetime | None = None,
+        overlap_policy: OverlapPolicy | None = None,
+        enabled: bool | None = None,
+        updated_by: UUID | None = None,
+    ) -> None:
+        if name is not None:
+            if not name or not name.strip():
+                raise AssetDomainError("O nome do agendamento é obrigatório.")
+            self.name = name.strip()
+
+        if description is not None:
+            self.description = description
+
+        if scanner_profile_id is not None:
+            self.scanner_profile_id = scanner_profile_id
+
+        if target_ids is not None:
+            if not target_ids:
+                raise AssetDomainError("Um agendamento deve possuir pelo menos um alvo associado.")
+            self.target_ids = list(set(target_ids))
+
+        if frequency_type is not None:
+            self.frequency_type = frequency_type
+
+        if cron_expression is not None:
+            self.cron_expression = cron_expression.strip() if cron_expression else None
+
+        if tz_name is not None:
+            if not tz_name or not tz_name.strip():
+                raise AssetDomainError("O fuso horário é obrigatório.")
+            self.timezone = tz_name
+
+        if start_at is not None:
+            self.start_at = start_at
+
+        if overlap_policy is not None:
+            self.overlap_policy = overlap_policy
+
+        if enabled is not None:
+            self.enabled = enabled
+
+        self.updated_at = datetime.now(timezone.utc)
+        if updated_by is not None:
+            self.updated_by = updated_by
+
+        self.__post_init__()
+        self.calculate_next_run()

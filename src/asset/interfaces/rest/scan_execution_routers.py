@@ -45,7 +45,7 @@ async def dispatch_scan_execution(
     db: AsyncSession = Depends(get_db_session),
 ) -> ExecutionDispatchResponseDTO:
     """Dispara manualmente a execução de um scanner retornando HTTP 202 Accepted."""
-    if not RBACManager.has_permission(current_user, "scan_executions", "POST"):
+    if not RBACManager.has_permission(current_user, "scan_executions", "EXECUTE"):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permissão negada.")
 
     service = AssetManagementService(
@@ -217,7 +217,7 @@ async def retry_scan_execution(
     current_user: AuthenticatedUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db_session),
 ) -> ExecutionDispatchResponseDTO:
-    if not RBACManager.has_permission(current_user, "scan_executions", "RETRY"):
+    if not RBACManager.has_permission(current_user, "scan_executions", "EXECUTE"):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permissão negada.")
 
     repo = PostgresScanExecutionRepository(db)

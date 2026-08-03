@@ -189,6 +189,7 @@ class ScannerProfileCreateDTO(BaseModel):
 class ScannerProfilePatchDTO(BaseModel):
     name: str | None = None
     description: str | None = None
+    scanner_type: ScannerType | None = None
     discovery_enabled: bool | None = None
     service_detection_enabled: bool | None = None
     vulnerability_detection_enabled: bool | None = None
@@ -198,6 +199,9 @@ class ScannerProfilePatchDTO(BaseModel):
     max_parallelism: int | None = Field(default=None, ge=1, le=100)
     rate_limit_per_second: int | None = Field(default=None, ge=1, le=1000)
     active: bool | None = None
+
+
+UpdateScannerProfileDTO = ScannerProfilePatchDTO
 
 
 class ScannerProfileResponseDTO(BaseModel):
@@ -415,8 +419,9 @@ class UpdateScannerProfileDTO(BaseModel):
     vulnerability_detection_enabled: bool | None = None
     port_strategy: PortStrategy | None = None
     custom_ports: list[int] | None = None
-    rate_limit_packets_per_sec: int | None = Field(default=None, ge=1, le=50000)
-    max_concurrency: int | None = Field(default=None, ge=1, le=100)
+    timeout_seconds: int | None = Field(default=None, ge=1, le=3600)
+    max_parallelism: int | None = Field(default=None, ge=1, le=100)
+    rate_limit_per_second: int | None = Field(default=None, ge=1, le=1000)
     active: bool | None = None
 
 
@@ -435,6 +440,7 @@ class UpdateScanScheduleDTO(BaseModel):
 
 class UpdateScanTargetDTO(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=128)
+    asset_group_id: UUID | None = None
     target_type: TargetType | None = None
     target_value: str | None = Field(default=None, min_length=1, max_length=256)
     description: str | None = None

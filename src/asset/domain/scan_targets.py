@@ -290,3 +290,49 @@ class ScanTarget:
             created_by=created_by,
             updated_by=None,
         )
+
+    def update(
+        self,
+        name: str | None = None,
+        target_type: TargetType | None = None,
+        target_value: str | None = None,
+        description: str | None = None,
+        enabled: bool | None = None,
+        authorization_reference: str | None = None,
+        asset_group_id: UUID | None = None,
+        updated_by: UUID | None = None,
+        allow_public_targets: bool = False,
+    ) -> None:
+        if name is not None:
+            if not name or not name.strip():
+                raise AssetDomainError("O nome do alvo de scanner é obrigatório.")
+            self.name = name.strip()
+
+        if description is not None:
+            self.description = description
+
+        if enabled is not None:
+            self.enabled = enabled
+
+        if authorization_reference is not None:
+            self.authorization_reference = authorization_reference
+
+        if asset_group_id is not None:
+            self.asset_group_id = asset_group_id
+
+        if target_value is not None or target_type is not None:
+            new_type = target_type or self.target_type
+            new_val = target_value if target_value is not None else self.target_value
+            res = IPTargetValidator.validate_and_normalize(
+                target_type=new_type,
+                target_value=new_val,
+                allow_public_targets=allow_public_targets,
+            )
+            if not res.is_valid:
+                raise InvalidTargetError(res.error_message or "Alvo de scanner inválido.")
+            self.target_type = res.target_type
+            self.target_value = res.normalized_value
+
+        self.updated_at = datetime.now(timezone.utc)
+        if updated_by is not None:
+            self.updated_by = updated_by

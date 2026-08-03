@@ -113,3 +113,59 @@ class ScannerProfile:
             updated_at=now,
             created_by=created_by,
         )
+
+    def update(
+        self,
+        name: str | None = None,
+        scanner_type: ScannerType | None = None,
+        description: str | None = None,
+        discovery_enabled: bool | None = None,
+        service_detection_enabled: bool | None = None,
+        vulnerability_detection_enabled: bool | None = None,
+        port_strategy: PortStrategy | None = None,
+        custom_ports: list[int] | None = None,
+        timeout_seconds: int | None = None,
+        max_parallelism: int | None = None,
+        rate_limit_per_second: int | None = None,
+        active: bool | None = None,
+    ) -> None:
+        if name is not None:
+            if not name or not name.strip():
+                raise AssetDomainError("O nome do perfil de scanner é obrigatório.")
+            self.name = name.strip()
+
+        if description is not None:
+            self.description = description
+
+        if scanner_type is not None:
+            self.scanner_type = scanner_type
+
+        if discovery_enabled is not None:
+            self.discovery_enabled = discovery_enabled
+
+        if service_detection_enabled is not None:
+            self.service_detection_enabled = service_detection_enabled
+
+        if vulnerability_detection_enabled is not None:
+            self.vulnerability_detection_enabled = vulnerability_detection_enabled
+
+        if port_strategy is not None:
+            self.port_strategy = port_strategy
+
+        if custom_ports is not None:
+            self.custom_ports = custom_ports
+
+        if timeout_seconds is not None:
+            self.timeout_seconds = timeout_seconds
+
+        if max_parallelism is not None:
+            self.max_parallelism = max_parallelism
+
+        if rate_limit_per_second is not None:
+            self.rate_limit_per_second = rate_limit_per_second
+
+        if active is not None:
+            self.active = active
+
+        self.updated_at = datetime.now(timezone.utc)
+        self.__post_init__()

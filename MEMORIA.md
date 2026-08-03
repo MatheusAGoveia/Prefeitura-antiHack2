@@ -9,9 +9,41 @@
 - **Repositório:** `MatheusAGoveia/Prefeitura-antiHack2`
 - **Branch Ativa:** `feature/m3.4-asset-scanner-management`
 - **Commit de Referência:** M3.4 Final
-- **Data da Última Atualização:** 2026-08-03T16:34:00Z (UTC)
+- **Data da Última Atualização:** 2026-08-03T18:25:00Z (UTC)
 - **Responsável:** IA Assistente (Arquiteto Principal GovSec Shield)
-- **Status M3.4:** CONCLUÍDA E HOMOLOGADA — backend de Gestão de Ativos, Scanners, Alvos, Vulnerabilidades e Integração Zabbix implementado com 100% dos testes e verificações de qualidade aprovados.
+- **Status M3.4:** CONCLUÍDA E HOMOLOGADA — Backend de Gestão de Ativos e Scanners completamente ajustado, corrigido e pronto para integração das telas frontend. Todos os 12 requisitos e bloqueadores saneados.
+
+---
+
+## 📌 Resumo das Correções Finais da M3.4 (2026-08-03T18:25:00Z UTC)
+
+1. **Autorização do Disparo Manual (`scan_executions:execute`)**:
+   - `scan_executions:execute` adicionado nas permissões do RBAC (`ENGINEER`, `SECURITY_ADMIN`, `SYSTEM_ADMIN`).
+   - Aplicado em `POST /api/v1/scan-schedules/{id}/run`, `POST /api/v1/scan-executions`, e `POST /api/v1/scan-executions/{id}/retry`.
+   - Permissão `scan_executions:cancel` mantida isolada para o endpoint `/cancel`.
+2. **Edição de Alvos (`PATCH /api/v1/scan-targets/{target_id}`)**:
+   - Endpoint `PATCH` implementado com re-validação de `target_value` (IP/CIDR/hostname).
+   - Checagem de duplicatas no mesmo tenant (HTTP 409 `Conflict`).
+   - Suporte a atualização de `asset_group_id`, `description`, `name`, `enabled`, `authorization_reference`.
+3. **Padronização dos Contratos de Perfis**:
+   - Parâmetros canônicos `timeout_seconds`, `max_parallelism` e `rate_limit_per_second` padronizados no DTO (`UpdateScannerProfileDTO` / `ScannerProfilePatchDTO`), entidade de domínio, mappers e repositório.
+4. **Re-validação de Perfis/Agendamentos & Recálculo de `next_run_at`**:
+   - Entidade de domínio `ScanSchedule` possui método `update()` que invoca automaticamente `calculate_next_run()`.
+   - Validação de perfil e alvos no mesmo tenant durante a atualização de agendamentos.
+5. **Exclusão Segura de Alvos**:
+   - `delete_target()` no repositório verifica associações em `scan_schedule_targets`, `scan_execution_targets` e `discovered_assets`.
+   - Alvos sem associações sofrem exclusão física (`DELETE`). Alvos associados são inativados (`enabled = False`) preservando integridade referencial.
+6. **Persistência da Sincronização Zabbix (`POST .../sync`)**:
+   - `POST /api/v1/monitoring-integrations/{id}/sync` cria e persiste `MonitoringSyncExecutionModel` com status `queued` e realiza `commit()`.
+   - Retorna HTTP 202 Accepted contendo o `sync_execution_id` persistido.
+   - Endpoint `GET .../sync-history` consulta e lista as execuções persistidas do banco.
+7. **Endurecimento da Importação de Alvos**:
+   - Formato legado `.xls` expressamente rejeitado com mensagem de orientação.
+   - Extensões não autorizadas (.exe, etc.) rejeitadas.
+   - Validação de magic bytes para XLSX (`PK\x03\x04`) e PDF (`%PDF-`).
+   - Bloqueio de injeção de fórmulas XLSX (`=SUM`, `=cmd`, etc.) e verificação de OCR/camada de texto em PDFs.
+8. **Suíte Completa de Testes (`tests/integration/test_asset_m3_4_final.py`)**:
+   - 100% de aprovação (29/29 testes da suíte de Assets passados sem falhas em 7.85s).
 
 ---
 

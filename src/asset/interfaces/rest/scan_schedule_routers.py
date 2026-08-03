@@ -276,7 +276,7 @@ async def trigger_schedule_run(
     db: AsyncSession = Depends(get_db_session),
 ) -> ExecutionDispatchResponseDTO:
     """Dispara a execução imediata de um agendamento retornando HTTP 202 Accepted."""
-    if not RBACManager.has_permission(current_user, "scan_executions", "CANCEL"):  # ou execute
+    if not RBACManager.has_permission(current_user, "scan_executions", "EXECUTE"):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permissão negada.")
 
     schedule_repo = PostgresScanScheduleRepository(db)
@@ -324,31 +324,44 @@ async def patch_scan_schedule(
     if not s:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agendamento não encontrado.")
 
-    if payload.name is not None:
-        s.name = payload.name
-    if payload.description is not None:
-        s.description = payload.description
+    profile_repo = PostgresScannerProfileRepository(db)
     if payload.scanner_profile_id is not None:
-        s.scanner_profile_id = payload.scanner_profile_id
+        prof = await profile_repo.get_by_id(payload.scanner_profile_id, current_user.tenant_id)
+        if not prof or not prof.active:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Perfil de scanner inexistente ou inativo.",
+            )
+
     if payload.target_ids is not None:
-        s.target_ids = payload.target_ids
-    if payload.frequency_type is not None:
-        s.frequency_type = payload.frequency_type
-    if payload.cron_expression is not None:
-        s.cron_expression = payload.cron_expression
-    if payload.timezone is not None:
-        s.timezone = payload.timezone
-    if payload.start_at is not None:
-        s.start_at = payload.start_at
-    if payload.overlap_policy is not None:
-        s.overlap_policy = payload.overlap_policy
-    if payload.active is not None:
-        s.enabled = payload.active
+        asset_repo = PostgresAssetRepository(db)
+        for tid in payload.target_ids:
+            t = await asset_repo.get_target_by_id(tid, current_user.tenant_id)
+            if not t:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Alvo de scanner '{tid}' não encontrado ou pertence a outro tenant.",
+                )
 
-    s.updated_by = UUID(str(current_user.user_id))
-
-    await repo.save(s)
-    await db.commit()
+    try:
+        s.update(
+            name=payload.name,
+            description=payload.description,
+            scanner_profile_id=payload.scanner_profile_id,
+            target_ids=payload.target_ids,
+            frequency_type=payload.frequency_type,
+            cron_expression=payload.cron_expression,
+            tz_name=payload.timezone,
+            start_at=payload.start_at,
+            overlap_policy=payload.overlap_policy,
+            enabled=payload.active,
+            updated_by=UUID(str(current_user.user_id)),
+        )
+        await repo.save(s)
+        await db.commit()
+    except AssetDomainError as e:
+        await db.rollback()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
 
     return ScanScheduleResponseDTO(
         id=s.id,
