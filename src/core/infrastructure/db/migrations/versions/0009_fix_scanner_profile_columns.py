@@ -96,6 +96,16 @@ def upgrade() -> None:
         elif "enabled" not in sched_columns:
             op.add_column("scan_schedules", sa.Column("enabled", sa.Boolean(), nullable=False, server_default=sa.text("true")))
 
+    # 8. Ajustar colunas em scan_executions
+    if inspector.has_table("scan_executions"):
+        exec_columns = [c["name"] for c in inspector.get_columns("scan_executions")]
+        if "services_discovered" not in exec_columns:
+            op.add_column("scan_executions", sa.Column("services_discovered", sa.Integer(), nullable=False, server_default="0"))
+        if "vulnerabilities_discovered" not in exec_columns:
+            op.add_column("scan_executions", sa.Column("vulnerabilities_discovered", sa.Integer(), nullable=False, server_default="0"))
+        if "error_summary" not in exec_columns:
+            op.add_column("scan_executions", sa.Column("error_summary", sa.Text(), nullable=True))
+
 
 def downgrade() -> None:
     bind = op.get_bind()
