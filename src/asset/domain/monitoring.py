@@ -90,6 +90,34 @@ class MonitoringIntegration:
             updated_at=now,
         )
 
+    def update_configuration(
+        self,
+        name: str | None = None,
+        base_url: str | None = None,
+        credential_reference: str | None = None,
+        enabled: bool | None = None,
+        verify_tls: bool | None = None,
+    ) -> None:
+        if name is not None:
+            if not name.strip():
+                raise AssetDomainError("O nome da integração de monitoramento não pode ser vazio.")
+            self.name = name.strip()
+        if base_url is not None:
+            if not (base_url.startswith("http://") or base_url.startswith("https://")):
+                raise AssetDomainError("A URL base da integração deve iniciar com 'http://' ou 'https://'.")
+            self.base_url = base_url.strip()
+        if credential_reference is not None:
+            if not credential_reference.strip():
+                raise AssetDomainError("A referência de credencial não pode ser vazia.")
+            self.credential_reference = credential_reference.strip()
+        if enabled is not None:
+            self.enabled = enabled
+        if verify_tls is not None:
+            self.verify_tls = verify_tls
+        self.updated_at = datetime.now(timezone.utc)
+
+    update = update_configuration
+
 
 @dataclass
 class MonitoringSyncExecution:
