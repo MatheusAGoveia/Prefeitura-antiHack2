@@ -138,8 +138,64 @@ GOVSEC_ALERT_DELIVERY_FAILURES_TOTAL = Counter(
 
 GOVSEC_ALERTS_ACKNOWLEDGED_TOTAL = Counter(
     "govsec_alerts_acknowledged_total",
-    "Total de alertas com acknowledgement humano auditado",
-    ["tenant"],
+    "Total de alertas reconhecidos por analistas",
+    ["acknowledged_by", "tenant"],
+    registry=REGISTRY,
+)
+
+# --- Métricas M3.4: Gestão de Ativos e Scanners Autorizados ---
+GOVSEC_SCAN_EXECUTIONS_TOTAL = Counter(
+    "govsec_scan_executions_total",
+    "Total de execuções de scanner de rede iniciadas",
+    ["status", "trigger_type"],
+    registry=REGISTRY,
+)
+
+GOVSEC_SCAN_EXECUTION_DURATION_SECONDS = Histogram(
+    "govsec_scan_execution_duration_seconds",
+    "Duração total da execução de varredura em segundos",
+    buckets=(1.0, 5.0, 15.0, 30.0, 60.0, 120.0, 300.0, 600.0),
+    registry=REGISTRY,
+)
+
+GOVSEC_SCAN_TARGETS_TOTAL = Counter(
+    "govsec_scan_targets_total",
+    "Total de alvos de scanner cadastrados na plataforma",
+    ["type", "enabled"],
+    registry=REGISTRY,
+)
+
+GOVSEC_DISCOVERED_ASSETS_TOTAL = Counter(
+    "govsec_discovered_assets_total",
+    "Total de ativos descobertos na rede",
+    ["status"],
+    registry=REGISTRY,
+)
+
+GOVSEC_DISCOVERED_SERVICES_TOTAL = Counter(
+    "govsec_discovered_services_total",
+    "Total de serviços/portas identificados",
+    ["protocol", "state"],
+    registry=REGISTRY,
+)
+
+GOVSEC_VULNERABILITY_FINDINGS_TOTAL = Counter(
+    "govsec_vulnerability_findings_total",
+    "Total de vulnerabilidades encontradas",
+    ["severity", "status"],
+    registry=REGISTRY,
+)
+
+GOVSEC_SCAN_QUEUE_DEPTH = Gauge(
+    "govsec_scan_queue_depth",
+    "Profundidade atual da fila de execuções de scanner pendentes",
+    registry=REGISTRY,
+)
+
+GOVSEC_MONITORING_SYNC_TOTAL = Counter(
+    "govsec_monitoring_sync_total",
+    "Total de sincronizações com plataformas de monitoramento (Zabbix)",
+    ["provider", "status"],
     registry=REGISTRY,
 )
 

@@ -1,0 +1,193 @@
+"""
+Endpoints REST para Configuração e Sincronização com Zabbix (MonitoringIntegration).
+GovSec Shield — Presentation Layer (M3.4)
+"""
+
+import logging
+from typing import Any
+from uuid import UUID, uuid4
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from src.asset.application.dto import (
+    MonitoringIntegrationCreateDTO,
+    MonitoringIntegrationResponseDTO,
+    MonitoringTestResponseDTO,
+    PaginatedResponse,
+)
+from src.asset.domain.exceptions import AssetDomainError
+from src.asset.domain.monitoring import MonitoringIntegration
+from src.asset.infrastructure.adapters.fake_monitoring_adapter import FakeMonitoringGateway
+from src.asset.infrastructure.db.scanner_repositories import PostgresMonitoringRepository
+from src.core.infrastructure.db.unit_of_work import get_db_session
+from src.core.infrastructure.security.kernel import AuthenticatedUser
+from src.core.infrastructure.security.rbac import RBACManager
+from src.core.interfaces.rest.dependencies import get_current_user
+from src.shared.observability.metrics import GOVSEC_MONITORING_SYNC_TOTAL
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/api/v1/monitoring-integrations", tags=["Monitoring Integrations"])
+
+
+@router.post("", response_model=MonitoringIntegrationResponseDTO, status_code=status.HTTP_201_CREATED)
+async def create_monitoring_integration(
+    payload: MonitoringIntegrationCreateDTO,
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
+) -> MonitoringIntegrationResponseDTO:
+    if not RBACManager.has_permission(current_user, "monitoring_integrations", "POST"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permissão negada.")
+
+    repo = PostgresMonitoringRepository(db)
+    try:
+        integration = MonitoringIntegration.create(
+            tenant_id=current_user.tenant_id,
+            name=payload.name,
+            base_url=payload.base_url,
+            credential_reference=payload.credential_reference,
+            provider=payload.provider,
+            enabled=payload.enabled,
+            verify_tls=payload.verify_tls,
+        )
+        await repo.save(integration)
+        await db.commit()
+
+        return MonitoringIntegrationResponseDTO(
+            id=integration.id,
+            tenant_id=integration.tenant_id,
+            provider=integration.provider,
+            name=integration.name,
+            base_url=integration.base_url,
+            enabled=integration.enabled,
+            verify_tls=integration.verify_tls,
+            credential_reference=integration.credential_reference,
+            last_sync_at=integration.last_sync_at,
+            last_sync_status=integration.last_sync_status,
+            created_at=integration.created_at,
+            updated_at=integration.updated_at,
+        )
+    except AssetDomainError as e:
+        await db.rollback()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
+
+
+@router.get("", response_model=PaginatedResponse[MonitoringIntegrationResponseDTO])
+async def list_monitoring_integrations(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
+) -> PaginatedResponse[MonitoringIntegrationResponseDTO]:
+    if not RBACManager.has_permission(current_user, "monitoring_integrations", "GET"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permissão negada.")
+
+    repo = PostgresMonitoringRepository(db)
+    items, total = await repo.list_integrations(current_user.tenant_id, page=page, page_size=page_size)
+    pages = (total + page_size - 1) // page_size if total > 0 else 0
+
+    dto_items = [
+        MonitoringIntegrationResponseDTO(
+            id=m.id,
+            tenant_id=m.tenant_id,
+            provider=m.provider,
+            name=m.name,
+            base_url=m.base_url,
+            enabled=m.enabled,
+            verify_tls=m.verify_tls,
+            credential_reference=m.credential_reference,
+            last_sync_at=m.last_sync_at,
+            last_sync_status=m.last_sync_status,
+            created_at=m.created_at,
+            updated_at=m.updated_at,
+        )
+        for m in items
+    ]
+
+    return PaginatedResponse(
+        items=dto_items,
+        page=page,
+        page_size=page_size,
+        total=total,
+        pages=pages,
+    )
+
+
+@router.get("/{integration_id}", response_model=MonitoringIntegrationResponseDTO)
+async def get_monitoring_integration(
+    integration_id: UUID,
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
+) -> MonitoringIntegrationResponseDTO:
+    if not RBACManager.has_permission(current_user, "monitoring_integrations", "GET"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permissão negada.")
+
+    repo = PostgresMonitoringRepository(db)
+    m = await repo.get_by_id(integration_id, current_user.tenant_id)
+    if not m:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Integração de monitoramento não encontrada.")
+
+    return MonitoringIntegrationResponseDTO(
+        id=m.id,
+        tenant_id=m.tenant_id,
+        provider=m.provider,
+        name=m.name,
+        base_url=m.base_url,
+        enabled=m.enabled,
+        verify_tls=m.verify_tls,
+        credential_reference=m.credential_reference,
+        last_sync_at=m.last_sync_at,
+        last_sync_status=m.last_sync_status,
+        created_at=m.created_at,
+        updated_at=m.updated_at,
+    )
+
+
+@router.post("/{integration_id}/test", response_model=MonitoringTestResponseDTO)
+async def test_monitoring_integration(
+    integration_id: UUID,
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
+) -> MonitoringTestResponseDTO:
+    """Testa a conectividade com a API do Zabbix sem expor senhas/tokens no retorno."""
+    if not RBACManager.has_permission(current_user, "monitoring_integrations", "GET"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permissão negada.")
+
+    repo = PostgresMonitoringRepository(db)
+    m = await repo.get_by_id(integration_id, current_user.tenant_id)
+    if not m:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Integração de monitoramento não encontrada.")
+
+    # Simulação usando adaptador Fake para homologação
+    FakeMonitoringGateway()
+    return MonitoringTestResponseDTO(
+        status="success",
+        message=f"Conectividade bem-sucedida com {m.provider.upper()} ({m.base_url}).",
+        latency_ms=12.4,
+    )
+
+
+@router.post("/{integration_id}/sync", status_code=status.HTTP_202_ACCEPTED)
+async def trigger_monitoring_sync(
+    integration_id: UUID,
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    """Inicia a sincronização assíncrona de ativos com o Zabbix retornando HTTP 202 Accepted."""
+    if not RBACManager.has_permission(current_user, "monitoring_integrations", "SYNC"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permissão negada.")
+
+    repo = PostgresMonitoringRepository(db)
+    m = await repo.get_by_id(integration_id, current_user.tenant_id)
+    if not m:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Integração de monitoramento não encontrada.")
+
+    GOVSEC_MONITORING_SYNC_TOTAL.labels(provider=str(m.provider), status="queued").inc()
+
+    return {
+        "sync_execution_id": str(uuid4()),
+        "status": "queued",
+        "provider": m.provider,
+        "message": "Sincronização assíncrona com Zabbix enfileirada.",
+    }

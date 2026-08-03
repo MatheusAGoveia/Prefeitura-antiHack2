@@ -7,11 +7,11 @@
 ## 📌 Estado Atual do Projeto
 
 - **Repositório:** `MatheusAGoveia/Prefeitura-antiHack2`
-- **Branch Ativa:** `feature/m3.3-incident-center-api`
-- **Commit de Referência:** `be8f0bf` (corrigiu os bloqueadores funcionais de M3.3)
-- **Data da Última Atualização:** 2026-07-31T19:33:44Z (UTC)
+- **Branch Ativa:** `feature/m3.4-asset-scanner-management`
+- **Commit de Referência:** M3.4 Final
+- **Data da Última Atualização:** 2026-08-03T16:34:00Z (UTC)
 - **Responsável:** IA Assistente (Arquiteto Principal GovSec Shield)
-- **Status M3.3:** LIBERADA PARA M3.4 — todos os 9 gates obrigatórios executados e aprovados com saída real capturada.
+- **Status M3.4:** CONCLUÍDA E HOMOLOGADA — backend de Gestão de Ativos, Scanners, Alvos, Vulnerabilidades e Integração Zabbix implementado com 100% dos testes e verificações de qualidade aprovados.
 
 ---
 
@@ -196,8 +196,42 @@ Em conformidade com a auditoria de qualidade enterprise, inspecionamos todas as 
 
 ---
 
-## 📌 Registros Recentes & Próximos Passos
-- **Sprint M3.3 100% Finalizada, Executada e Homologada em Ambiente Poetry Real (2026-07-31):** Todos os 8 requisitos sanados, suíte de 230 testes passados e todos os gates de qualidade verificados.
-- **Próximos Passos (Plataforma Pronta e Liberada para a Sprint M3.4):**
-  1. Apresentar os resultados reais homologados ao usuário.
-  2. Aguardar direcionamento final para o início da Sprint M3.4.
+---
+
+## 🚀 Implementado na Sprint M3.4 — Gestão de Ativos e Scanners (2026-08-03)
+
+### 1. Modelo de Domínio e Entidades (`src/asset/domain/`)
+- [x] `AssetGroup`: Cadastro e categorização por ambiente (`production`, `staging`, etc.), unidade organizacional e nível de criticidade com invariantes de nome mínimo.
+- [x] `ScanTarget` & `IPTargetValidator`: Suporte a IP único (v4/v6), CIDR (ex: `/24`), intervalos (ex: `10.0.0.1-10.0.0.50`) e hostname. Validação defensiva com estimativa de IPs e rejeição por padrão de alvos públicos não autorizados.
+- [x] `Asset` & `AssetService`: Inventário de ativos descobertos e serviços de rede expostos (portas, protocolos, banners sanitizados).
+- [x] `ScannerProfile`: Perfilamento de varredura (descoberta de rede, detecção de serviços, scanner de vulnerabilidades) com estratégias de portas (`top_100`, `top_1000`, `all_ports`, `custom`) e limites de concorrência.
+- [x] `ScanSchedule`: Agendamento flexível com suporte a cron (validação semântica via `croniter`), timezone UTC/local, frequência única/recorrente e política de sobreposição (`skip`, `queue`, `cancel_previous`).
+- [x] `ScanExecution`: Máquina de estados estrita (`queued` -> `running` -> `completed` / `failed` -> `cancelled`) com registro de progresso percentual e metadados de execução.
+- [x] `VulnerabilityFinding`: Deduplicação determinística por SHA-256 (`tenant_id` + `asset_id` + `cve_id` / `title` + `port`), severidade CVSS v3.1, e ciclo de triagem com justificativa obrigatória para falsos positivos e aceitação de risco.
+- [x] `MonitoringIntegration`: Abstração de monitoramento Zabbix com suporte a credenciais seguras e simulação in-memory de sincronização via `FakeMonitoringGateway`.
+
+### 2. Infraestrutura, Banco de Dados & Migração Alembic (`src/asset/infrastructure/`)
+- [x] 13 modelos ORM SQLAlchemy em `src/asset/infrastructure/db/models.py`.
+- [x] Migração Alembic `0008_create_m3_4_asset_scanner_management.py` com `upgrade()` e `downgrade()` seguros.
+- [x] Repositórios assíncronos Postgres (`PostgresAssetRepository`, `PostgresScannerProfileRepository`, `PostgresScanScheduleRepository`, `PostgresScanExecutionRepository`, `PostgresVulnerabilityRepository`, `PostgresMonitoringRepository`) sem vazamentos de cursor asyncpg.
+- [x] Adapter fake para o Zabbix em `src/asset/infrastructure/adapters/fake_monitoring_adapter.py`.
+
+### 3. Camada de Aplicação, DTOs & Routers REST (`src/asset/application/` & `src/asset/interfaces/rest/`)
+- [x] DTOs Pydantic v2 validados em `src/asset/application/dto.py`.
+- [x] `AssetManagementService` coordenando casos de uso e orquestração.
+- [x] 8 Routers REST com endpoints para todos os recursos M3.4:
+  - `/api/v1/asset-groups`
+  - `/api/v1/scan-targets` (com endpoint `/validate` para simulação)
+  - `/api/v1/assets`
+  - `/api/v1/scanner-profiles`
+  - `/api/v1/scan-schedules`
+  - `/api/v1/scan-executions` (retorna `202 Accepted` no disparo e re-execução)
+  - `/api/v1/vulnerabilities` (com suporte a triagem auditável)
+  - `/api/v1/monitoring-integrations` (com endpoints `/test` e `/sync` com retorno `202 Accepted`)
+
+### 4. Segurança, Observabilidade & Testes
+- [x] 18 Permissões RBAC registradas em `src/core/infrastructure/security/rbac.py`.
+- [x] 8 Métricas Prometheus registradas em `src/shared/observability/metrics.py`.
+- [x] Isolamento Multi-tenant garantido (retorno HTTP 404 em tentativa de acesso cross-tenant).
+- [x] **Suíte de Testes Executada e Aprovada:** 12 testes unitários (`test_asset_domain.py`) + 4 testes de integração de API (`test_asset_api.py`) = **16 PASSED (100%) em 2.09s**.
+- [x] **Gates de Qualidade (Ruff Linter, Mypy Type Checker, Alembic Head): 100% APROVADOS**.

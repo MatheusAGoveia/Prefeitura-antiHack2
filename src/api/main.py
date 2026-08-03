@@ -21,6 +21,7 @@ from src.api.middleware.auth import AuthenticationMiddleware
 from src.api.middleware.recovery import RecoveryMiddleware
 from src.core.infrastructure.config import settings
 from src.core.infrastructure.db.models import Base
+import src.asset.infrastructure.db.models  # noqa: F401 - Registro dos modelos M3.4 no Base.metadata
 from src.core.infrastructure.db.unit_of_work import engine
 from src.core.interfaces.rest.auth_routers import router as auth_router
 from src.core.interfaces.rest.incident_routers import router as incident_router
@@ -127,11 +128,30 @@ app.add_middleware(RecoveryMiddleware)
 # 4. Instrumentação Automática de Tracing FastAPI (Spans para toda requisição HTTP)
 instrument_fastapi(app)
 
+from src.asset.interfaces.rest import (
+    asset_group_router,
+    asset_router,
+    monitoring_router,
+    scan_execution_router,
+    scan_schedule_router,
+    scan_target_router,
+    scanner_profile_router,
+    vulnerability_router,
+)
+
 # 5. Rotas de Aplicação
 app.include_router(auth_router)
 app.include_router(core_router)
 app.include_router(incident_router)
 app.include_router(dashboard_router)
+app.include_router(asset_group_router)
+app.include_router(scan_target_router)
+app.include_router(asset_router)
+app.include_router(scanner_profile_router)
+app.include_router(scan_schedule_router)
+app.include_router(scan_execution_router)
+app.include_router(vulnerability_router)
+app.include_router(monitoring_router)
 
 # 6. Exposição de Métricas Prometheus, Health Checks e Dashboard Dev
 app.add_api_route("/metrics", metrics_endpoint_handler, methods=["GET"], tags=["Observability"])
