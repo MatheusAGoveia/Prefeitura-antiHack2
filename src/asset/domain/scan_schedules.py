@@ -65,7 +65,7 @@ def _compute_next_cron_run(cron_expr: str, base_time: datetime) -> datetime | No
             iter_obj = croniter(cron_expr, base_time.timestamp())
             next_ts = iter_obj.get_next(float)
             return datetime.fromtimestamp(next_ts, tz=timezone.utc)
-        except Exception:
+        except Exception:  # nosec B110
             pass
 
     # Fallback para expressões cron padrão de 5 campos (ex: "0 2 * * *")

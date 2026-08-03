@@ -23,7 +23,6 @@ from src.asset.infrastructure.db.scanner_repositories import (
 from src.shared.observability.metrics import (
     GOVSEC_SCAN_EXECUTIONS_TOTAL,
     GOVSEC_SCAN_TARGETS_TOTAL,
-    GOVSEC_VULNERABILITY_FINDINGS_TOTAL,
 )
 
 logger = logging.getLogger(__name__)
@@ -160,8 +159,6 @@ class AssetManagementService:
 
         history = finding.change_status(new_status, changed_by=changed_by, justification=justification)
         await self._vuln_repo.save(finding)
-        await self._vuln_repo.save_history(history)
-        GOVSEC_VULNERABILITY_FINDINGS_TOTAL.labels(severity=str(finding.severity), status=str(new_status)).inc()
         logger.info(
             "Triagem de vulnerabilidade realizada: finding_id=%s to_status=%s changed_by=%s",
             finding_id,
@@ -169,3 +166,92 @@ class AssetManagementService:
             changed_by,
         )
         return finding, history
+
+    # --- Bulk Import Use Cases ---
+    async def preview_import_targets(
+        self,
+        tenant_id: UUID,
+        asset_group_id: UUID,
+        filename: str | None = None,
+        content: bytes | None = None,
+        raw_paste: str | None = None,
+        items_list: list[str] | None = None,
+        allow_public_targets: bool = False,
+    ) -> Any:
+        from src.asset.application.target_importer import TargetBulkImporter
+
+        group = await self._asset_repo.get_group_by_id(asset_group_id, tenant_id)
+        if not group:
+            raise TargetNotFoundError(f"Grupo de ativos não encontrado: {asset_group_id}")
+
+        lines = TargetBulkImporter.parse_raw_content(
+            filename=filename, content=content, raw_paste=raw_paste, items_list=items_list
+        )
+        existing_target_values = await self._asset_repo.get_existing_target_values(tenant_id, asset_group_id)
+
+        return TargetBulkImporter.generate_preview(
+            raw_lines=lines,
+            existing_target_values=existing_target_values,
+            allow_public_targets=allow_public_targets,
+        )
+
+    async def import_targets_bulk(
+        self,
+        tenant_id: UUID,
+        asset_group_id: UUID,
+        authorization_reference: str,
+        created_by: UUID,
+        filename: str | None = None,
+        content: bytes | None = None,
+        raw_paste: str | None = None,
+        items_list: list[str] | None = None,
+        allow_public_targets: bool = False,
+    ) -> Any:
+        from src.asset.application.dto import TargetImportResultDTO
+        from src.asset.domain.scan_targets import TargetType
+
+        preview = await self.preview_import_targets(
+            tenant_id=tenant_id,
+            asset_group_id=asset_group_id,
+            filename=filename,
+            content=content,
+            raw_paste=raw_paste,
+            items_list=items_list,
+            allow_public_targets=allow_public_targets,
+        )
+
+        created_ids: list[UUID] = []
+        for item in preview.items:
+            if item.valid:
+                target = ScanTarget.create(
+                    tenant_id=tenant_id,
+                    asset_group_id=asset_group_id,
+                    name=f"Alvo {item.normalized_value}",
+                    target_type=TargetType(item.target_type),
+                    target_value=item.normalized_value,
+                    created_by=created_by,
+                    authorization_reference=authorization_reference,
+                    allow_public_targets=allow_public_targets,
+                )
+                await self._asset_repo.save_target(target)
+                created_ids.append(target.id)
+
+        if created_ids:
+            GOVSEC_SCAN_TARGETS_TOTAL.labels(type="bulk_import", enabled="true").inc(len(created_ids))
+
+        logger.info(
+            "Importação em massa de alvos realizada: tenant_id=%s group_id=%s criados=%d duplicados=%d invalidos=%d",
+            tenant_id,
+            asset_group_id,
+            len(created_ids),
+            preview.duplicates,
+            preview.invalid,
+        )
+
+        return TargetImportResultDTO(
+            total_received=preview.total_received,
+            created_count=len(created_ids),
+            skipped_duplicates=preview.duplicates,
+            invalid_count=preview.invalid,
+            target_ids=created_ids,
+        )

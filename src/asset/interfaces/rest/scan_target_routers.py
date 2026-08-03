@@ -4,16 +4,19 @@ GovSec Shield — Presentation Layer (M3.4)
 """
 
 import logging
+from typing import Any, cast
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.asset.application.dto import (
     PaginatedResponse,
     ScanTargetCreateDTO,
-    ScanTargetPatchDTO,
     ScanTargetResponseDTO,
+    TargetBulkRequestDTO,
+    TargetImportPreviewResponseDTO,
+    TargetImportResultDTO,
     TargetValidateRequestDTO,
     TargetValidationResponseDTO,
 )
@@ -195,35 +198,6 @@ async def get_scan_target(
     )
 
 
-@router.patch("/{target_id}", response_model=ScanTargetResponseDTO)
-async def patch_scan_target(
-    target_id: UUID,
-    payload: ScanTargetPatchDTO,
-    current_user: AuthenticatedUser = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db_session),
-) -> ScanTargetResponseDTO:
-    if not RBACManager.has_permission(current_user, "scan_targets", "PATCH"):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permissão negada.")
-
-    repo = PostgresAssetRepository(db)
-    target = await repo.get_target_by_id(target_id, current_user.tenant_id)
-    if not target:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Alvo de scanner não encontrado.")
-
-    if payload.name is not None:
-        target.name = payload.name
-    if payload.description is not None:
-        target.description = payload.description
-    if payload.enabled is not None:
-        target.enabled = payload.enabled
-    if payload.authorization_reference is not None:
-        target.authorization_reference = payload.authorization_reference
-
-    target.updated_by = UUID(str(current_user.user_id))
-
-    await repo.save_target(target)
-    await db.commit()
-
     return ScanTargetResponseDTO(
         id=target.id,
         tenant_id=target.tenant_id,
@@ -239,4 +213,140 @@ async def patch_scan_target(
         updated_at=target.updated_at,
         created_by=target.created_by,
         updated_by=target.updated_by,
+    )
+
+
+@router.delete("/{target_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_scan_target(
+    target_id: UUID,
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
+) -> None:
+    if not RBACManager.has_permission(current_user, "scan_targets", "DELETE"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permissão negada.")
+
+    repo = PostgresAssetRepository(db)
+    deleted = await repo.delete_target(target_id, current_user.tenant_id)
+    if not deleted:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Alvo de scanner não encontrado.")
+    await db.commit()
+
+
+from typing import cast
+
+@router.post("/import/preview", response_model=TargetImportPreviewResponseDTO)
+async def preview_scan_target_import(
+    file: UploadFile | None = File(None),
+    asset_group_id: UUID = Form(...),
+    allow_public_targets: bool = Form(False),
+    raw_paste: str | None = Form(None),
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
+) -> TargetImportPreviewResponseDTO:
+    if not RBACManager.has_permission(current_user, "scan_targets", "POST"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permissão negada.")
+
+    content: bytes | None = None
+    filename: str | None = None
+    if file:
+        filename = file.filename
+        content = await file.read()
+
+    service = _get_asset_service(db)
+    try:
+        preview = await service.preview_import_targets(
+            tenant_id=current_user.tenant_id,
+            asset_group_id=asset_group_id,
+            filename=filename,
+            content=content,
+            raw_paste=raw_paste,
+            allow_public_targets=allow_public_targets,
+        )
+        return cast(TargetImportPreviewResponseDTO, preview)
+    except AssetDomainError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
+
+
+@router.post("/import", response_model=TargetImportResultDTO, status_code=status.HTTP_201_CREATED)
+async def import_scan_targets(
+    file: UploadFile | None = File(None),
+    asset_group_id: UUID = Form(...),
+    authorization_reference: str = Form(...),
+    allow_public_targets: bool = Form(False),
+    raw_paste: str | None = Form(None),
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
+) -> TargetImportResultDTO:
+    if not RBACManager.has_permission(current_user, "scan_targets", "POST"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permissão negada.")
+
+    content: bytes | None = None
+    filename: str | None = None
+    if file:
+        filename = file.filename
+        content = await file.read()
+
+    service = _get_asset_service(db)
+    try:
+        result = await service.import_targets_bulk(
+            tenant_id=current_user.tenant_id,
+            asset_group_id=asset_group_id,
+            authorization_reference=authorization_reference,
+            created_by=UUID(str(current_user.user_id)),
+            filename=filename,
+            content=content,
+            raw_paste=raw_paste,
+            allow_public_targets=allow_public_targets,
+        )
+        await db.commit()
+        return cast(TargetImportResultDTO, result)
+    except AssetDomainError as e:
+        await db.rollback()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
+
+
+@router.post("/bulk", response_model=TargetImportResultDTO, status_code=status.HTTP_201_CREATED)
+async def bulk_scan_targets(
+    payload: TargetBulkRequestDTO,
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
+) -> TargetImportResultDTO:
+    if not RBACManager.has_permission(current_user, "scan_targets", "POST"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permissão negada.")
+
+    service = _get_asset_service(db)
+    try:
+        result = await service.import_targets_bulk(
+            tenant_id=current_user.tenant_id,
+            asset_group_id=payload.asset_group_id,
+            authorization_reference=payload.authorization_reference,
+            created_by=UUID(str(current_user.user_id)),
+            raw_paste=payload.raw_paste,
+            items_list=payload.items,
+            allow_public_targets=payload.allow_public_targets,
+        )
+        await db.commit()
+        return cast(TargetImportResultDTO, result)
+    except AssetDomainError as e:
+        await db.rollback()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
+
+
+def _get_asset_service(db: AsyncSession) -> Any:
+    from src.asset.application.asset_service import AssetManagementService
+    from src.asset.infrastructure.db.scanner_repositories import (
+        PostgresMonitoringRepository,
+        PostgresScanExecutionRepository,
+        PostgresScannerProfileRepository,
+        PostgresScanScheduleRepository,
+        PostgresVulnerabilityRepository,
+    )
+
+    return AssetManagementService(
+        asset_repo=PostgresAssetRepository(db),
+        profile_repo=PostgresScannerProfileRepository(db),
+        schedule_repo=PostgresScanScheduleRepository(db),
+        execution_repo=PostgresScanExecutionRepository(db),
+        vuln_repo=PostgresVulnerabilityRepository(db),
+        monitoring_repo=PostgresMonitoringRepository(db),
     )

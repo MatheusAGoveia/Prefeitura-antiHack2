@@ -248,6 +248,26 @@ class PostgresAssetRepository:
         ]
         return targets, total
 
+    async def get_existing_target_values(self, tenant_id: UUID, asset_group_id: UUID) -> set[str]:
+        stmt = select(ScanTargetModel.target_value).where(
+            ScanTargetModel.tenant_id == tenant_id,
+            ScanTargetModel.asset_group_id == asset_group_id,
+        )
+        res = await self._session.execute(stmt)
+        return set(res.scalars().all())
+
+    async def delete_target(self, target_id: UUID, tenant_id: UUID) -> bool:
+        stmt = select(ScanTargetModel).where(
+            ScanTargetModel.id == target_id,
+            ScanTargetModel.tenant_id == tenant_id,
+        )
+        res = await self._session.execute(stmt)
+        target_model = res.scalar_one_or_none()
+        if not target_model:
+            return False
+        await self._session.delete(target_model)
+        return True
+
     # --- Discovered Asset & Services ---
     async def save_asset(self, asset: Asset) -> None:
         stmt = select(DiscoveredAssetModel).where(

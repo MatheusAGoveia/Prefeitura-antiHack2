@@ -367,6 +367,7 @@ class MonitoringIntegrationPatchDTO(BaseModel):
     credential_reference: str | None = None
     enabled: bool | None = None
     verify_tls: bool | None = None
+    active: bool | None = None
 
 
 class MonitoringIntegrationResponseDTO(BaseModel):
@@ -377,7 +378,7 @@ class MonitoringIntegrationResponseDTO(BaseModel):
     base_url: str
     enabled: bool
     verify_tls: bool
-    credential_reference: str
+    credentials_configured: bool = True
     last_sync_at: datetime | None
     last_sync_status: SyncStatus | None
     created_at: datetime
@@ -388,3 +389,91 @@ class MonitoringTestResponseDTO(BaseModel):
     status: str
     message: str
     latency_ms: float
+
+
+class MonitoringSyncExecutionResponseDTO(BaseModel):
+    id: UUID
+    tenant_id: UUID
+    integration_id: UUID
+    status: str
+    started_at: datetime
+    finished_at: datetime | None
+    assets_processed: int = 0
+    assets_created: int = 0
+    assets_updated: int = 0
+    errors_count: int = 0
+    error_summary: str | None = None
+
+
+# --- Update DTOs para Scanner Profiles, Schedules e Targets ---
+class UpdateScannerProfileDTO(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=128)
+    scanner_type: ScannerType | None = None
+    description: str | None = None
+    discovery_enabled: bool | None = None
+    service_detection_enabled: bool | None = None
+    vulnerability_detection_enabled: bool | None = None
+    port_strategy: PortStrategy | None = None
+    custom_ports: list[int] | None = None
+    rate_limit_packets_per_sec: int | None = Field(default=None, ge=1, le=50000)
+    max_concurrency: int | None = Field(default=None, ge=1, le=100)
+    active: bool | None = None
+
+
+class UpdateScanScheduleDTO(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=128)
+    scanner_profile_id: UUID | None = None
+    target_ids: list[UUID] | None = None
+    description: str | None = None
+    frequency_type: FrequencyType | None = None
+    cron_expression: str | None = None
+    timezone: str | None = None
+    start_at: datetime | None = None
+    overlap_policy: OverlapPolicy | None = None
+    active: bool | None = None
+
+
+class UpdateScanTargetDTO(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=128)
+    target_type: TargetType | None = None
+    target_value: str | None = Field(default=None, min_length=1, max_length=256)
+    description: str | None = None
+    enabled: bool | None = None
+    authorization_reference: str | None = Field(default=None, min_length=1, max_length=128)
+    allow_public_targets: bool = False
+
+
+# --- DTOs de Importação em Massa de Alvos ---
+class TargetImportPreviewItemDTO(BaseModel):
+    line: int
+    original_value: str
+    normalized_value: str
+    target_type: str
+    valid: bool
+    errors: list[str] = Field(default_factory=list)
+    estimated_addresses: int = 1
+    warnings: list[str] = Field(default_factory=list)
+
+
+class TargetImportPreviewResponseDTO(BaseModel):
+    total_received: int
+    valid: int
+    invalid: int
+    duplicates: int
+    items: list[TargetImportPreviewItemDTO]
+
+
+class TargetBulkRequestDTO(BaseModel):
+    asset_group_id: UUID
+    authorization_reference: str = Field(..., min_length=1, max_length=128)
+    raw_paste: str | None = None
+    items: list[str] | None = None
+    allow_public_targets: bool = False
+
+
+class TargetImportResultDTO(BaseModel):
+    total_received: int
+    created_count: int
+    skipped_duplicates: int
+    invalid_count: int
+    target_ids: list[UUID]

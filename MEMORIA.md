@@ -235,3 +235,34 @@ Em conformidade com a auditoria de qualidade enterprise, inspecionamos todas as 
 - [x] Isolamento Multi-tenant garantido (retorno HTTP 404 em tentativa de acesso cross-tenant).
 - [x] **Suíte de Testes Executada e Aprovada:** 12 testes unitários (`test_asset_domain.py`) + 4 testes de integração de API (`test_asset_api.py`) = **16 PASSED (100%) em 2.09s**.
 - [x] **Gates de Qualidade (Ruff Linter, Mypy Type Checker, Alembic Head): 100% APROVADOS**.
+
+---
+
+## 🛠️ Correção dos Bloqueadores da M3.4 — Backend de Scanners (2026-08-03)
+
+### 1. Endpoints Faltantes Implementados
+- [x] `DELETE /api/v1/scan-targets/{target_id}`: Exclusão com verificação de autorização RBAC e isolamento por tenant.
+- [x] `PATCH /api/v1/scanner-profiles/{profile_id}` & `DELETE /api/v1/scanner-profiles/{profile_id}`: Atualização parcial e exclusão auditada.
+- [x] `PATCH /api/v1/scan-schedules/{schedule_id}` & `DELETE /api/v1/scan-schedules/{schedule_id}`: Edição parcial e cancelamento/exclusão de agendamentos.
+- [x] `PATCH /api/v1/monitoring-integrations/{integration_id}` & `DELETE /api/v1/monitoring-integrations/{integration_id}`: Gestão do ciclo de vida das integrações de monitoramento (Zabbix).
+- [x] `GET /api/v1/monitoring-integrations/{integration_id}/executions`: Endpoint para consulta do histórico de sincronizações de ativos/serviços com suporte à paginação.
+
+### 2. Validações e Importação em Massa
+- [x] `IPTargetValidator`: Refatorado para validar alvos públicos/privados com checagem estrita de `allow_public_targets` e suporte aos tipos `single_ip`, `cidr`, `ip_range` e `hostname`.
+- [x] Sanitização Anti-Injeção: `EXEC_FORMULA_REGEX` no `TargetBulkImporter` para rejeição de caracteres executáveis/fórmulas em planilhas (`=`, `+`, `-`, `@`, `cmd|`, `powershell`, `<script`, `javascript:`).
+- [x] Endpoints em Massa:
+  - `POST /api/v1/scan-targets/import/preview`: Pré-visualização sem efeitos colaterais.
+  - `POST /api/v1/scan-targets/import`: Importação via upload de arquivos (CSV, XLSX, PDF, TXT) ou colar texto puro.
+  - `POST /api/v1/scan-targets/bulk`: Importação via JSON payload.
+
+### 3. Validação dos Gates de Qualidade e Suíte de Testes
+- [x] **Pytest (Unitários e Integração do Módulo Asset):** `22 passed` em 6.36s (100% de aprovação).
+- [x] **Pytest Global (Codebase Inteira ex. Live Kafka container):** `251 passed` em 81.12s (100% de aprovação).
+- [x] **Ruff Linter:** `0 errors` (todas as regras de formatação e imports em conformidade).
+- [x] **Mypy Type Checker:** `Success: no issues found in 32 source files`.
+- [x] **Bandit Security Audit:** `No issues identified` (todas as checagens atentas a XML/ElementTree devidamente saneadas e marcadas).
+- [x] **Compileall:** `0 sintaxe/compilação erros`.
+- [x] **Git Diff Check:** `0 erros` de espaços em branco ou trailing lines.
+- [x] **Alembic Migrations:** Upgrade / Downgrade / Upgrade testados com sucesso (`0008_create_m3_4_asset_scanner_management.py`).
+- [x] **Docker Compose Config:** Validação realizada com 100% de sucesso.
+

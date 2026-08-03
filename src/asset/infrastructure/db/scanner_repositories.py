@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.asset.domain.monitoring import MonitoringIntegration, MonitoringProvider, SyncStatus
 from src.asset.domain.scan_executions import ExecutionStatus, ScanExecution, TriggerType
 from src.asset.domain.scan_schedules import FrequencyType, OverlapPolicy, ScanSchedule
+from src.asset.domain.scan_targets import ScanTarget, TargetType
 from src.asset.domain.scanner_profiles import PortStrategy, ScannerProfile, ScannerType
 from src.asset.domain.vulnerabilities import (
     VulnerabilityFinding,
@@ -21,10 +22,13 @@ from src.asset.domain.vulnerabilities import (
 )
 from src.asset.infrastructure.db.models import (
     MonitoringIntegrationModel,
+    MonitoringSyncExecutionModel,
     ScanExecutionModel,
+    ScanExecutionTargetModel,
     ScannerProfileModel,
     ScanScheduleModel,
     ScanScheduleTargetModel,
+    ScanTargetModel,
     VulnerabilityFindingModel,
     VulnerabilityHistoryModel,
 )
@@ -144,6 +148,18 @@ class PostgresScannerProfileRepository:
             for m in rows
         ]
         return profiles, total
+
+    async def delete_profile(self, profile_id: UUID, tenant_id: UUID) -> bool:
+        stmt = select(ScannerProfileModel).where(
+            ScannerProfileModel.id == profile_id,
+            ScannerProfileModel.tenant_id == tenant_id,
+        )
+        res = await self._session.execute(stmt)
+        m = res.scalar_one_or_none()
+        if not m:
+            return False
+        m.active = False
+        return True
 
 
 class PostgresScanScheduleRepository:
@@ -291,6 +307,18 @@ class PostgresScanScheduleRepository:
             )
         return schedules, total
 
+    async def delete_schedule(self, schedule_id: UUID, tenant_id: UUID) -> bool:
+        stmt = select(ScanScheduleModel).where(
+            ScanScheduleModel.id == schedule_id,
+            ScanScheduleModel.tenant_id == tenant_id,
+        )
+        res = await self._session.execute(stmt)
+        m = res.scalar_one_or_none()
+        if not m:
+            return False
+        m.enabled = False
+        return True
+
 
 class PostgresScanExecutionRepository:
     """Repositório de Execuções de Scanner."""
@@ -404,6 +432,107 @@ class PostgresScanExecutionRepository:
             for m in res.scalars()
         ]
         return executions, total
+
+    async def list_execution_targets(
+        self, execution_id: UUID, tenant_id: UUID, page: int = 1, page_size: int = 20
+    ) -> tuple[list[ScanTarget], int]:
+        e = await self.get_by_id(execution_id, tenant_id)
+        if not e:
+            return [], 0
+
+        stmt = (
+            select(ScanTargetModel)
+            .join(ScanExecutionTargetModel, ScanExecutionTargetModel.target_id == ScanTargetModel.id)
+            .where(
+                ScanExecutionTargetModel.execution_id == execution_id,
+                ScanTargetModel.tenant_id == tenant_id,
+            )
+        )
+        count_stmt = select(func.count()).select_from(stmt.subquery())
+        total_res = await self._session.execute(count_stmt)
+        total = total_res.scalar_one() or 0
+
+        stmt = stmt.order_by(ScanTargetModel.name.asc()).offset((page - 1) * page_size).limit(page_size)
+        res = await self._session.execute(stmt)
+        rows = list(res.scalars().all())
+
+        targets = [
+            ScanTarget(
+                id=m.id,
+                tenant_id=m.tenant_id,
+                asset_group_id=m.asset_group_id,
+                name=m.name,
+                target_type=TargetType(m.target_type),
+                target_value=m.target_value,
+                description=m.description,
+                enabled=m.enabled,
+                authorization_reference=m.authorization_reference,
+                last_discovered_at=m.last_discovered_at,
+                created_at=m.created_at,
+                updated_at=m.updated_at,
+                created_by=m.created_by,
+                updated_by=m.updated_by,
+            )
+            for m in rows
+        ]
+        return targets, total
+
+    async def list_execution_findings(
+        self,
+        execution_id: UUID,
+        tenant_id: UUID,
+        severity: str | None = None,
+        status: str | None = None,
+        page: int = 1,
+        page_size: int = 20,
+    ) -> tuple[list[VulnerabilityFinding], int]:
+        e = await self.get_by_id(execution_id, tenant_id)
+        if not e:
+            return [], 0
+
+        stmt = select(VulnerabilityFindingModel).where(
+            VulnerabilityFindingModel.scan_execution_id == execution_id,
+            VulnerabilityFindingModel.tenant_id == tenant_id,
+        )
+        if severity:
+            stmt = stmt.where(VulnerabilityFindingModel.severity == severity)
+        if status:
+            stmt = stmt.where(VulnerabilityFindingModel.status == status)
+
+        count_stmt = select(func.count()).select_from(stmt.subquery())
+        total_res = await self._session.execute(count_stmt)
+        total = total_res.scalar_one() or 0
+
+        stmt = stmt.order_by(VulnerabilityFindingModel.last_seen_at.desc()).offset((page - 1) * page_size).limit(page_size)
+        res = await self._session.execute(stmt)
+        rows = list(res.scalars().all())
+
+        findings = [
+            VulnerabilityFinding(
+                id=m.id,
+                tenant_id=m.tenant_id,
+                asset_id=m.asset_id,
+                asset_service_id=m.asset_service_id,
+                scan_execution_id=m.scan_execution_id,
+                external_id=m.external_id,
+                cve_id=m.cve_id,
+                title=m.title,
+                description=m.description,
+                severity=VulnerabilitySeverity(m.severity),
+                cvss_score=Decimal(str(m.cvss_score)) if m.cvss_score is not None else None,
+                status=VulnerabilityStatus(m.status),
+                evidence=m.evidence_json or {},
+                remediation=m.remediation,
+                deduplication_hash=m.deduplication_hash,
+                first_seen_at=m.first_seen_at,
+                last_seen_at=m.last_seen_at,
+                resolved_at=m.resolved_at,
+                created_at=m.created_at,
+                updated_at=m.updated_at,
+            )
+            for m in rows
+        ]
+        return findings, total
 
 
 class PostgresVulnerabilityRepository:
@@ -645,3 +774,31 @@ class PostgresMonitoringRepository:
             for m in m_rows
         ]
         return integrations, total
+
+    async def list_integration_sync_history(
+        self, integration_id: UUID, tenant_id: UUID, page: int = 1, page_size: int = 20
+    ) -> tuple[list[MonitoringSyncExecutionModel], int]:
+        stmt = select(MonitoringSyncExecutionModel).where(
+            MonitoringSyncExecutionModel.integration_id == integration_id,
+            MonitoringSyncExecutionModel.tenant_id == tenant_id,
+        )
+        count_stmt = select(func.count()).select_from(stmt.subquery())
+        total_res = await self._session.execute(count_stmt)
+        total = total_res.scalar_one() or 0
+
+        stmt = stmt.order_by(MonitoringSyncExecutionModel.started_at.desc()).offset((page - 1) * page_size).limit(page_size)
+        res = await self._session.execute(stmt)
+        rows = list(res.scalars().all())
+        return rows, total
+
+    async def delete_integration(self, integration_id: UUID, tenant_id: UUID) -> bool:
+        stmt = select(MonitoringIntegrationModel).where(
+            MonitoringIntegrationModel.id == integration_id,
+            MonitoringIntegrationModel.tenant_id == tenant_id,
+        )
+        res = await self._session.execute(stmt)
+        m = res.scalar_one_or_none()
+        if not m:
+            return False
+        m.enabled = False
+        return True

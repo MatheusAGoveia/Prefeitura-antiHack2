@@ -15,6 +15,7 @@ from src.asset.application.dto import (
     PaginatedResponse,
     ScanScheduleCreateDTO,
     ScanScheduleResponseDTO,
+    UpdateScanScheduleDTO,
 )
 from src.asset.domain.exceptions import AssetDomainError
 from src.asset.domain.scan_schedules import ScanSchedule
@@ -306,3 +307,82 @@ async def trigger_schedule_run(
         targets_total=execution.targets_total,
         created_at=execution.created_at,
     )
+
+
+@router.patch("/{schedule_id}", response_model=ScanScheduleResponseDTO)
+async def patch_scan_schedule(
+    schedule_id: UUID,
+    payload: UpdateScanScheduleDTO,
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
+) -> ScanScheduleResponseDTO:
+    if not RBACManager.has_permission(current_user, "scan_schedules", "PATCH"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permissão negada.")
+
+    repo = PostgresScanScheduleRepository(db)
+    s = await repo.get_by_id(schedule_id, current_user.tenant_id)
+    if not s:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agendamento não encontrado.")
+
+    if payload.name is not None:
+        s.name = payload.name
+    if payload.description is not None:
+        s.description = payload.description
+    if payload.scanner_profile_id is not None:
+        s.scanner_profile_id = payload.scanner_profile_id
+    if payload.target_ids is not None:
+        s.target_ids = payload.target_ids
+    if payload.frequency_type is not None:
+        s.frequency_type = payload.frequency_type
+    if payload.cron_expression is not None:
+        s.cron_expression = payload.cron_expression
+    if payload.timezone is not None:
+        s.timezone = payload.timezone
+    if payload.start_at is not None:
+        s.start_at = payload.start_at
+    if payload.overlap_policy is not None:
+        s.overlap_policy = payload.overlap_policy
+    if payload.active is not None:
+        s.enabled = payload.active
+
+    s.updated_by = UUID(str(current_user.user_id))
+
+    await repo.save(s)
+    await db.commit()
+
+    return ScanScheduleResponseDTO(
+        id=s.id,
+        tenant_id=s.tenant_id,
+        name=s.name,
+        description=s.description,
+        scanner_profile_id=s.scanner_profile_id,
+        frequency_type=s.frequency_type,
+        cron_expression=s.cron_expression,
+        timezone=s.timezone,
+        start_at=s.start_at,
+        next_run_at=s.next_run_at,
+        last_run_at=s.last_run_at,
+        enabled=s.enabled,
+        overlap_policy=s.overlap_policy,
+        created_at=s.created_at,
+        updated_at=s.updated_at,
+        created_by=s.created_by,
+        updated_by=s.updated_by,
+        target_ids=s.target_ids,
+    )
+
+
+@router.delete("/{schedule_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_scan_schedule(
+    schedule_id: UUID,
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
+) -> None:
+    if not RBACManager.has_permission(current_user, "scan_schedules", "DELETE"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permissão negada.")
+
+    repo = PostgresScanScheduleRepository(db)
+    deleted = await repo.delete_schedule(schedule_id, current_user.tenant_id)
+    if not deleted:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agendamento não encontrado.")
+    await db.commit()

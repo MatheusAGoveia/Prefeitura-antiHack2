@@ -180,6 +180,28 @@ class IPTargetValidator:
             )
 
     @classmethod
+    def validate_target(
+        cls, raw_value: str, allow_public_targets: bool = False
+    ) -> TargetValidationResult:
+        v = raw_value.strip()
+        if "/" in v:
+            t_type = TargetType.CIDR
+        elif "-" in v:
+            t_type = TargetType.IP_RANGE
+        else:
+            try:
+                ipaddress.ip_address(v)
+                t_type = TargetType.SINGLE_IP
+            except ValueError:
+                t_type = TargetType.HOSTNAME
+
+        return cls.validate_and_normalize(
+            target_type=t_type,
+            target_value=v,
+            allow_public_targets=allow_public_targets,
+        )
+
+    @classmethod
     def _check_public_ip(
         cls,
         ip_obj: ipaddress.IPv4Address | ipaddress.IPv6Address,

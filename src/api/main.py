@@ -16,12 +16,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from sqlalchemy.exc import SQLAlchemyError
 
+import src.asset.infrastructure.db.models  # noqa: F401 - Registro dos modelos M3.4 no Base.metadata
 from src.api.dashboard_api import router as dashboard_router
 from src.api.middleware.auth import AuthenticationMiddleware
 from src.api.middleware.recovery import RecoveryMiddleware
 from src.core.infrastructure.config import settings
 from src.core.infrastructure.db.models import Base
-import src.asset.infrastructure.db.models  # noqa: F401 - Registro dos modelos M3.4 no Base.metadata
 from src.core.infrastructure.db.unit_of_work import engine
 from src.core.interfaces.rest.auth_routers import router as auth_router
 from src.core.interfaces.rest.incident_routers import router as incident_router
@@ -128,7 +128,7 @@ app.add_middleware(RecoveryMiddleware)
 # 4. Instrumentação Automática de Tracing FastAPI (Spans para toda requisição HTTP)
 instrument_fastapi(app)
 
-from src.asset.interfaces.rest import (
+from src.asset.interfaces.rest import (  # noqa: E402
     asset_group_router,
     asset_router,
     monitoring_router,
