@@ -694,18 +694,25 @@ class PostgresMonitoringRepository:
         res = await self._session.execute(stmt)
         m = res.scalar_one_or_none()
 
+        provider_str = integration.provider.value if hasattr(integration.provider, "value") else str(integration.provider)
+        status_str = (
+            integration.last_sync_status.value
+            if hasattr(integration.last_sync_status, "value")
+            else (str(integration.last_sync_status) if integration.last_sync_status else None)
+        )
+
         if m is None:
             m = MonitoringIntegrationModel(
                 id=integration.id,
                 tenant_id=integration.tenant_id,
-                provider=str(integration.provider),
+                provider=provider_str,
                 name=integration.name,
                 base_url=integration.base_url,
                 enabled=integration.enabled,
                 verify_tls=integration.verify_tls,
                 credential_reference=integration.credential_reference,
                 last_sync_at=integration.last_sync_at,
-                last_sync_status=str(integration.last_sync_status) if integration.last_sync_status else None,
+                last_sync_status=status_str,
                 created_at=integration.created_at,
                 updated_at=integration.updated_at,
             )
@@ -717,7 +724,7 @@ class PostgresMonitoringRepository:
             m.verify_tls = integration.verify_tls
             m.credential_reference = integration.credential_reference
             m.last_sync_at = integration.last_sync_at
-            m.last_sync_status = str(integration.last_sync_status) if integration.last_sync_status else None
+            m.last_sync_status = status_str
             m.updated_at = integration.updated_at
 
     async def get_by_id(self, integration_id: UUID, tenant_id: UUID) -> MonitoringIntegration | None:

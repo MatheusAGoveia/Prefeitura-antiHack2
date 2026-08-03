@@ -85,6 +85,16 @@ def upgrade() -> None:
             op.add_column("monitoring_sync_executions", sa.Column("errors_count", sa.Integer(), nullable=False, server_default="0"))
         if "error_summary" not in sync_columns:
             op.add_column("monitoring_sync_executions", sa.Column("error_summary", sa.Text(), nullable=True))
+        if "created_at" not in sync_columns:
+            op.add_column("monitoring_sync_executions", sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("CURRENT_TIMESTAMP")))
+
+    # 7. Ajustar coluna active -> enabled em scan_schedules se existir
+    if inspector.has_table("scan_schedules"):
+        sched_columns = [c["name"] for c in inspector.get_columns("scan_schedules")]
+        if "active" in sched_columns and "enabled" not in sched_columns:
+            op.alter_column("scan_schedules", "active", new_column_name="enabled")
+        elif "enabled" not in sched_columns:
+            op.add_column("scan_schedules", sa.Column("enabled", sa.Boolean(), nullable=False, server_default=sa.text("true")))
 
 
 def downgrade() -> None:

@@ -6,7 +6,7 @@ GovSec Shield — Integration & Security Testing (M3.4)
 import io
 import zipfile
 from datetime import datetime, timedelta, timezone
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from httpx import AsyncClient
@@ -53,20 +53,19 @@ async def test_zabbix_sync_transactional_outbox_and_audit(
     sync_exec_id = body["sync_execution_id"]
 
     # 3. Verificar Evento na Outbox no banco
-    async with async_session() as session:
-        stmt = select(OutboxEventModel).where(
-            OutboxEventModel.tenant_id == UUID(tenant_id),
-            OutboxEventModel.event_type == "monitoring.sync.requested",
-        )
-        result = await session.execute(stmt)
-        events = result.scalars().all()
-        assert len(events) >= 1
-        event = events[0]
-        assert event.payload["integration_id"] == integ_id
-        assert event.payload["sync_execution_id"] == sync_exec_id
-        # Garantir ausência de credenciais no evento
-        assert "credential_reference" not in event.payload
-        assert "password" not in event.payload
+    stmt = select(OutboxEventModel).where(
+        OutboxEventModel.tenant_id == UUID(tenant_id),
+        OutboxEventModel.event_type == "monitoring.sync.requested",
+    )
+    result = await async_session.execute(stmt)
+    events = result.scalars().all()
+    assert len(events) >= 1
+    event = events[0]
+    assert event.payload["integration_id"] == integ_id
+    assert event.payload["sync_execution_id"] == sync_exec_id
+    # Garantir ausência de credenciais no evento
+    assert "credential_reference" not in event.payload
+    assert "password" not in event.payload
 
     # 4. Verificar Histórico via API
     res_hist = await async_client.get(
