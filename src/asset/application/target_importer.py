@@ -283,7 +283,7 @@ class TargetBulkImporter:
             # Tenta inferir tipo e validar alvo
             target_type = "single_ip"
             if "/" in original and not original.startswith("http"):
-                target_type = "cidr_block"
+                target_type = "cidr"
             elif "-" in original and not original.startswith("http"):
                 target_type = "ip_range"
             elif any(c.isalpha() for c in original) and "." in original:
